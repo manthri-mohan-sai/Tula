@@ -1,0 +1,289 @@
+import Foundation
+import SwiftData
+
+// MARK: - Account
+
+/// A place money lives or originates from. Bank accounts, credit cards, cash,
+/// wallets — all share this type, differentiated by `kind`.
+///
+/// Note on currency: `currencyCode` is stored on each account as a forward-
+/// compatibility slot. v1 is single-currency (set globally via @AppStorage)
+/// and all accounts inherit that on creation. Per-account currencies become
+/// useful in v2 if/when we support multi-currency.
+@Model
+final class Account {
+    var id: UUID = UUID()
+    var name: String = ""                  // User-visible: "HDFC Bank", "Cash", "ICICI CC"
+    var kind: AccountKind = AccountKind.bank
+    var currencyCode: String = "INR"
+    var iconKey: String = "building.columns"
+    var colorHex: String = "#4A90E2"
+    var isArchived: Bool = false           // Soft-delete: hidden from pickers, data preserved
+    var sortOrder: Int = 0
+    var createdAt: Date = Date()
+
+    /// Optional credit limit for credit cards. Nil for other account types.
+    /// Used to show "₹X of ₹Y used" on the CC tile if set.
+    var creditLimit: Double? = nil
+
+    /// Optional opening balance (mainly for cash accounts where the user wants
+    /// to track "I have ₹X in my wallet right now"). Defaults to 0.
+    var openingBalance: Double = 0
+
+    @Relationship(deleteRule: .cascade, inverse: \Expense.account)
+    var expenses: [Expense] = []
+
+    @Relationship(deleteRule: .cascade, inverse: \Transfer.fromAccount)
+    var outgoingTransfers: [Transfer] = []
+
+    @Relationship(deleteRule: .cascade, inverse: \Transfer.toAccount)
+    var incomingTransfers: [Transfer] = []
+
+    init(name: String, kind: AccountKind, currencyCode: String = "INR",
+         iconKey: String = "building.columns", colorHex: String = "#4A90E2",
+         openingBalance: Double = 0, creditLimit: Double? = nil, sortOrder: Int = 0) {
+        self.name = name
+        self.kind = kind
+        self.currencyCode = currencyCode
+        self.iconKey = iconKey
+        self.colorHex = colorHex
+        self.openingBalance = openingBalance
+        self.creditLimit = creditLimit
+        self.sortOrder = sortOrder
+    }
+
+    /// Derived balance — different semantics by account kind:
+    /// - **Credit card**: outstanding amount (what you owe). Positive = owed.
+    ///                    Sum of expenses on this card minus payments received.
+    /// - **Bank/Cash/Wallet**: opening balance + incoming transfers
+    ///                          - outgoing transfers - expenses paid from here.
+    ///                          A spending-flow view, not a true bank balance
+    ///                          (since we don't track income in v1).
+    var derivedBalance: Double {
+        let expenseTotal = expenses.reduce(0) { $0 + $1.amount }
+        let outgoing = outgoingTransfers.reduce(0) { $0 + $1.amount }
+        let incoming = incomingTransfers.reduce(0) { $0 + $1.amount }
+
+        switch kind {
+        case .creditCard:
+            return expenseTotal - incoming
+        case .bank, .cash, .wallet:
+            return openingBalance + incoming - outgoing - expenseTotal
+        }
+    }
+}
+
+enum AccountKind: String, Codable, CaseIterable {
+    case bank
+    case creditCard
+    case cash
+    case wallet
+
+    var displayName: String {
+        switch self {
+        case .bank: return "Bank"
+        case .creditCard: return "Credit Card"
+        case .cash: return "Cash"
+        case .wallet: return "Wallet"
+        }
+    }
+
+    var defaultIcon: String {
+        switch self {
+        case .bank: return "building.columns"
+        case .creditCard: return "creditcard"
+        case .cash: return "banknote"
+        case .wallet: return "wallet.pass"
+        }
+    }
+}
+
+// MARK: - Category
+
+@Model
+final class Category {
+    var id: UUID = UUID()
+    var name: String = ""
+    var iconKey: String = "questionmark.circle"
+    var colorHex: String = "#888888"
+    var isArchived: Bool = false
+    var sortOrder: Int = 0
+    var createdAt: Date = Date()
+
+    @Relationship(deleteRule: .nullify, inverse: \Expense.category)
+    var expenses: [Expense] = []
+
+    init(name: String, iconKey: String, colorHex: String, sortOrder: Int = 0) {
+        self.name = name
+        self.iconKey = iconKey
+        self.colorHex = colorHex
+        self.sortOrder = sortOrder
+    }
+}
+
+// MARK: - Expense
+
+/// A consumption event. Reduces net worth. Counted in "spent this month".
+@Model
+final class Expense {
+    var id: UUID = UUID()
+    var amount: Double = 0
+    var date: Date = Date()
+    var merchant: String? = nil
+    var note: String? = nil
+    var createdAt: Date = Date()
+
+    /// The original text the user typed/dictated, if entered via NLP.
+    /// Stored for two reasons: (1) re-parsing if NLP improves later,
+    /// (2) debugging weird categorizations.
+    var rawInput: String? = nil
+
+    var source: ExpenseSource = ExpenseSource.manual
+
+    var category: Category?
+    var account: Account?
+
+    /// If this expense was generated by a recurring rule, link back to it.
+    var recurringRule: RecurringRule?
+
+    init(amount: Double, date: Date = .now, merchant: String? = nil,
+         note: String? = nil, source: ExpenseSource = .manual,
+         category: Category? = nil, account: Account? = nil) {
+        self.amount = amount
+        self.date = date
+        self.merchant = merchant
+        self.note = note
+        self.source = source
+        self.category = category
+        self.account = account
+    }
+}
+
+enum ExpenseSource: String, Codable {
+    case manual       // Typed into the form
+    case nlp          // Parsed from natural language
+    case siri         // Via Siri shortcut
+    case widget       // Quick-add from widget
+    case recurring    // Auto-created by a RecurringRule
+}
+
+// MARK: - Transfer
+
+/// Money moving between the user's own accounts. NOT counted as a spend.
+/// Examples: ATM withdrawal (Bank → Cash), credit card bill payment
+/// (Bank → CC), bank-to-bank transfer.
+@Model
+final class Transfer {
+    var id: UUID = UUID()
+    var amount: Double = 0
+    var date: Date = Date()
+    var note: String? = nil
+    var createdAt: Date = Date()
+
+    /// Distinguishes a card bill payment from a generic transfer so the UI
+    /// can surface it on the CC's history.
+    var kind: TransferKind = TransferKind.generic
+
+    var fromAccount: Account?
+    var toAccount: Account?
+
+    var recurringRule: RecurringRule?
+
+    init(amount: Double, fromAccount: Account?, toAccount: Account?,
+         date: Date = .now, kind: TransferKind = .generic, note: String? = nil) {
+        self.amount = amount
+        self.fromAccount = fromAccount
+        self.toAccount = toAccount
+        self.date = date
+        self.kind = kind
+        self.note = note
+    }
+}
+
+enum TransferKind: String, Codable {
+    case generic
+    case cardBillPayment   // Bank → Credit Card
+    case withdrawal        // Bank → Cash (ATM, etc.)
+    case deposit           // Cash → Bank
+}
+
+// MARK: - Recurring Rule
+
+/// A user-defined schedule that auto-creates expenses or transfers.
+/// e.g. "Netflix ₹649 on HDFC CC on the 12th every month."
+@Model
+final class RecurringRule {
+    var id: UUID = UUID()
+    var name: String = ""
+    var amount: Double = 0
+    var kind: RecurringKind = RecurringKind.expense
+
+    /// v1 only supports monthly recurrence. Day of month, 1-31, clamped to
+    /// month length for short months. Weekly/yearly can come in v2.
+    var dayOfMonth: Int = 1
+    var startDate: Date = Date()
+    var endDate: Date? = nil
+    var isPaused: Bool = false
+
+    // For expense rules:
+    var category: Category? = nil
+    var account: Account? = nil
+
+    // For transfer rules:
+    var fromAccount: Account? = nil
+    var toAccount: Account? = nil
+
+    var note: String? = nil
+    var createdAt: Date = Date()
+
+    /// Last date the rule actually generated a transaction. The dedup key —
+    /// when the app launches and walks recurring rules, it generates any
+    /// missing transactions for past due dates and updates this field.
+    var lastGeneratedDate: Date? = nil
+
+    @Relationship(deleteRule: .nullify, inverse: \Expense.recurringRule)
+    var generatedExpenses: [Expense] = []
+
+    @Relationship(deleteRule: .nullify, inverse: \Transfer.recurringRule)
+    var generatedTransfers: [Transfer] = []
+
+    init(name: String, amount: Double, kind: RecurringKind, dayOfMonth: Int,
+         startDate: Date = .now) {
+        self.name = name
+        self.amount = amount
+        self.kind = kind
+        self.dayOfMonth = dayOfMonth
+        self.startDate = startDate
+    }
+}
+
+enum RecurringKind: String, Codable {
+    case expense
+    case transfer
+    case cardPayment   // Specifically a card bill payment transfer
+}
+
+// MARK: - Merchant Rule
+
+/// Maps merchant substring → category, so the app can auto-categorize.
+/// Shipped with sensible defaults (Swiggy → Food, Uber → Transport, etc.)
+/// and grows as the user logs new merchants.
+@Model
+final class MerchantRule {
+    var id: UUID = UUID()
+    var pattern: String = ""           // Lowercased substring. "swiggy", "zomato"
+    var category: Category?
+    var account: Account?              // Optional default account for this merchant
+    var createdAt: Date = Date()
+
+    /// User-defined rules outrank default-shipped ones when both match.
+    var isUserDefined: Bool = false
+
+    init(pattern: String, category: Category?, account: Account? = nil,
+         isUserDefined: Bool = false) {
+        self.pattern = pattern.lowercased()
+        self.category = category
+        self.account = account
+        self.isUserDefined = isUserDefined
+    }
+}
