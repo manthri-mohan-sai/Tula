@@ -583,7 +583,31 @@ private struct QuickLogBar: View {
         .animation(AppAnimation.bouncy, value: showPreview)
         .animation(AppAnimation.snappy, value: speech.isRecording)
         .onChange(of: speech.transcript) { _, newValue in
+
             input = newValue
+
+            guard !speech.isRecording else {
+                return
+            }
+
+            Task {
+
+                if let extraction = await ExpenseAIService.shared.extract(
+                    from: newValue
+                ) {
+
+                    print(extraction)
+
+                    await MainActor.run {
+
+                        if let merchant = extraction.merchant {
+                            input = merchant
+                        }
+
+                        justFinishedVoice = true
+                    }
+                }
+            }
         }
         .alert("Voice access needed", isPresented: $showingPermissionDenied) {
             Button("Open Settings") {
