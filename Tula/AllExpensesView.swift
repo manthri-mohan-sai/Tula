@@ -81,6 +81,7 @@ struct AllExpensesView: View {
                 }
             }
             .navigationTitle("Activity")
+            .navigationSubtitle(subtitleText)
             .navigationBarTitleDisplayMode(.inline)
             .searchable(
                 text: $searchText,
@@ -88,13 +89,9 @@ struct AllExpensesView: View {
                 prompt: "Search by merchant, category, amount"
             )
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
+                ToolbarItem(placement: .topBarTrailing) {
                     Button("Done") { dismiss() }
-                }
-                ToolbarItem(placement: .principal) {
-                    if !filtered.isEmpty {
-                        summaryTitle
-                    }
+                        .fontWeight(.semibold)
                 }
             }
             .sheet(item: $editingExpense) { expense in
@@ -103,18 +100,11 @@ struct AllExpensesView: View {
         }
     }
 
-    /// Two-line nav title: "Activity" plus a small subtitle showing how
-    /// many expenses are listed and their total. Replaces the old in-list
-    /// summary header for a cleaner look.
-    private var summaryTitle: some View {
-        VStack(spacing: 1) {
-            Text("Activity")
-                .font(.headline.weight(.semibold))
-            Text("\(filtered.count) · \(Currency.format(grandTotal, code: currencyCode))")
-                .font(.caption2.weight(.medium))
-                .foregroundStyle(.secondary)
-                .monospacedDigit()
-        }
+    /// Subtitle showing transaction count + grand total.
+    private var subtitleText: String {
+        guard !filtered.isEmpty else { return "" }
+        let unit = filtered.count == 1 ? "transaction" : "transactions"
+        return "\(filtered.count) \(unit) · \(Currency.format(grandTotal, code: currencyCode))"
     }
 
     // MARK: - List
@@ -134,6 +124,12 @@ struct AllExpensesView: View {
                             ExpenseRow(expense: expense)
                         }
                         .buttonStyle(.plain)
+                        // Let the row control its own height. We add 2pt
+                        // top/bottom for subtle breathing room between
+                        // tiles — fully tight read as a dense table, this
+                        // gives just enough air to feel like individual
+                        // items without making the list feel sparse.
+                        .listRowInsets(EdgeInsets(top: 2, leading: 16, bottom: 2, trailing: 16))
                         .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                             Button(role: .destructive) {
                                 delete(expense)

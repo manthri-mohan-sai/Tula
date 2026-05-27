@@ -36,6 +36,9 @@ struct StatsView: View {
     /// Date the user is dragging on the chart (nil when not interacting).
     @State private var chartSelectedDate: Date?
 
+    /// Namespace for the period picker's animated selection pill.
+    @Namespace private var pickerNamespace
+
     // MARK: - Period Math
 
     /// Returns the date range for the current period at the current offset.
@@ -211,7 +214,6 @@ struct StatsView: View {
             ScrollView {
                 VStack(spacing: Spacing.md) {
                     periodPicker
-                    periodNavigator
                     heroCard
                     if hasAnySpend {
                         insightGrid
@@ -239,109 +241,76 @@ struct StatsView: View {
 
     // MARK: - Period Picker
 
+    /// iOS 26 liquid-glass segmented control. Compact 36pt total height,
+    /// a single floating pill that slides between segments via
+    /// `matchedGeometryEffect`. The container uses `.regularMaterial`
+    /// for the glass effect; the selected pill rides on a solid surface
+    /// so the active label always reads as fully opaque against any
+    /// background — exactly the Apple Music / Calendar pattern.
     private var periodPicker: some View {
-        Picker("Period", selection: $period) {
+        HStack(spacing: 0) {
             ForEach(StatsPeriod.allCases) { p in
-                Text(p.shortLabel).tag(p)
-            }
-        }
-        .pickerStyle(.segmented)
-    }
-
-    // MARK: - Period Navigator
-
-    private var periodNavigator: some View {
-        HStack(spacing: Spacing.md) {
-            navButton(icon: "chevron.left", enabled: true) {
-                withAnimation(AppAnimation.gentle) {
-                    periodOffset -= 1
-                }
-            }
-
-            VStack(spacing: 2) {
-                Text(rangeLabel)
-                    .font(.headline)
-                    .contentTransition(.numericText())
-                if !isCurrentPeriod {
-                    Button {
-                        Haptics.tap()
-                        withAnimation(AppAnimation.gentle) {
-                            periodOffset = 0
-                        }
-                    } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: "arrow.uturn.left")
-                                .font(.caption2.weight(.bold))
-                            Text("Current")
-                                .font(.caption2.weight(.semibold))
-                        }
-                        .foregroundStyle(Color.tulaBrandFallback)
+                let isSelected = p == period
+                Button {
+                    guard period != p else { return }
+                    Haptics.selection()
+                    withAnimation(.spring(response: 0.38, dampingFraction: 0.82)) {
+                        period = p
                     }
-                    .buttonStyle(.plain)
+                } label: {
+                    ZStack {
+                        if isSelected {
+                            Capsule()
+                                .fill(Color(uiColor: .systemBackground))
+                                .shadow(color: .black.opacity(0.08), radius: 3, y: 1)
+                                .matchedGeometryEffect(id: "periodSelector", in: pickerNamespace)
+                        }
+                        Text(p.shortLabel)
+                            .font(.subheadline.weight(isSelected ? .semibold : .regular))
+                            .foregroundStyle(isSelected ? .primary : .secondary)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 30)
+                    .contentShape(Capsule())
                 }
-            }
-            .frame(maxWidth: .infinity)
-            // Reserve space so the navigator doesn't jump when "Current" button appears
-            .frame(minHeight: 32)
-
-            navButton(icon: "chevron.right", enabled: !isCurrentPeriod) {
-                withAnimation(AppAnimation.gentle) {
-                    periodOffset += 1
-                }
+                .buttonStyle(.plain)
             }
         }
-    }
-
-    private func navButton(icon: String, enabled: Bool, action: @escaping () -> Void) -> some View {
-        Button {
-            guard enabled else { return }
-            Haptics.tap()
-            action()
-        } label: {
-            Image(systemName: icon)
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(enabled ? Color.primary : Color(uiColor: .tertiaryLabel))
-                .frame(width: 36, height: 36)
-                .background(
-                    Circle()
-                        .fill(Color.tulaCardSurface)
-                        .opacity(enabled ? 1 : 0.5)
-                )
-        }
-        .buttonStyle(.plain)
-        .disabled(!enabled)
+        .padding(3)
+        .background(
+            Capsule()
+                .fill(.regularMaterial)
+        )
     }
 
     // MARK: - Hero
 
+    /// Hero card. Lays out the period date navigator at the top (was a
+    /// separate row in the header), then the spent total + per-day
+    /// average. The date is the period's context, the amount is the
+    /// answer — pairing them in one card removes redundant vertical
+    /// chrome and lets the amount land harder.
     private var heroCard: some View {
-        VStack(alignment: .leading, spacing: Spacing.xs) {
-            HStack {
-                Text("Total spent")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                Spacer()
-                if let trend = trendVsPrevious {
-                    trendBadge(trend)
-                }
-            }
+        VStack(alignment: .leading, spacing: Spacing.md) {
+            heroDateNav
 
-            Text(Currency.format(totalThisPeriod, code: currencyCode))
-                .font(.system(size: 36, weight: .bold, design: .rounded))
-                .minimumScaleFactor(0.5)
-                .lineLimit(1)
-                .contentTransition(.numericText())
+            VStack(alignment: .leading, spacing: Spacing.xs) {
+                Text(Currency.format(totalThisPeriod, code: currencyCode))
+                    .font(.system(size: 36, weight: .bold, design: .rounded))
+                    .minimumScaleFactor(0.5)
+                    .lineLimit(1)
+                    .contentTransition(.numericText())
 
-            if hasAnySpend {
-                HStack(spacing: Spacing.xs) {
-                    Text(Currency.format(averagePerDay, code: currencyCode))
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.primary)
-                    Text("avg / day")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                if hasAnySpend {
+                    HStack(spacing: Spacing.xs) {
+                        Text(Currency.format(averagePerDay, code: currencyCode))
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.primary)
+                        Text("avg / day")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
-                .padding(.top, 2)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -359,6 +328,67 @@ struct StatsView: View {
                     )
                 )
         )
+    }
+
+    /// Date navigator inline at the top of the hero. Lightweight chevrons
+    /// flanking the date label, with the trend badge floated right. No
+    /// heavy circle backgrounds like the old standalone navigator had —
+    /// inside the hero card those felt over-styled.
+    private var heroDateNav: some View {
+        HStack(spacing: Spacing.sm) {
+            Button {
+                Haptics.tap()
+                withAnimation(AppAnimation.gentle) {
+                    periodOffset -= 1
+                }
+            } label: {
+                Image(systemName: "chevron.left")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.primary)
+                    .frame(width: 28, height: 28)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            Text(rangeLabel)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.primary)
+                .contentTransition(.numericText())
+                .frame(maxWidth: .infinity)
+
+            Button {
+                guard !isCurrentPeriod else { return }
+                Haptics.tap()
+                withAnimation(AppAnimation.gentle) {
+                    periodOffset += 1
+                }
+            } label: {
+                Image(systemName: "chevron.right")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(isCurrentPeriod ? Color(uiColor: .tertiaryLabel) : .primary)
+                    .frame(width: 28, height: 28)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(isCurrentPeriod)
+
+            if let trend = trendVsPrevious {
+                trendBadge(trend)
+            } else if !isCurrentPeriod {
+                Button {
+                    Haptics.tap()
+                    withAnimation(AppAnimation.gentle) {
+                        periodOffset = 0
+                    }
+                } label: {
+                    Image(systemName: "arrow.uturn.left")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(Color.tulaBrandFallback)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Reset to current period")
+            }
+        }
     }
 
     private func trendBadge(_ trend: Double) -> some View {
@@ -549,12 +579,27 @@ struct StatsView: View {
         // gesture priority correctly with the parent ScrollView, so the
         // chart never blocks vertical scrolling.
         .chartXSelection(value: $chartSelectedDate)
+        // Clamp Y range to actual data + 15% headroom. Without this,
+        // Charts auto-picks a "nice" max (often ₹10K when data peaks at
+        // ₹5K) and we burn half the chart on empty space.
+        .chartYScale(domain: 0...chartYMax)
         .frame(height: 220)
     }
 
-    /// High-contrast annotation that's readable on any chart background.
-    /// Uses `.regularMaterial` (frosted glass) so it adapts to light/dark
-    /// mode and stays legible over the area fill.
+    /// Y-axis upper bound. 15% headroom above the data peak so the line
+    /// has room to breathe; minimum of 100 so an empty/sparse period
+    /// doesn't render a degenerate 0-range axis.
+    private var chartYMax: Double {
+        let peak = chartData.map(\.total).max() ?? 0
+        return max(peak * 1.15, 100)
+    }
+
+    /// Annotation popover. Uses a solid system-background surface (not
+    /// `.regularMaterial`) so it never picks up tint from the colored
+    /// area fill below it — translucent backgrounds were rendering
+    /// amber-washed on top of the amber chart fill, which made the
+    /// numbers hard to read against. Solid background + subtle stroke +
+    /// stronger shadow gives a card that always reads as "on top of."
     private func chartAnnotation(date: Date, amount: Double) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(date, format: .dateTime.weekday(.abbreviated).day().month(.abbreviated))
@@ -565,10 +610,17 @@ struct StatsView: View {
                 .monospacedDigit()
                 .foregroundStyle(.primary)
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .shadow(color: .black.opacity(0.18), radius: 8, y: 3)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color(uiColor: .systemBackground))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5)
+        )
+        .shadow(color: .black.opacity(0.20), radius: 10, y: 4)
     }
 
     private func pointForDate(_ date: Date) -> (label: Date, total: Double)? {
@@ -628,6 +680,7 @@ struct StatsView: View {
             }
         }
         .chartXSelection(value: $chartSelectedDate)
+        .chartYScale(domain: 0...chartYMax)
         .frame(height: 220)
     }
 

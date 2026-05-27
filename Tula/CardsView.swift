@@ -4,16 +4,23 @@ import SwiftData
 /// Dedicated cards page. Pushed onto Home's navigation stack from the
 /// wallet icon in Home's toolbar.
 ///
-/// **Layout (top → bottom):**
-/// 1. Summary header — N accounts + Net amount + month spend
-/// 2. Cards stack (Wallet-style) — collapsed or expanded
-/// 3. **Active card section** — shows the bottom (active) card's recent
-///    activity + a small spend-this-month stat. Updates as the user lifts
-///    a different card to the bottom. Hidden when the stack is expanded
-///    (every card is fully visible, so per-card detail is redundant).
+/// **Mobile-first redesign.** Cards are presented as a horizontal,
+/// page-snapping carousel — the iOS-native pattern for browsing through
+/// a collection on a phone (App Store, Music album art, Wallet). The
+/// horizontal swipe axis is **orthogonal** to the page's vertical scroll
+/// axis, so they never compete for gestures.
 ///
-/// Note: general "Recent" lives on Home — this page intentionally shows
-/// per-card detail rather than duplicating that.
+/// **Layout (top → bottom):**
+/// 1. Horizontal carousel of cards (the centered card is the "active" one)
+/// 2. Page indicator dots showing position in the carousel
+/// 3. Active card section — header (card name + this-month spend) plus
+///    the active card's most recent transactions
+///
+/// **Interactions:**
+/// - Swipe carousel horizontally → active card changes; section below updates.
+/// - Tap any card → opens its detail screen.
+/// - Tap a transaction → edit that expense.
+/// - Swipe a transaction left → edit/delete.
 struct CardsView: View {
     @Environment(\.modelContext) private var context
     @Query(sort: \Account.sortOrder) private var allAccounts: [Account]
@@ -23,30 +30,26 @@ struct CardsView: View {
     @Namespace private var cardNamespace
     @State private var navigateAccount: Account?
     @State private var editingExpense: Expense?
-    @State private var isExpanded: Bool = false
+    @State private var isAddingAccount: Bool = false
 
-    /// User-induced ordering of cards. Empty until the user taps or drags;
-    /// the last UUID in this array is the **active** card (bottom of the
-    /// stack). Owned here so the active-card section below can react.
-    @State private var cardOrder: [UUID] = []
+    /// UUID of the card currently centered in the horizontal carousel.
+    /// Bound to the carousel's `scrollPosition`; updating it programmatically
+    /// scrolls the carousel; the user swiping updates it from the system.
+    @State private var activeCardID: UUID?
 
     // MARK: - Sorting
 
-    /// Sort: oldest-used first so the most-recently-used card ends up at
-    /// the END of the array — which corresponds to the BOTTOM of the
-    /// vertical stack (the "active" position in Wallet-style layouts).
-    /// Accounts that have never been used sink to the top of the stack.
+    /// Most-recently-used first so the carousel opens on the user's most
+    /// active card. Never-used accounts sink to the end.
     private var displayAccounts: [Account] {
         let active = allAccounts.filter { !$0.isArchived }
         return active.sorted { lhs, rhs in
             let l = lastUsedDate(for: lhs)
             let r = lastUsedDate(for: rhs)
             switch (l, r) {
-            // Oldest first — least-recent date sorts before more-recent.
-            case let (.some(a), .some(b)): return a < b
-            // Never-used accounts sort above ever-used ones (top of stack).
-            case (.some, .none): return false
-            case (.none, .some): return true
+            case let (.some(a), .some(b)): return a > b
+            case (.some, .none): return true
+            case (.none, .some): return false
             case (.none, .none): return lhs.sortOrder < rhs.sortOrder
             }
         }
@@ -62,20 +65,19 @@ struct CardsView: View {
 
     // MARK: - Active card derivation
 
-    /// The card currently at the bottom of the stack. Derived from
-    /// `cardOrder` if the user has reordered, otherwise from the natural
-    /// `displayAccounts` order's last element.
+    /// The currently focused card — whichever the carousel has centered.
+    /// Falls back to the first display account if `activeCardID` is nil
+    /// (which happens for one render on first appearance).
     private var activeAccount: Account? {
-        if let lastID = cardOrder.last,
-           let account = displayAccounts.first(where: { $0.id == lastID }) {
+        if let id = activeCardID,
+           let account = displayAccounts.first(where: { $0.id == id }) {
             return account
         }
-        return displayAccounts.last
+        return displayAccounts.first
     }
 
     // MARK: - Aggregates
 
-    /// Liquid balances minus credit-card outstanding.
     private var netSummary: Double {
         var liquid: Double = 0
         var outstanding: Double = 0
@@ -88,15 +90,12 @@ struct CardsView: View {
         return liquid - outstanding
     }
 
-    /// Returns recent expenses for a specific account, drawing from the
-    /// query results (already sorted by date descending).
     private func recentExpenses(for account: Account, limit: Int = 5) -> [Expense] {
         Array(allExpenses
             .filter { $0.account?.id == account.id }
             .prefix(limit))
     }
 
-    /// Sum spent on a specific account this calendar month.
     private func monthSpend(for account: Account) -> Double {
         let cal = Calendar.current
         guard let monthStart = cal.dateInterval(of: .month, for: .now)?.start else { return 0 }
@@ -109,63 +108,50 @@ struct CardsView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: Spacing.xxl) {
+            VStack(alignment: .leading, spacing: 0) {
                 if displayAccounts.isEmpty {
                     emptyState
                 } else {
-                    // Cards stack leads — no header above it. Apple Wallet
-                    // discipline: this screen is for looking at cards, so
-                    // cards are the hero. Net worth / monthly totals live
-                    // on Home and Stats, not duplicated here.
+                    // Carousel is full-width (no horizontal padding) so cards
+                    // can use the entire screen for the peek effect.
                     CardsCarousel(
                         accounts: displayAccounts,
                         namespace: cardNamespace,
                         onTap: { account in
                             navigateAccount = account
                         },
-                        isExpanded: $isExpanded,
-                        orderedIDs: $cardOrder
+                        activeID: $activeCardID
                     )
+                    .padding(.top, Spacing.sm)
 
-                    if !isExpanded, let active = activeAccount {
+                    pageIndicator
+                        .padding(.top, Spacing.xs)
+                        .padding(.bottom, Spacing.xxl)
+                        .frame(maxWidth: .infinity)
+
+                    if let active = activeAccount {
                         activeCardSection(for: active)
+                            .padding(.horizontal, Spacing.xl)
                     }
                 }
             }
-            .padding(.horizontal, Spacing.xl)
-            .padding(.top, Spacing.xs)
             .padding(.bottom, Spacing.xxxl)
         }
         .background(Color.tulaBackground)
         .navigationTitle("Cards")
         .navigationSubtitle(subtitleText)
         .navigationBarTitleDisplayMode(.large)
-        // Cards is a pushed detail screen, not a root tab — hide the tab
-        // bar so the view feels like its own dedicated context (matches
-        // how iOS hides the tab bar when pushing into AccountDetail etc.).
         .toolbar(.hidden, for: .tabBar)
         .toolbar {
-            if !displayAccounts.isEmpty {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        Haptics.tap()
-                        withAnimation(.spring(response: 0.55, dampingFraction: 0.82)) {
-                            isExpanded.toggle()
-                        }
-                    } label: {
-                        Image(systemName: isExpanded
-                              ? "rectangle.stack.fill"
-                              : "rectangle.expand.vertical")
-                            .font(.body.weight(.medium))
-                            .contentTransition(.symbolEffect(.replace))
-                    }
-                    // Neutral tint — this is a view-mode toggle, not an
-                    // affirmative or destructive action. Brand amber here
-                    // (inherited from the app's root tint) was reading
-                    // as "primary action" when it's really just a switch.
-                    .tint(.primary)
-                    .accessibilityLabel(isExpanded ? "Stack cards" : "Expand cards")
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    Haptics.tap()
+                    isAddingAccount = true
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.body.weight(.semibold))
                 }
+                .accessibilityLabel("Add account")
             }
         }
         .navigationDestination(item: $navigateAccount) { account in
@@ -175,65 +161,110 @@ struct CardsView: View {
         .sheet(item: $editingExpense) { expense in
             AddExpenseView(existingExpense: expense)
         }
+        .sheet(isPresented: $isAddingAccount) {
+            NavigationStack {
+                AccountFormView()
+            }
+        }
+        .task {
+            // Initialize the carousel to the most-recently-used card on
+            // first appearance. Done in .task (not .onAppear) so it runs
+            // once after the query loads.
+            if activeCardID == nil {
+                activeCardID = displayAccounts.first?.id
+            }
+        }
     }
 
     // MARK: - Subtitle
 
-    /// Compact subtitle rendered inside the navigation bar via
-    /// `.navigationSubtitle` (iOS 26+). Sits under the large title with
-    /// the same restraint as Mail's folder counts. We deliberately keep
-    /// this to one line of dense info instead of a multi-line summary —
-    /// the cards themselves are the hero of the screen.
     private var subtitleText: String {
         let count = displayAccounts.count
         let unit = count == 1 ? "account" : "accounts"
         return "\(count) \(unit) · \(Currency.format(netSummary, code: currencyCode))"
     }
 
+    // MARK: - Page indicator
+
+    /// iOS-style page-position indicator. Active dot is an elongated capsule
+    /// in the brand color; inactive dots are small neutral circles. Spring
+    /// animation makes the active dot grow/shrink smoothly as the user swipes.
+    private var pageIndicator: some View {
+        HStack(spacing: 6) {
+            ForEach(displayAccounts, id: \.id) { account in
+                let isActive = account.id == activeCardID
+                Capsule()
+                    .fill(isActive
+                          ? Color.tulaBrandFallback
+                          : Color.secondary.opacity(0.28))
+                    .frame(width: isActive ? 22 : 6, height: 6)
+            }
+        }
+        .animation(.spring(response: 0.4, dampingFraction: 0.85), value: activeCardID)
+    }
+
     // MARK: - Active card section
 
-    /// Per-card detail panel that lives below the stack in collapsed mode.
-    /// Shows a stat header (this-month spend on the active card) plus its
-    /// last few transactions. Updates with a smooth transition whenever
-    /// the active card changes (because `activeAccount` changes).
+    /// Max number of transactions surfaced inline. Picked so the whole
+    /// page fits on a typical iPhone without forcing an awkward inner
+    /// scroll. Beyond this, the user taps "See all" to drill into the
+    /// account's full detail screen.
+    private let maxInlineTransactions = 4
+
+    /// Per-card panel below the carousel. Everything — section header,
+    /// transactions, and the "See all" footer — sits inside one rounded
+    /// container so they read as a single, coherent surface. As the
+    /// carousel swipes to a different card, this whole container
+    /// cross-fades to the new card's data.
     private func activeCardSection(for account: Account) -> some View {
-        let recents = recentExpenses(for: account)
+        let recents = recentExpenses(for: account, limit: maxInlineTransactions)
         let monthAmount = monthSpend(for: account)
         let cardColor = Color(hex: account.colorHex)
 
-        return VStack(alignment: .leading, spacing: Spacing.md) {
-            // Header: card name + this-month stat. The colored dot ties
-            // the section to the card's visual identity.
-            HStack(alignment: .firstTextBaseline, spacing: Spacing.sm) {
-                Circle()
-                    .fill(cardColor)
-                    .frame(width: 8, height: 8)
-                Text("On \(account.name)")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .textCase(.uppercase)
-                    .tracking(0.5)
-                Spacer()
-                Text(Currency.format(monthAmount, code: currencyCode))
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(.primary)
-                    .monospacedDigit()
-                    .contentTransition(.numericText())
-            }
+        return VStack(spacing: 0) {
+            sectionHeader(account: account, color: cardColor, monthAmount: monthAmount)
 
             if recents.isEmpty {
                 emptyCardActivity(for: account)
             } else {
-                transactionsList(recents)
+                inlineTransactions(recents)
+                seeAllFooter(for: account)
             }
         }
-        // Identify the view by account so SwiftUI cross-fades content when
-        // the active card changes (rather than mutating in place).
+        .background(Color.tulaCardSurface)
+        .clipShape(RoundedRectangle(cornerRadius: CornerRadius.medium, style: .continuous))
+        // Cross-fade when the active card changes (carousel swipe).
         .id(account.id)
-        .transition(.opacity.combined(with: .move(edge: .bottom)))
+        .transition(.opacity)
+        .animation(.spring(response: 0.4, dampingFraction: 0.85), value: account.id)
     }
 
-    private func transactionsList(_ expenses: [Expense]) -> some View {
+    /// Header row inside the unified container — colored dot tying it
+    /// visually to the card above, card name, and the this-month spend.
+    private func sectionHeader(account: Account, color: Color, monthAmount: Double) -> some View {
+        HStack(alignment: .center, spacing: Spacing.sm) {
+            Circle()
+                .fill(color)
+                .frame(width: 8, height: 8)
+            Text(account.name)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+            Spacer(minLength: Spacing.sm)
+            Text(Currency.format(monthAmount, code: currencyCode))
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .monospacedDigit()
+                .contentTransition(.numericText())
+        }
+        .padding(.horizontal, Spacing.lg)
+        .padding(.vertical, Spacing.md)
+    }
+
+    /// Inline transactions list. Uses native List for swipe actions but
+    /// is height-locked and scroll-disabled so it behaves as a static
+    /// inline block within the parent ScrollView (no nested scrolling).
+    private func inlineTransactions(_ expenses: [Expense]) -> some View {
         List {
             ForEach(Array(expenses.enumerated()), id: \.element.id) { index, expense in
                 Button {
@@ -246,7 +277,14 @@ struct CardsView: View {
                 .buttonStyle(.plain)
                 .listRowInsets(EdgeInsets())
                 .listRowBackground(Color.clear)
-                .listRowSeparator(index == expenses.count - 1 ? .hidden : .visible)
+                // Separator BELOW each row except the last. We must target
+                // `edges: .bottom` explicitly — the default `.all` would
+                // also hide the top edge of the last row, which is shared
+                // with the bottom edge of the row before it, accidentally
+                // erasing the line between them. iOS's List handles the
+                // first row's top edge automatically (no separator above
+                // the first row inside a section).
+                .listRowSeparator(index == expenses.count - 1 ? .hidden : .visible, edges: .bottom)
                 .alignmentGuide(.listRowSeparatorLeading) { _ in 64 }
                 .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                     Button(role: .destructive) {
@@ -269,12 +307,36 @@ struct CardsView: View {
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
         .scrollDisabled(true)
+        // 62pt per row accounts for ExpenseRow (48pt minHeight + padding)
+        // plus the small implicit chrome iOS List adds even when listRowInsets
+        // is zero. A tighter calc (56pt) clipped the last row's bottom text.
+        // Same value HomeView's recent list uses, so they stay consistent.
         .frame(height: CGFloat(expenses.count) * 62)
-        .background(Color.tulaCardSurface)
-        .clipShape(RoundedRectangle(cornerRadius: CornerRadius.medium, style: .continuous))
     }
 
-    /// Shown when the active card has no expenses logged yet.
+    /// Footer: tappable row that navigates to the full account detail
+    /// screen. Mirrors Apple's "See All" pattern from Mail, Photos, etc.
+    private func seeAllFooter(for account: Account) -> some View {
+        Button {
+            Haptics.tap()
+            navigateAccount = account
+        } label: {
+            HStack {
+                Text("See all transactions")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(Color.tulaBrandFallback)
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, Spacing.lg)
+            .padding(.vertical, Spacing.md)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
     private func emptyCardActivity(for account: Account) -> some View {
         HStack(spacing: Spacing.md) {
             Image(systemName: "tray")
@@ -291,8 +353,6 @@ struct CardsView: View {
         }
         .padding(Spacing.lg)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.tulaCardSurface)
-        .clipShape(RoundedRectangle(cornerRadius: CornerRadius.medium, style: .continuous))
     }
 
     private func delete(_ expense: Expense) {
@@ -323,6 +383,7 @@ struct CardsView: View {
             }
         }
         .frame(maxWidth: .infinity)
+        .padding(.horizontal, Spacing.xl)
         .padding(.vertical, Spacing.xxl * 2)
     }
 }

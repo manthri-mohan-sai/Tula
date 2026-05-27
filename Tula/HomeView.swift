@@ -110,16 +110,21 @@ struct HomeView: View {
                     .onTapGesture { hideKeyboard() }
             )
             .navigationTitle("Tula")
-            .navigationBarTitleDisplayMode(.inline)
+            .navigationBarTitleDisplayMode(.large)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button {
                         Haptics.tap()
                         showingCards = true
                     } label: {
-                        Image(systemName: "creditcard.fill")
+                        Image(systemName: "creditcard")
                             .font(.body.weight(.medium))
                     }
+                    // Neutral tint — these are utility navigations, not
+                    // affirmative actions. Brand amber on a navigation
+                    // button reads as "primary action" and visually
+                    // competes with the hero amount below.
+                    .tint(.primary)
                     .accessibilityLabel("Cards")
                 }
                 ToolbarItem(placement: .topBarTrailing) {
@@ -130,6 +135,7 @@ struct HomeView: View {
                         Image(systemName: "gearshape")
                             .font(.body.weight(.medium))
                     }
+                    .tint(.primary)
                     .accessibilityLabel("Settings")
                 }
             }
@@ -385,9 +391,12 @@ struct HomeView: View {
                 .buttonStyle(.plain)
                 .listRowInsets(EdgeInsets())
                 .listRowBackground(Color.clear)
-                // Hide the separator after the last row, otherwise let
-                // iOS draw it but indent it past the icon column.
-                .listRowSeparator(index == recentExpenses.count - 1 ? .hidden : .visible)
+                // Separator BELOW each row except the last. We must target
+                // `edges: .bottom` explicitly — the default `.all` would
+                // also hide the top edge of the last row, which is shared
+                // with the bottom edge of the row before it, accidentally
+                // erasing the line between them.
+                .listRowSeparator(index == recentExpenses.count - 1 ? .hidden : .visible, edges: .bottom)
                 .alignmentGuide(.listRowSeparatorLeading) { _ in 64 }
                 .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                     Button(role: .destructive) {
@@ -415,7 +424,7 @@ struct HomeView: View {
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
         .scrollDisabled(true)
-        .frame(height: CGFloat(recentExpenses.count) * (rowHeight+4))
+        .frame(height: CGFloat(recentExpenses.count) * rowHeight)
         .background(Color.tulaCardSurface)
         .clipShape(RoundedRectangle(cornerRadius: CornerRadius.medium, style: .continuous))
     }
@@ -669,19 +678,21 @@ private struct QuickLogBar: View {
 
     // MARK: - Trailing action button
 
-    /// 44pt circular button that morphs between mic / stop / send.
-    /// Always brand-amber in idle and send states (signaling "primary action").
-    /// Red in recording state (signaling "stop").
+    /// 40pt circular button that morphs between mic / stop / send.
+    /// Brand-amber in idle/send (signaling the primary action), red in
+    /// recording (signaling stop). Smaller and with a subtler shadow than
+    /// before — the previous 44pt with a strong colored glow read as
+    /// disproportionate against the quiet input capsule.
     private var trailingActionButton: some View {
         Button(action: trailingAction) {
             ZStack {
                 Circle()
                     .fill(trailingButtonFill)
-                    .frame(width: 44, height: 44)
-                    .shadow(color: trailingButtonFill.opacity(0.4), radius: 8, y: 3)
+                    .frame(width: 40, height: 40)
+                    .shadow(color: trailingButtonFill.opacity(0.22), radius: 4, y: 2)
 
                 Image(systemName: trailingIconName)
-                    .font(.title3.weight(.bold))
+                    .font(.subheadline.weight(.bold))
                     .foregroundStyle(.white)
                     .contentTransition(.symbolEffect(.replace))
                     .symbolEffect(.bounce, value: validParsed.count)

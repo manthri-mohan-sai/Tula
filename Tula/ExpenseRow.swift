@@ -75,8 +75,8 @@ struct ExpenseRow: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .padding(.vertical, Spacing.md - 2)
-        .frame(minHeight: 56)
+        .padding(.vertical, Spacing.xs)
+        .frame(minHeight: 48)
     }
 
     /// Compact relative date: "Today", "Yesterday", "3 May" otherwise.
