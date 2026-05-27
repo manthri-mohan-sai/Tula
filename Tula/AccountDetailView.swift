@@ -42,13 +42,13 @@ struct AccountDetailView: View {
 
     var body: some View {
         ScrollView {
-            VStack(spacing: Spacing.xl) {
+            VStack(spacing: Spacing.md) {
                 heroCard
                 actionButtons
                 timelineSection
             }
-            .padding(.horizontal)
-            .padding(.bottom, Spacing.xxl)
+            .padding(.horizontal, Spacing.md)
+            .padding(.bottom, Spacing.lg)
         }
         .background(Color(uiColor: .systemGroupedBackground))
         .navigationTitle(account.name)
@@ -108,7 +108,7 @@ struct AccountDetailView: View {
                     .padding(.top, Spacing.sm)
             }
         }
-        .padding(Spacing.xl)
+        .padding(Spacing.lg)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: CornerRadius.large, style: .continuous)

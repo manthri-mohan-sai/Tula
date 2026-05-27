@@ -27,7 +27,7 @@ struct AccountsView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(spacing: Spacing.xl) {
+                VStack(spacing: Spacing.md) {
                     ForEach(grouped, id: \.kind) { group in
                         accountGroup(kind: group.kind, accounts: group.accounts)
                     }
@@ -36,8 +36,8 @@ struct AccountsView: View {
                         archivedSection
                     }
                 }
-                .padding(.horizontal)
-                .padding(.vertical, Spacing.lg)
+                .padding(.horizontal, Spacing.md)
+                .padding(.vertical, Spacing.sm)
             }
             .background(Color(uiColor: .systemGroupedBackground))
             .navigationTitle("Accounts")

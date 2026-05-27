@@ -218,9 +218,15 @@ final class RecurringRule {
     var amount: Double = 0
     var kind: RecurringKind = RecurringKind.expense
 
-    /// v1 only supports monthly recurrence. Day of month, 1-31, clamped to
-    /// month length for short months. Weekly/yearly can come in v2.
+    /// Recurrence frequency (weekly / monthly / yearly). Stored as String
+    /// for SwiftData compatibility — use `frequencyEnum` for typed access.
+    /// Defaults to monthly to preserve behavior of pre-v2 rules.
+    var frequencyRaw: String = RecurringFrequency.monthly.rawValue
+
+    /// Day of month, 1-31, clamped to month length for short months.
+    /// Only used when frequency == .monthly.
     var dayOfMonth: Int = 1
+
     var startDate: Date = Date()
     var endDate: Date? = nil
     var isPaused: Bool = false
@@ -248,12 +254,21 @@ final class RecurringRule {
     var generatedTransfers: [Transfer] = []
 
     init(name: String, amount: Double, kind: RecurringKind, dayOfMonth: Int,
+         frequency: RecurringFrequency = .monthly,
          startDate: Date = .now) {
         self.name = name
         self.amount = amount
         self.kind = kind
         self.dayOfMonth = dayOfMonth
+        self.frequencyRaw = frequency.rawValue
         self.startDate = startDate
+    }
+
+    /// Typed access to the frequency. Falls back to `.monthly` for legacy
+    /// rules that predate the field.
+    var frequency: RecurringFrequency {
+        get { RecurringFrequency(rawValue: frequencyRaw) ?? .monthly }
+        set { frequencyRaw = newValue.rawValue }
     }
 }
 
@@ -261,6 +276,33 @@ enum RecurringKind: String, Codable {
     case expense
     case transfer
     case cardPayment   // Specifically a card bill payment transfer
+}
+
+/// How often a recurring rule fires. Weekly fires on the same weekday as
+/// the start date. Monthly fires on `dayOfMonth`. Yearly fires on the same
+/// month + day as the start date.
+enum RecurringFrequency: String, Codable, CaseIterable, Identifiable {
+    case weekly
+    case monthly
+    case yearly
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .weekly:  return "Weekly"
+        case .monthly: return "Monthly"
+        case .yearly:  return "Yearly"
+        }
+    }
+
+    var shortDescription: String {
+        switch self {
+        case .weekly:  return "every week"
+        case .monthly: return "every month"
+        case .yearly:  return "every year"
+        }
+    }
 }
 
 // MARK: - Merchant Rule

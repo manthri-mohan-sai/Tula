@@ -21,14 +21,14 @@ struct CategoriesView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(spacing: Spacing.xl) {
+                VStack(spacing: Spacing.md) {
                     section(title: "Active", categories: activeCategories)
                     if !archivedCategories.isEmpty {
                         section(title: "Archived", categories: archivedCategories)
                     }
                 }
-                .padding(.horizontal)
-                .padding(.vertical, Spacing.lg)
+                .padding(.horizontal, Spacing.md)
+                .padding(.vertical, Spacing.sm)
             }
             .background(Color(uiColor: .systemGroupedBackground))
             .navigationTitle("Categories")

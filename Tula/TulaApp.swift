@@ -11,34 +11,24 @@ import SwiftData
 struct TulaApp: App {
     @AppStorage("primaryCurrencyCode") private var primaryCurrencyCode: String = "INR"
     @AppStorage("seedDataInstalled") private var seedDataInstalled: Bool = false
+    @AppStorage("onboardingComplete") private var onboardingComplete: Bool = false
 
     let sharedContainer: ModelContainer = {
         let schema = Schema([
-            Account.self,
-            Category.self,
-            Expense.self,
-            Transfer.self,
-            RecurringRule.self,
-            MerchantRule.self,
+            Account.self, Category.self, Expense.self, Transfer.self,
+            RecurringRule.self, MerchantRule.self,
         ])
-
         let primaryConfig = ModelConfiguration("Tula", schema: schema)
         if let container = try? ModelContainer(for: schema, configurations: [primaryConfig]) {
             return container
         }
-
-        print("⚠️ Persistent container unavailable — falling back to in-memory.")
         let memoryConfig = ModelConfiguration("Tula", schema: schema, isStoredInMemoryOnly: true)
         if let container = try? ModelContainer(for: schema, configurations: [memoryConfig]) {
             return container
         }
-
-        print("❌ All ModelContainer init attempts failed.")
         return (try? ModelContainer(for: Schema([]),
                                      configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]))
-            ?? {
-                preconditionFailure("Cannot create any ModelContainer.")
-            }()
+            ?? { preconditionFailure("Cannot create any ModelContainer.") }()
     }()
 
     var body: some Scene {
@@ -51,9 +41,13 @@ struct TulaApp: App {
                         SeedData.installIfNeeded(into: context)
                         seedDataInstalled = true
                     }
-                    // Run recurring rule generation on every launch.
-                    // No-op if there are no rules or nothing's due.
                     RecurringEngine.generateMissing(in: context)
+                }
+                .sheet(isPresented: Binding(
+                    get: { !onboardingComplete },
+                    set: { _ in }
+                )) {
+                    OnboardingView()
                 }
         }
         .modelContainer(sharedContainer)
@@ -63,28 +57,61 @@ struct TulaApp: App {
 // MARK: - Root Tabs
 
 enum TulaTab: Hashable {
-    case home, stats, settings
+    case home, stats, add
 }
 
+/// Native iOS 26 TabView. Three slots: Home, Stats, and Add (rendered as
+/// a separate accessory pill via `.search` role). Settings is no longer a
+/// tab — it lives in Home's nav toolbar (gear icon, top-right).
+///
+/// We intercept selection on the .add tab to present the AddExpense sheet
+/// instead of navigating, since Add is an *action* not a destination.
 struct RootTabView: View {
     @State private var selectedTab: TulaTab = .home
+    @State private var showingAddExpense = false
+
+    /// Custom binding that intercepts selection of the .add tab and routes
+    /// it to the sheet instead of letting iOS switch tabs. Other tab
+    /// selections behave normally.
+    private var tabBinding: Binding<TulaTab> {
+        Binding(
+            get: { selectedTab },
+            set: { newValue in
+                if newValue == .add {
+                    Haptics.impact()
+                    showingAddExpense = true
+                } else {
+                    selectedTab = newValue
+                }
+            }
+        )
+    }
 
     var body: some View {
-        TabView(selection: $selectedTab) {
-            HomeView(onShowStats: {
-                Haptics.tap()
-                selectedTab = .stats
-            })
-                .tabItem { Label("Home", systemImage: "house.fill") }
-                .tag(TulaTab.home)
+        TabView(selection: tabBinding) {
+            Tab("Home", systemImage: "house.fill", value: TulaTab.home) {
+                HomeView(onShowStats: {
+                    Haptics.tap()
+                    withAnimation(AppAnimation.gentle) {
+                        selectedTab = .stats
+                    }
+                })
+            }
 
-            StatsView()
-                .tabItem { Label("Stats", systemImage: "chart.bar.fill") }
-                .tag(TulaTab.stats)
+            Tab("Stats", systemImage: "chart.bar.fill", value: TulaTab.stats) {
+                StatsView()
+            }
 
-            SettingsView()
-                .tabItem { Label("Settings", systemImage: "gearshape.fill") }
-                .tag(TulaTab.settings)
+            // Search-role tab — iOS 26 renders it as a separate accessory
+            // pill. We use it for "Add" since visually it's exactly the
+            // affordance we want; we intercept selection in the binding.
+            Tab("Add", systemImage: "plus", value: TulaTab.add, role: .search) {
+                // Placeholder — never seen because tab selection is intercepted.
+                Color.tulaBackground.ignoresSafeArea()
+            }
+        }
+        .sheet(isPresented: $showingAddExpense) {
+            AddExpenseView()
         }
     }
 }

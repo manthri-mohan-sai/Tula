@@ -12,9 +12,14 @@ struct HomeView: View {
 
     let onShowStats: () -> Void
 
-    @State private var showingAddExpense = false
     @State private var editingExpense: Expense?
+    @State private var showingAllExpenses = false
+    @State private var showingSettings = false
+    @State private var showingCards = false
     @State private var toastMessage: String?
+    @State private var toastToken: UUID = UUID()
+    @State private var savePulse: Bool = false
+    @State private var heroTapPulse: Bool = false
 
     @AppStorage("lastUsedAccountID") private var lastUsedAccountID: String = ""
 
@@ -34,6 +39,15 @@ struct HomeView: View {
         thisMonthExpenses.reduce(0) { $0 + $1.amount }
     }
 
+    private var todaysExpenses: [Expense] {
+        let start = Calendar.current.startOfDay(for: .now)
+        return allExpenses.filter { $0.date >= start }
+    }
+
+    private var totalToday: Double {
+        todaysExpenses.reduce(0) { $0 + $1.amount }
+    }
+
     private var monthOverMonthChange: Double? {
         let cal = Calendar.current
         let dayOfMonth = cal.component(.day, from: .now)
@@ -47,27 +61,19 @@ struct HomeView: View {
         return (totalThisMonth - lastSameWindow) / lastSameWindow
     }
 
-    private var creditCards: [Account] {
-        allAccounts.filter { $0.kind == .creditCard && !$0.isArchived }
-    }
-
-    private var recentExpenses: [Expense] {
-        Array(allExpenses.prefix(10))
-    }
+    private var recentExpenses: [Expense] { Array(allExpenses.prefix(5)) }
 
     private var last7DaysData: [(day: Date, total: Double)] {
         let cal = Calendar.current
         let today = cal.startOfDay(for: .now)
-        var data: [(Date, Double)] = []
-        for offset in (0..<7).reversed() {
-            guard let day = cal.date(byAdding: .day, value: -offset, to: today) else { continue }
+        return (0..<7).reversed().compactMap { offset in
+            guard let day = cal.date(byAdding: .day, value: -offset, to: today) else { return nil }
             let next = cal.date(byAdding: .day, value: 1, to: day) ?? day
             let total = allExpenses
                 .filter { $0.date >= day && $0.date < next }
                 .reduce(0) { $0 + $1.amount }
-            data.append((day, total))
+            return (day, total)
         }
-        return data
     }
 
     private var defaultAccount: Account? {
@@ -84,33 +90,60 @@ struct HomeView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(spacing: Spacing.xl) {
-                    heroCard
-                    quickLogBar
-                    if !creditCards.isEmpty { cardOutstandingsSection }
-                    recentActivitySection
+                VStack(alignment: .leading, spacing: Spacing.xxl) {
+                    heroSection
+                    quickLogSection
+                    recentSection
                 }
-                .padding(.horizontal)
-                .padding(.bottom, Spacing.xxl)
+                .padding(.horizontal, Spacing.xl)
+                .padding(.top, Spacing.xs)
+                .padding(.bottom, Spacing.lg)
             }
-            .background(Color(uiColor: .systemGroupedBackground))
+            .background(Color.tulaBackground)
+            // Dismiss keyboard the instant the user starts scrolling — same
+            // pattern as AddExpense and Apple's stock forms. Was previously
+            // `.interactively` which required dragging past a threshold.
+            .scrollDismissesKeyboard(.immediately)
+            // Tap anywhere on the background also dismisses keyboard.
+            .background(
+                Color.tulaBackground
+                    .onTapGesture { hideKeyboard() }
+            )
             .navigationTitle("Tula")
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button {
+                        Haptics.tap()
+                        showingCards = true
+                    } label: {
+                        Image(systemName: "creditcard.fill")
+                            .font(.body.weight(.medium))
+                    }
+                    .accessibilityLabel("Cards")
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
                         Haptics.tap()
-                        showingAddExpense = true
+                        showingSettings = true
                     } label: {
-                        Image(systemName: "plus.circle.fill")
-                            .font(.title2)
+                        Image(systemName: "gearshape")
+                            .font(.body.weight(.medium))
                     }
+                    .accessibilityLabel("Settings")
                 }
             }
-            .sheet(isPresented: $showingAddExpense) {
-                AddExpenseView()
+            .navigationDestination(isPresented: $showingCards) {
+                CardsView()
             }
             .sheet(item: $editingExpense) { expense in
                 AddExpenseView(existingExpense: expense)
+            }
+            .sheet(isPresented: $showingAllExpenses) {
+                AllExpensesView()
+            }
+            .sheet(isPresented: $showingSettings) {
+                SettingsView()
             }
             .overlay(alignment: .top) {
                 if let toast = toastMessage {
@@ -124,60 +157,63 @@ struct HomeView: View {
 
     // MARK: - Hero
 
-    private var heroCard: some View {
-        Button(action: onShowStats) {
+    /// Hero card with full gradient and the prominent Devanagari watermark
+    /// to the right side. The amber sparkline lives at the bottom. Tappable
+    /// to drill into Stats — pulses on tap as a visual handshake before
+    /// the tab transition.
+    private var heroSection: some View {
+        Button(action: tapHero) {
             ZStack(alignment: .topTrailing) {
                 Text("तुला")
-                    .font(.system(size: 140, weight: .bold))
-                    .foregroundStyle(Color.tulaBrandFallback.opacity(0.08))
-                    .offset(x: 24, y: -28)
+                    .font(.system(size: 130, weight: .bold))
+                    .foregroundStyle(Color.tulaBrandFallback.opacity(0.10))
+                    .offset(x: 20, y: -26)
                     .allowsHitTesting(false)
 
-                VStack(alignment: .leading, spacing: Spacing.xs) {
+                VStack(alignment: .leading, spacing: Spacing.md) {
                     HStack {
                         Text(Date.now, format: .dateTime.month(.wide).year())
-                            .font(.caption.weight(.semibold))
+                            .font(.subheadline.weight(.medium))
                             .foregroundStyle(.secondary)
-                            .textCase(.uppercase)
-                            .tracking(0.8)
                         Spacer()
                         if let change = monthOverMonthChange {
-                            monthOverMonthBadge(change)
+                            deltaBadge(change)
                         }
                     }
 
-                    Text("Spent this month")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .padding(.top, 2)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Spent this month")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
 
-                    Text(Currency.format(totalThisMonth, code: currencyCode))
-                        .font(.system(size: 42, weight: .bold, design: .rounded))
-                        .minimumScaleFactor(0.5)
-                        .lineLimit(1)
-                        .padding(.top, 2)
+                        HeroAmountText(
+                            amount: totalThisMonth,
+                            currencyCode: currencyCode,
+                            size: 44
+                        )
+                        .scaleEffect(savePulse ? 1.04 : 1.0)
+                        .animation(AppAnimation.bouncy, value: savePulse)
+                    }
+
+                    if totalToday > 0 {
+                        todayInline
+                    }
 
                     if !last7DaysData.allSatisfy({ $0.total == 0 }) {
-                        HStack(alignment: .bottom, spacing: 0) {
-                            miniChart
-                                .frame(height: 48)
-                            Image(systemName: "chevron.right")
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(.tertiary)
-                                .padding(.leading, Spacing.sm)
-                                .padding(.bottom, 14)
-                        }
-                        .padding(.top, Spacing.md)
+                        sparkline
+                            .frame(height: 48)
+                            .padding(.top, Spacing.sm)
                     }
                 }
-                .padding(Spacing.xl)
+                .padding(Spacing.lg)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
             .background(
                 RoundedRectangle(cornerRadius: CornerRadius.large, style: .continuous)
                     .fill(
                         LinearGradient(
                             colors: [
-                                Color.tulaBrandFallback.opacity(0.12),
+                                Color.tulaBrandFallback.opacity(0.14),
                                 Color.tulaBrandFallback.opacity(0.04)
                             ],
                             startPoint: .topLeading,
@@ -186,53 +222,76 @@ struct HomeView: View {
                     )
             )
             .clipShape(RoundedRectangle(cornerRadius: CornerRadius.large, style: .continuous))
+            .scaleEffect(heroTapPulse ? 1.02 : 1.0)
+            .animation(.spring(response: 0.35, dampingFraction: 0.6), value: heroTapPulse)
             .foregroundStyle(.primary)
         }
-        .buttonStyle(PlainRowButtonStyle())
+        .buttonStyle(.plain)
     }
 
-    private func monthOverMonthBadge(_ change: Double) -> some View {
+    private func tapHero() {
+        Haptics.tap()
+        heroTapPulse = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) { onShowStats() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { heroTapPulse = false }
+    }
+
+    private func deltaBadge(_ change: Double) -> some View {
         let isUp = change > 0
         let symbol = isUp ? "arrow.up.right" : "arrow.down.right"
         let color: Color = isUp ? .red : .green
         let percent = Int(abs(change * 100).rounded())
-
-        return HStack(spacing: 2) {
-            Image(systemName: symbol)
-                .font(.caption2.weight(.bold))
-            Text("\(percent)% vs last")
-                .font(.caption2.weight(.semibold))
+        return HStack(spacing: 3) {
+            Image(systemName: symbol).font(.caption2.weight(.bold))
+            Text("\(percent)%").font(.caption.weight(.semibold))
         }
         .padding(.horizontal, Spacing.sm)
-        .padding(.vertical, 4)
-        .background(color.opacity(0.15))
+        .padding(.vertical, 3)
+        .background(color.opacity(0.12))
         .foregroundStyle(color)
         .clipShape(Capsule())
     }
 
-    private var miniChart: some View {
+    private var todayInline: some View {
+        HStack(spacing: Spacing.sm) {
+            Image(systemName: "sun.max.fill")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.orange)
+            Text("Today")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            Text(Currency.format(totalToday, code: currencyCode))
+                .font(.subheadline.weight(.bold))
+                .monospacedDigit()
+                .contentTransition(.numericText())
+            Text("·").foregroundStyle(.tertiary)
+            Text("\(todaysExpenses.count) tx")
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    /// Amber sparkline — primary brand color back on this since the user
+    /// specifically called out wanting amber here.
+    private var sparkline: some View {
         Chart {
             ForEach(last7DaysData, id: \.day) { item in
                 BarMark(
                     x: .value("Day", item.day, unit: .day),
                     y: .value("Spent", item.total),
-                    width: .ratio(0.6)
+                    width: .ratio(0.55)
                 )
                 .foregroundStyle(Color.tulaBrandFallback.gradient)
-                .cornerRadius(4)
+                .cornerRadius(3)
             }
         }
         .chartXAxis(.hidden)
         .chartYAxis(.hidden)
-        .chartPlotStyle { plot in
-            plot.padding(.vertical, 2)
-        }
-        .frame(maxWidth: .infinity)
     }
 
     // MARK: - Quick Log
 
-    private var quickLogBar: some View {
+    private var quickLogSection: some View {
         QuickLogBar(
             accounts: allAccounts,
             categories: allCategories,
@@ -246,7 +305,6 @@ struct HomeView: View {
     private func handleQuickLog(_ parsedExpenses: [ParsedExpense]) {
         let valid = parsedExpenses.filter { $0.isValid }
         guard !valid.isEmpty else { return }
-
         var lastAccount: Account?
         for parsed in valid {
             guard let account = parsed.account else { continue }
@@ -262,85 +320,150 @@ struct HomeView: View {
             context.insert(expense)
             lastAccount = account
         }
-
         try? context.save()
-        if let last = lastAccount {
-            lastUsedAccountID = last.id.uuidString
-        }
+        if let last = lastAccount { lastUsedAccountID = last.id.uuidString }
         Haptics.success()
+        triggerSavePulse()
+        showToast(valid.count == 1 ? "Expense saved" : "\(valid.count) expenses saved")
+    }
 
-        // Toast: "1 expense saved" or "3 expenses saved"
-        let message = valid.count == 1
-            ? "Expense saved"
-            : "\(valid.count) expenses saved"
-        showToast(message)
+    private func triggerSavePulse() {
+        savePulse = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { savePulse = false }
     }
 
     private func showToast(_ message: String) {
-        withAnimation(AppAnimation.snappy) {
-            toastMessage = message
-        }
+        let token = UUID()
+        toastToken = token
+        withAnimation(AppAnimation.snappy) { toastMessage = message }
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.2) {
-            withAnimation(AppAnimation.gentle) {
-                toastMessage = nil
-            }
+            guard toastToken == token else { return }
+            withAnimation(AppAnimation.gentle) { toastMessage = nil }
         }
     }
 
-    // MARK: - Card Outstandings
+    // MARK: - Recent
 
-    private var cardOutstandingsSection: some View {
-        VStack(alignment: .leading, spacing: Spacing.sm) {
-            SectionHeader(title: "Card Outstandings")
-
-            Card(padding: 0, cornerRadius: CornerRadius.medium) {
-                VStack(spacing: 0) {
-                    ForEach(creditCards) { card in
-                        NavigationLink {
-                            AccountDetailView(account: card)
-                        } label: {
-                            CardOutstandingRow(card: card)
-                        }
-                        .buttonStyle(PlainRowButtonStyle())
-
-                        if card.id != creditCards.last?.id {
-                            Divider().padding(.leading, 64)
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // MARK: - Recent Activity
-
-    private var recentActivitySection: some View {
-        VStack(alignment: .leading, spacing: Spacing.sm) {
-            SectionHeader(title: "Recent Activity")
+    /// Recent expenses use a native `List` with `.scrollDisabled(true)` so we
+    /// get real `.swipeActions` (same as AllExpensesView) while the list
+    /// behaves as a static block inside the parent scroll view. The fixed
+    /// height matches `rowHeight × count` so there's no internal scroll
+    /// area for the user to hit.
+    private var recentSection: some View {
+        VStack(alignment: .leading, spacing: Spacing.md) {
+            SectionHeader(
+                title: "Recent",
+                trailing: recentExpenses.isEmpty ? nil : AnyView(SeeAllLink {
+                    showingAllExpenses = true
+                })
+            )
 
             if recentExpenses.isEmpty {
                 emptyActivityState
             } else {
-                Card(padding: 0, cornerRadius: CornerRadius.medium) {
-                    VStack(spacing: 0) {
-                        ForEach(recentExpenses) { expense in
-                            Button {
-                                Haptics.tap()
-                                editingExpense = expense
-                            } label: {
-                                ExpenseRow(expense: expense)
-                                    .padding(.horizontal, Spacing.md)
-                            }
-                            .buttonStyle(PlainRowButtonStyle())
+                recentList
+            }
+        }
+    }
 
-                            if expense.id != recentExpenses.last?.id {
-                                Divider().padding(.leading, 64)
-                            }
-                        }
+    /// Approximate per-row height used to size the static List. Set slightly
+    /// above the ExpenseRow's minHeight (56pt) to account for separator
+    /// space and rounding. If this drifts, only visible symptom is small
+    /// extra/missing whitespace at the bottom of the section.
+    private var rowHeight: CGFloat { 62 }
+
+    private var recentList: some View {
+        List {
+            ForEach(Array(recentExpenses.enumerated()), id: \.element.id) { index, expense in
+                Button {
+                    Haptics.tap()
+                    editingExpense = expense
+                } label: {
+                    ExpenseRow(expense: expense)
+                        .padding(.horizontal, Spacing.lg)
+                }
+                .buttonStyle(.plain)
+                .listRowInsets(EdgeInsets())
+                .listRowBackground(Color.clear)
+                // Hide the separator after the last row, otherwise let
+                // iOS draw it but indent it past the icon column.
+                .listRowSeparator(index == recentExpenses.count - 1 ? .hidden : .visible)
+                .alignmentGuide(.listRowSeparatorLeading) { _ in 64 }
+                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                    Button(role: .destructive) {
+                        delete(expense)
+                    } label: {
+                        Label("Delete", systemImage: "trash")
                     }
+                    .labelStyle(.iconOnly)
+
+                    Button {
+                        editingExpense = expense
+                    } label: {
+                        Label("Edit", systemImage: "pencil")
+                    }
+                    .tint(.blue)
+                    .labelStyle(.iconOnly)
+                }
+                .contextMenu {
+                    expenseContextMenu(for: expense)
+                } preview: {
+                    ExpenseContextPreview(expense: expense)
                 }
             }
         }
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+        .scrollDisabled(true)
+        .frame(height: CGFloat(recentExpenses.count) * (rowHeight+4))
+        .background(Color.tulaCardSurface)
+        .clipShape(RoundedRectangle(cornerRadius: CornerRadius.medium, style: .continuous))
+    }
+
+    @ViewBuilder
+    private func expenseContextMenu(for expense: Expense) -> some View {
+        Button { editingExpense = expense } label: { Label("Edit", systemImage: "pencil") }
+        Button { duplicate(expense) } label: { Label("Duplicate", systemImage: "plus.square.on.square") }
+        if let merchant = expense.merchant, !merchant.isEmpty {
+            Button { logSimilar(to: expense) } label: {
+                Label("Log Another \(merchant)", systemImage: "arrow.clockwise")
+            }
+        }
+        Divider()
+        Button(role: .destructive) { delete(expense) } label: {
+            Label("Delete", systemImage: "trash")
+        }
+    }
+
+    private func duplicate(_ expense: Expense) {
+        let copy = Expense(
+            amount: expense.amount, date: .now,
+            merchant: expense.merchant, note: expense.note,
+            source: .manual, category: expense.category, account: expense.account
+        )
+        context.insert(copy)
+        try? context.save()
+        Haptics.success()
+        showToast("Duplicated")
+        triggerSavePulse()
+    }
+
+    private func logSimilar(to expense: Expense) {
+        let template = Expense(
+            amount: 0, date: .now,
+            merchant: expense.merchant, note: nil,
+            source: .manual, category: expense.category, account: expense.account
+        )
+        context.insert(template)
+        try? context.save()
+        editingExpense = template
+    }
+
+    private func delete(_ expense: Expense) {
+        context.delete(expense)
+        try? context.save()
+        Haptics.warning()
+        showToast("Deleted")
     }
 
     private var emptyActivityState: some View {
@@ -348,17 +471,13 @@ struct HomeView: View {
             ZStack {
                 Circle()
                     .fill(Color.tulaBrandFallback.opacity(0.10))
-                    .frame(width: 64, height: 64)
-                Image(systemName: "tray")
-                    .font(.title)
-                    .foregroundStyle(Color.tulaBrandFallback)
+                    .frame(width: 56, height: 56)
+                Image(systemName: "tray").font(.title2).foregroundStyle(Color.tulaBrandFallback)
             }
-            VStack(spacing: 4) {
-                Text("Nothing logged yet")
-                    .font(.subheadline.weight(.semibold))
-                Text("Tap + or use Quick Log to start")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            VStack(spacing: Spacing.xs) {
+                Text("Nothing logged yet").font(.subheadline.weight(.semibold))
+                Text("Use the + button or Quick Log above")
+                    .font(.caption).foregroundStyle(.secondary)
             }
         }
         .frame(maxWidth: .infinity)
@@ -370,54 +489,14 @@ struct HomeView: View {
     }
 }
 
-// MARK: - Card Outstanding Row
+// MARK: - Keyboard dismissal helper
 
-private struct CardOutstandingRow: View {
-    let card: Account
-    @PrimaryCurrency private var currencyCode
-
-    private var color: Color { Color(hex: card.colorHex) }
-
-    var body: some View {
-        HStack(spacing: Spacing.md) {
-            ZStack {
-                Circle()
-                    .fill(color.opacity(0.18))
-                    .frame(width: 40, height: 40)
-                Image(systemName: card.iconKey)
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(color)
-            }
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(card.name)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.primary)
-                if let limit = card.creditLimit, limit > 0 {
-                    let used = card.derivedBalance / limit
-                    Text("\(Int(used * 100))% of limit used")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } else {
-                    Text("Outstanding")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-
-            Spacer()
-
-            Text(Currency.format(card.derivedBalance, code: currencyCode))
-                .font(.subheadline.weight(.semibold))
-                .monospacedDigit()
-                .foregroundStyle(card.derivedBalance > 0.01 ? .primary : .secondary)
-
-            Image(systemName: "chevron.right")
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(.tertiary)
-        }
-        .padding(.horizontal, Spacing.md)
-        .padding(.vertical, Spacing.md)
+extension View {
+    func hideKeyboard() {
+        UIApplication.shared.sendAction(
+            #selector(UIResponder.resignFirstResponder),
+            to: nil, from: nil, for: nil
+        )
     }
 }
 
@@ -434,34 +513,26 @@ struct PlainRowButtonStyle: ButtonStyle {
 
 // MARK: - Toast
 
-/// Subtle success indicator that slides down from the top and disappears
-/// after a couple of seconds. Used for non-blocking confirmation of actions
-/// like Quick Log save.
 private struct Toast: View {
     let message: String
-
     var body: some View {
         HStack(spacing: Spacing.sm) {
-            Image(systemName: "checkmark.circle.fill")
-                .foregroundStyle(.green)
-            Text(message)
-                .font(.subheadline.weight(.medium))
+            Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+            Text(message).font(.subheadline.weight(.medium))
         }
         .padding(.horizontal, Spacing.lg)
-        .padding(.vertical, Spacing.md)
-        .background(
-            Capsule()
-                .fill(.regularMaterial)
-                .shadow(color: .black.opacity(0.1), radius: 12, y: 4)
-        )
+        .padding(.vertical, Spacing.sm + 2)
+        .background(.regularMaterial, in: Capsule())
+        .shadow(color: .black.opacity(0.10), radius: 14, y: 4)
     }
 }
 
 // MARK: - Quick Log Bar
 
-/// Smart NLP input — type something like "350 food and 400 groceries hdfc cc"
-/// and it parses into one or more structured expenses live as you type.
-/// Hit Enter or tap the arrow to log them all in one go.
+/// After voice stops, the preview card grows in prominence and we DON'T
+/// auto-focus the text field — so the parsed expense and submit button
+/// are unmistakably visible. Tapping the preview card also submits, in
+/// addition to the trailing arrow button.
 private struct QuickLogBar: View {
     let accounts: [Account]
     let categories: [Category]
@@ -472,6 +543,11 @@ private struct QuickLogBar: View {
 
     @State private var input: String = ""
     @FocusState private var focused: Bool
+    @StateObject private var speech = SpeechRecognizer()
+    @State private var showingPermissionDenied = false
+    /// Tracks whether we just finished a voice session — used to give the
+    /// preview card extra prominence and tappable confirm behavior.
+    @State private var justFinishedVoice = false
 
     private var parsed: [ParsedExpense] {
         ExpenseParser.parse(
@@ -483,106 +559,347 @@ private struct QuickLogBar: View {
         )
     }
 
-    private var validParsed: [ParsedExpense] {
-        parsed.filter { $0.isValid }
-    }
-
-    private var hasPreview: Bool {
-        !input.isEmpty && !validParsed.isEmpty
-    }
-
-    private var canSubmit: Bool {
-        !validParsed.isEmpty
-    }
+    private var validParsed: [ParsedExpense] { parsed.filter { $0.isValid } }
+    private var canSubmit: Bool { !validParsed.isEmpty && !speech.isRecording }
+    private var showPreview: Bool { !validParsed.isEmpty }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: Spacing.md) {
-                Image(systemName: "sparkles")
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(Color.tulaBrandFallback)
-                    .frame(width: 20)
-
-                TextField("Quick log… try \"350 food and 400 groceries\"", text: $input)
-                    .focused($focused)
-                    .submitLabel(.send)
-                    .autocorrectionDisabled()
-                    .textInputAutocapitalization(.never)
-                    .onSubmit { submit() }
-
-                if !input.isEmpty {
-                    Button {
-                        if canSubmit { submit() } else { Haptics.error() }
-                    } label: {
-                        Image(systemName: "arrow.up.circle.fill")
-                            .font(.title3)
-                            .foregroundStyle(canSubmit ? Color.tulaBrandFallback : Color(uiColor: .tertiaryLabel))
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .padding(.horizontal, Spacing.lg)
-            .padding(.vertical, 14)
-
-            if hasPreview {
-                Divider()
-                    .padding(.leading, Spacing.lg + 20 + Spacing.md)
-
-                VStack(alignment: .leading, spacing: 6) {
-                    if validParsed.count > 1 {
-                        HStack {
-                            Text("\(validParsed.count) expenses")
-                                .font(.caption2.weight(.semibold))
-                                .foregroundStyle(Color.tulaBrandFallback)
-                            Spacer()
-                            if focused {
-                                Text("Enter to save all")
-                                    .font(.caption2)
-                                    .foregroundStyle(.tertiary)
-                            }
-                        }
-                    }
-
-                    ForEach(validParsed) { p in
-                        HStack(spacing: 6) {
-                            Image(systemName: "arrow.return.right")
-                                .font(.caption2.weight(.semibold))
-                                .foregroundStyle(.tertiary)
-                            Text(p.summary(currencyCode: currencyCode))
-                                .font(.caption.weight(.medium))
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                            Spacer()
-                        }
-                    }
-
-                    if validParsed.count == 1, focused {
-                        HStack {
-                            Spacer()
-                            Text("Enter to save")
-                                .font(.caption2)
-                                .foregroundStyle(.tertiary)
-                        }
-                    }
-                }
-                .padding(.horizontal, Spacing.lg)
-                .padding(.vertical, Spacing.sm)
-                .transition(.opacity)
+        VStack(spacing: Spacing.sm) {
+            inputCapsule
+            if showPreview {
+                previewCard
+                    .transition(.scale(scale: 0.95).combined(with: .opacity))
             }
         }
+        .animation(AppAnimation.bouncy, value: showPreview)
+        .animation(AppAnimation.snappy, value: speech.isRecording)
+        .onChange(of: speech.transcript) { _, newValue in
+            input = newValue
+        }
+        .alert("Voice access needed", isPresented: $showingPermissionDenied) {
+            Button("Open Settings") {
+                if let url = URL(string: UIApplication.openSettingsURLString) {
+                    UIApplication.shared.open(url)
+                }
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("Enable Microphone and Speech Recognition in iOS Settings to dictate expenses.")
+        }
+    }
+
+    // MARK: - Input capsule
+
+    /// Two visual modes:
+    /// 1. Idle/typing — text field with a prominent mic button on the right.
+    ///    The mic is brand-amber and 44pt so it reads as the primary action;
+    ///    typing is supported as the secondary path.
+    /// 2. Recording — the entire capsule transforms: a live waveform replaces
+    ///    the text field, the background tints red, and the trailing button
+    ///    becomes a clear stop control.
+    private var inputCapsule: some View {
+        HStack(spacing: Spacing.md) {
+            if speech.isRecording {
+                recordingMode
+            } else {
+                idleMode
+            }
+        }
+        .padding(.leading, Spacing.lg)
+        .padding(.trailing, Spacing.xs + 2)
+        .padding(.vertical, Spacing.xs + 2)
+        .frame(minHeight: 56)
         .background(
-            RoundedRectangle(cornerRadius: CornerRadius.medium, style: .continuous)
-                .fill(Color.tulaCardSurface)
+            Capsule().fill(
+                speech.isRecording
+                    ? Color.red.opacity(0.10)
+                    : Color.tulaCardSurface
+            )
         )
-        .animation(AppAnimation.snappy, value: hasPreview)
-        .animation(AppAnimation.snappy, value: validParsed.count)
+        .overlay(
+            Capsule()
+                .strokeBorder(
+                    speech.isRecording ? Color.red.opacity(0.30) : Color.clear,
+                    lineWidth: 1
+                )
+        )
+    }
+
+    /// Idle / text-entry mode — full-width TextField + a bold trailing action.
+    private var idleMode: some View {
+        HStack(spacing: Spacing.md) {
+            TextField("What did you spend?", text: $input)
+                .focused($focused)
+                .submitLabel(.send)
+                .autocorrectionDisabled()
+                .textInputAutocapitalization(.never)
+                .onSubmit { submit() }
+                .frame(maxWidth: .infinity)
+
+            trailingActionButton
+        }
+    }
+
+    /// Recording mode — live waveform visualization with stop button.
+    /// The waveform is purely decorative animated bars; the actual transcript
+    /// streams in below into the preview card once parseable.
+    private var recordingMode: some View {
+        HStack(spacing: Spacing.md) {
+            WaveformIndicator()
+                .frame(height: 24)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            if !input.isEmpty {
+                Text("•")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("\(input.split(separator: " ").count) words")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            } else {
+                Text("Listening…")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.secondary)
+            }
+
+            trailingActionButton
+        }
+    }
+
+    // MARK: - Trailing action button
+
+    /// 44pt circular button that morphs between mic / stop / send.
+    /// Always brand-amber in idle and send states (signaling "primary action").
+    /// Red in recording state (signaling "stop").
+    private var trailingActionButton: some View {
+        Button(action: trailingAction) {
+            ZStack {
+                Circle()
+                    .fill(trailingButtonFill)
+                    .frame(width: 44, height: 44)
+                    .shadow(color: trailingButtonFill.opacity(0.4), radius: 8, y: 3)
+
+                Image(systemName: trailingIconName)
+                    .font(.title3.weight(.bold))
+                    .foregroundStyle(.white)
+                    .contentTransition(.symbolEffect(.replace))
+                    .symbolEffect(.bounce, value: validParsed.count)
+            }
+        }
+        .buttonStyle(PressableScaleStyle(scale: 0.92))
+        .disabled(trailingDisabled)
+    }
+
+    private var trailingIconName: String {
+        if speech.isRecording { return "stop.fill" }
+        if canSubmit { return "arrow.up" }
+        if !input.isEmpty { return "arrow.up" }
+        return "mic.fill"
+    }
+
+    private var trailingButtonFill: Color {
+        if speech.isRecording { return .red }
+        if canSubmit { return Color.tulaBrandFallback }
+        if !input.isEmpty { return Color(uiColor: .tertiaryLabel) }
+        return Color.tulaBrandFallback
+    }
+
+    private var trailingDisabled: Bool {
+        if speech.isRecording { return false }
+        if canSubmit { return false }
+        if !input.isEmpty { return true }
+        return false
+    }
+
+    private func trailingAction() {
+        if speech.isRecording {
+            stopVoice()
+        } else if canSubmit {
+            submit()
+        } else if input.isEmpty {
+            startVoice()
+        } else {
+            Haptics.error()
+        }
+    }
+
+    /// Compact summary of what will be saved. After voice ends, this card
+    /// becomes the primary "save here" target — bigger, with a clear CTA
+    /// button at the right. Tapping anywhere on the card submits.
+    private var previewCard: some View {
+        Button(action: submit) {
+            HStack(spacing: Spacing.sm) {
+                if validParsed.count == 1, let only = validParsed.first {
+                    singlePreviewRow(only)
+                } else {
+                    multiplePreviewRow
+                }
+                Spacer(minLength: 0)
+                saveBadge
+            }
+            .padding(.horizontal, Spacing.md)
+            .padding(.vertical, Spacing.sm + 4)
+            .background(
+                RoundedRectangle(cornerRadius: CornerRadius.medium, style: .continuous)
+                    .fill(justFinishedVoice
+                          ? Color.tulaBrandFallback.opacity(0.12)
+                          : Color.tulaCardSurface)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: CornerRadius.medium, style: .continuous)
+                    .strokeBorder(
+                        justFinishedVoice
+                            ? Color.tulaBrandFallback.opacity(0.35)
+                            : Color.clear,
+                        lineWidth: 1
+                    )
+            )
+        }
+        .buttonStyle(PressableScaleStyle(scale: 0.98))
+    }
+
+    private var saveBadge: some View {
+        HStack(spacing: 4) {
+            Text("Save")
+                .font(.caption.weight(.bold))
+            Image(systemName: "arrow.right")
+                .font(.caption2.weight(.bold))
+        }
+        .padding(.horizontal, Spacing.sm)
+        .padding(.vertical, 5)
+        .background(
+            Capsule().fill(Color.tulaBrandFallback)
+        )
+        .foregroundStyle(.white)
+    }
+
+    private func singlePreviewRow(_ p: ParsedExpense) -> some View {
+        HStack(spacing: Spacing.sm) {
+            if let category = p.category {
+                let color = Color(hex: category.colorHex)
+                ZStack {
+                    Circle().fill(color.opacity(0.18)).frame(width: 28, height: 28)
+                    Image(systemName: category.iconKey)
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(color)
+                }
+            }
+            VStack(alignment: .leading, spacing: 1) {
+                Text(Currency.format(p.amount, code: currencyCode))
+                    .font(.subheadline.weight(.bold))
+                    .monospacedDigit()
+                HStack(spacing: 4) {
+                    if let merchant = p.merchant {
+                        Text(merchant)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    if let account = p.account {
+                        if p.merchant != nil { Text("·").foregroundStyle(.tertiary).font(.caption2) }
+                        Text(account.name)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+    }
+
+    private var multiplePreviewRow: some View {
+        HStack(spacing: Spacing.sm) {
+            ZStack {
+                Circle().fill(Color.tulaBrandFallback.opacity(0.18)).frame(width: 28, height: 28)
+                Image(systemName: "checklist")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(Color.tulaBrandFallback)
+            }
+            VStack(alignment: .leading, spacing: 1) {
+                Text("\(validParsed.count) expenses")
+                    .font(.subheadline.weight(.bold))
+                Text(Currency.format(validParsed.reduce(0) { $0 + $1.amount }, code: currencyCode))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+        }
+    }
+
+    // MARK: - Voice actions
+
+    private func startVoice() {
+        Task {
+            let ok = await speech.requestAuthorization()
+            if ok {
+                Haptics.impact()
+                speech.start()
+                justFinishedVoice = false
+            } else {
+                Haptics.error()
+                showingPermissionDenied = true
+            }
+        }
+    }
+
+    /// Stops recording WITHOUT auto-focusing the text field. The preview
+    /// card stays visible with an obvious "Save" CTA. User reads, taps to
+    /// save — they don't see a keyboard slide up and cover the preview.
+    private func stopVoice() {
+        Haptics.tap()
+        speech.stop()
+        justFinishedVoice = !validParsed.isEmpty
+        // Bouncier emphasis on the parsed preview
+        if !validParsed.isEmpty {
+            withAnimation(AppAnimation.bouncy) {
+                justFinishedVoice = true
+            }
+        }
     }
 
     private func submit() {
         let valid = validParsed
         guard !valid.isEmpty else { return }
+        if speech.isRecording { speech.stop() }
         onSubmit(valid)
         input = ""
         focused = false
+        justFinishedVoice = false
+    }
+}
+
+// MARK: - Waveform Indicator
+
+/// Animated bars that pulse during voice recording. Purely decorative — the
+/// bars don't represent actual audio amplitude, but their continuous motion
+/// communicates "I'm actively listening" more reliably than a static icon.
+///
+/// Eight bars in brand-amber, each with its own randomized animation delay
+/// and duration so the pattern feels organic, not mechanical.
+private struct WaveformIndicator: View {
+    @State private var animate: Bool = false
+
+    private let barCount = 8
+    private let baseHeights: [CGFloat] = [0.4, 0.7, 0.5, 0.9, 0.6, 0.8, 0.5, 0.7]
+    private let delays: [Double] = [0, 0.15, 0.3, 0.05, 0.2, 0.35, 0.1, 0.25]
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(0..<barCount, id: \.self) { i in
+                Capsule()
+                    .fill(Color.red.gradient)
+                    .frame(width: 3)
+                    .scaleEffect(
+                        y: animate ? baseHeights[i] : 0.2,
+                        anchor: .center
+                    )
+                    .animation(
+                        .easeInOut(duration: 0.6)
+                            .repeatForever(autoreverses: true)
+                            .delay(delays[i]),
+                        value: animate
+                    )
+            }
+        }
+        .onAppear { animate = true }
     }
 }

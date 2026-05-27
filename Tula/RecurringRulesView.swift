@@ -18,7 +18,7 @@ struct RecurringRulesView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(spacing: Spacing.xl) {
+                VStack(spacing: Spacing.md) {
                     if allRules.isEmpty {
                         emptyState
                     } else {
@@ -30,8 +30,8 @@ struct RecurringRulesView: View {
                         }
                     }
                 }
-                .padding(.horizontal)
-                .padding(.vertical, Spacing.lg)
+                .padding(.horizontal, Spacing.md)
+                .padding(.vertical, Spacing.sm)
             }
             .background(Color(uiColor: .systemGroupedBackground))
             .navigationTitle("Recurring")

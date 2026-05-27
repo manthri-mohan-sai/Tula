@@ -3,57 +3,92 @@ import SwiftData
 
 struct SettingsView: View {
     @Environment(\.modelContext) private var context
+    @Environment(\.dismiss) private var dismiss
     @AppStorage("primaryCurrencyCode") private var primaryCurrencyCode: String = "INR"
+    @AppStorage("reminderEnabled") private var reminderEnabled: Bool = false
+    @AppStorage("reminderHour") private var reminderHour: Int = 21
+    @AppStorage("reminderMinute") private var reminderMinute: Int = 0
 
     @State private var showingAccounts = false
     @State private var showingCategories = false
     @State private var showingRecurring = false
     @State private var showingCurrencyPicker = false
+    @State private var showingReminders = false
+    @State private var showingBackup = false
+
+    private var reminderSummary: String {
+        guard reminderEnabled else { return "Off" }
+        var comps = DateComponents()
+        comps.hour = reminderHour
+        comps.minute = reminderMinute
+        let date = Calendar.current.date(from: comps) ?? .now
+        return date.formatted(.dateTime.hour().minute())
+    }
 
     var body: some View {
         NavigationStack {
             List {
-                // MARK: - General
+                // General
                 Section {
-                    Button {
-                        Haptics.tap()
-                        showingCurrencyPicker = true
-                    } label: {
-                        HStack {
-                            settingsLabel("Currency", icon: "indianrupeesign.circle.fill", color: .green)
-                            Spacer()
-                            Text(Currency.symbol(for: primaryCurrencyCode))
-                                .foregroundStyle(.secondary)
-                            Text(primaryCurrencyCode)
-                                .foregroundStyle(.secondary)
-                            Image(systemName: "chevron.right")
-                                .font(.caption2.weight(.semibold))
-                                .foregroundStyle(.tertiary)
-                        }
-                    }
-                    .buttonStyle(.plain)
+                    settingsLinkRow(
+                        title: "Currency",
+                        icon: "indianrupeesign.circle.fill",
+                        color: .green,
+                        trailing: "\(Currency.symbol(for: primaryCurrencyCode)) \(primaryCurrencyCode)"
+                    ) { showingCurrencyPicker = true }
+
+                    settingsLinkRow(
+                        title: "Reminders",
+                        icon: "bell.badge.fill",
+                        color: .red,
+                        trailing: reminderSummary
+                    ) { showingReminders = true }
                 } header: {
                     Text("General")
                 }
 
-                // MARK: - Data
+                // Data
                 Section {
-                    settingsRow("Accounts", icon: "creditcard.fill", color: .blue) {
+                    settingsLinkRow(title: "Accounts", icon: "creditcard.fill", color: .blue) {
                         showingAccounts = true
                     }
-                    settingsRow("Categories", icon: "tag.fill", color: .pink) {
+                    settingsLinkRow(title: "Categories", icon: "tag.fill", color: .pink) {
                         showingCategories = true
                     }
-                    settingsRow("Recurring", icon: "arrow.clockwise.circle.fill", color: .orange) {
+                    settingsLinkRow(title: "Recurring", icon: "arrow.clockwise.circle.fill", color: .orange) {
                         showingRecurring = true
                     }
                 } header: {
                     Text("Data")
-                } footer: {
-                    Text("Accounts, categories, and recurring rules can all be managed here.")
                 }
 
-                // MARK: - About
+                // Voice
+                Section {
+                    HStack {
+                        settingsLabel("Siri & Shortcuts", icon: "mic.fill", color: .indigo)
+                        Spacer()
+                        Image(systemName: "checkmark")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(.green)
+                    }
+                } header: {
+                    Text("Voice")
+                } footer: {
+                    Text("Say \"Hey Siri, log expense in Tula\" or assign a custom phrase in the Shortcuts app.")
+                }
+
+                // Backup
+                Section {
+                    settingsLinkRow(title: "Backup & Restore", icon: "externaldrive.fill", color: .gray) {
+                        showingBackup = true
+                    }
+                } header: {
+                    Text("Privacy")
+                } footer: {
+                    Text("Encrypted backups with your passphrase. Your data never leaves your device unless you share it.")
+                }
+
+                // About
                 Section {
                     HStack {
                         settingsLabel("Version", icon: "info.circle.fill", color: .gray)
@@ -75,17 +110,32 @@ struct SettingsView: View {
                 }
             }
             .navigationTitle("Settings")
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { dismiss() }
+                        .fontWeight(.semibold)
+                }
+            }
             .sheet(isPresented: $showingAccounts) { AccountsView() }
             .sheet(isPresented: $showingCategories) { CategoriesView() }
             .sheet(isPresented: $showingRecurring) { RecurringRulesView() }
+            .sheet(isPresented: $showingReminders) { RemindersView() }
+            .sheet(isPresented: $showingBackup) { BackupRestoreView() }
             .sheet(isPresented: $showingCurrencyPicker) {
                 CurrencyPickerView(selectedCode: $primaryCurrencyCode)
             }
         }
     }
 
-    /// Helper for a settings row with an action.
-    private func settingsRow(_ title: String, icon: String, color: Color, action: @escaping () -> Void) -> some View {
+    // MARK: - Row Builders
+
+    private func settingsLinkRow(
+        title: String,
+        icon: String,
+        color: Color,
+        trailing: String? = nil,
+        action: @escaping () -> Void
+    ) -> some View {
         Button {
             Haptics.tap()
             action()
@@ -93,6 +143,12 @@ struct SettingsView: View {
             HStack {
                 settingsLabel(title, icon: icon, color: color)
                 Spacer()
+                if let trailing {
+                    Text(trailing)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
                 Image(systemName: "chevron.right")
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(.tertiary)
@@ -101,7 +157,6 @@ struct SettingsView: View {
         .buttonStyle(.plain)
     }
 
-    /// Apple-style colored icon tile + label.
     private func settingsLabel(_ title: String, icon: String, color: Color) -> some View {
         HStack(spacing: Spacing.md) {
             ZStack {
@@ -156,7 +211,7 @@ struct CurrencyPickerView: View {
                         .buttonStyle(.plain)
                     }
                 } footer: {
-                    Text("Changes how amounts are formatted throughout the app. Indian Rupee uses Indian-style grouping (1,25,000); other currencies use Western grouping (125,000).")
+                    Text("Indian Rupee uses Indian-style grouping (1,25,000); other currencies use Western grouping (125,000).")
                 }
             }
             .navigationTitle("Currency")

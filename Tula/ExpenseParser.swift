@@ -123,15 +123,22 @@ enum ExpenseParser {
         remaining.removeSubrange(amountRange)
         guard result.amount > 0 else { return nil }
 
-        // 3. Match account — longest name first so "hdfc cc" beats "hdfc".
+        // 3. Match account — two-tier:
+        //    Tier 1: full account name as substring ("HDFC CC" matches "hdfc cc")
+        //    Tier 2: any significant word of the name matches as a word boundary
+        //            ("HDFC CC" matches "hdfc" alone, or "HDFC Bank" matches "hdfc")
+        //    Tier 1 wins over Tier 2; within Tier 2, more matched chars wins.
         let activeAccounts = accounts.filter { !$0.isArchived }
-            .sorted { $0.name.count > $1.name.count }
-        for account in activeAccounts {
-            let nameLower = account.name.lowercased()
-            if remaining.contains(nameLower) {
-                result.account = account
-                remaining = remaining.replacingOccurrences(of: nameLower, with: " ")
-                break
+        if let match = matchAccount(in: remaining, candidates: activeAccounts) {
+            result.account = match.account
+            // Strip every matched token so it doesn't pollute merchant extraction.
+            for token in match.matchedTokens {
+                let escapedToken = NSRegularExpression.escapedPattern(for: token)
+                remaining = remaining.replacingOccurrences(
+                    of: #"\b"# + escapedToken + #"\b"#,
+                    with: " ",
+                    options: .regularExpression
+                )
             }
         }
 
@@ -178,46 +185,110 @@ enum ExpenseParser {
             }
         }
 
-        // 7. Apply default account fallback (per-segment; shared-context
-        // logic happens in applySharedAccountContext at the array level).
-        if result.account == nil { result.account = defaultAccount }
+        // Note: default account fallback is intentionally NOT applied here.
+        // That happens in applySharedAccountContext so we can distinguish
+        // "user explicitly typed default account name" from "no account given".
 
         return result
     }
 
     // MARK: - Shared Context
 
-    /// When user writes "350 food and 400 groceries hdfc cc", they almost
-    /// always mean both should go on HDFC CC. This pass shares an account
-    /// across segments when ALL segments that have an explicit account
-    /// share the same one, OR when only one segment has an explicit account.
-    /// If segments specify different accounts, keep them as the user wrote.
+    /// Apply context across segments after individual parsing:
+    /// 1. If exactly one unique explicit account appears across segments,
+    ///    share it to segments that didn't specify one.
+    /// 2. Any segment still without an account falls back to defaultAccount.
+    ///
+    /// This handles "350 food and 400 groceries hdfc cc" → both on HDFC CC,
+    /// and the trickier "350 food cash and 400 groceries hdfc cc" → first on
+    /// Cash, second on HDFC CC (different accounts, no sharing).
     private static func applySharedAccountContext(
         _ parsed: [ParsedExpense],
         defaultAccount: Account?
     ) -> [ParsedExpense] {
-        guard parsed.count > 1 else { return parsed }
-
-        // Find unique accounts that were *explicitly* specified (i.e.
-        // appeared in the text, not the default fallback). We can't
-        // distinguish "explicit" from "fallback default" perfectly, but if
-        // there's only one unique non-nil account and it matches default,
-        // user probably typed it in only one segment.
-        let nonDefaultAccounts = parsed.compactMap { $0.account }
-            .filter { $0.id != defaultAccount?.id }
-
-        // If exactly one unique non-default account appeared, share it.
-        let uniqueAccountIDs = Set(nonDefaultAccounts.map { $0.id })
-        if uniqueAccountIDs.count == 1, let shared = nonDefaultAccounts.first {
+        // For a single segment, just apply default fallback.
+        guard parsed.count > 1 else {
             return parsed.map { p in
                 var copy = p
-                if copy.account?.id == defaultAccount?.id || copy.account == nil {
-                    copy.account = shared
-                }
+                if copy.account == nil { copy.account = defaultAccount }
                 return copy
             }
         }
 
-        return parsed
+        // Collect unique accounts that were explicitly matched in any segment.
+        let explicitAccounts = parsed.compactMap { $0.account }
+        let uniqueIDs = Set(explicitAccounts.map { $0.id })
+
+        // If exactly one explicit account across all segments, use it as the
+        // shared account for any segments that didn't specify one.
+        let sharedAccount: Account? = (uniqueIDs.count == 1) ? explicitAccounts.first : nil
+
+        return parsed.map { p in
+            var copy = p
+            if copy.account == nil {
+                copy.account = sharedAccount ?? defaultAccount
+            }
+            return copy
+        }
+    }
+
+    // MARK: - Account Matching
+
+    /// Two-tier account matcher.
+    ///
+    /// **Tier 1 (strongest):** the entire account name appears as a substring
+    /// of the input. "HDFC CC" matches "swiggy hdfc cc" because "hdfc cc" is
+    /// a contiguous substring. Tie-break: longer account name wins (more specific).
+    ///
+    /// **Tier 2 (fallback):** any significant word (≥2 chars) of the account
+    /// name appears in the input as a whole word. "HDFC CC" matches "swiggy
+    /// hdfc" because "hdfc" is a whole word in the input. Score is the sum of
+    /// matched-word character counts — so an account whose every word appears
+    /// beats one with just a single word match.
+    ///
+    /// Returns the matched account plus the exact tokens that hit (so the
+    /// caller can strip them from the input before merchant extraction).
+    private static func matchAccount(
+        in text: String,
+        candidates: [Account]
+    ) -> (account: Account, matchedTokens: [String])? {
+        // Tier 1 — full-name substring (longest first for specificity).
+        let byLengthDesc = candidates.sorted { $0.name.count > $1.name.count }
+        for account in byLengthDesc {
+            let nameLower = account.name.lowercased()
+            guard !nameLower.isEmpty else { continue }
+            if text.contains(nameLower) {
+                return (account, [nameLower])
+            }
+        }
+
+        // Tier 2 — word-level match. For each candidate account, count how
+        // many of its significant words (≥2 chars) appear in the input as
+        // whole words. Best total-character score wins.
+        var best: (account: Account, score: Int, tokens: [String])?
+
+        for account in candidates {
+            let nameWords = account.name.lowercased()
+                .split(separator: " ")
+                .map(String.init)
+                .filter { $0.count >= 2 }
+
+            guard !nameWords.isEmpty else { continue }
+
+            let matched = nameWords.filter { word in
+                let pattern = #"\b"# + NSRegularExpression.escapedPattern(for: word) + #"\b"#
+                return text.range(of: pattern, options: .regularExpression) != nil
+            }
+
+            guard !matched.isEmpty else { continue }
+
+            let score = matched.reduce(0) { $0 + $1.count }
+            if best == nil || score > best!.score {
+                best = (account, score, matched)
+            }
+        }
+
+        if let best { return (best.account, best.tokens) }
+        return nil
     }
 }

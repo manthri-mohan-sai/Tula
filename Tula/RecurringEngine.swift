@@ -1,10 +1,15 @@
 import Foundation
 import SwiftData
 
-/// Generates missed transactions for active RecurringRules.
-/// Called on app launch from TulaApp. For each rule, walks forward from
-/// the last-generated date (or rule's start date) and creates an Expense
-/// or Transfer for each missed monthly occurrence up to today.
+/// Generates missed transactions for active RecurringRules at app launch.
+///
+/// Each rule has a `frequency` (weekly/monthly/yearly):
+/// - **weekly**: fires every 7 days starting from startDate
+/// - **monthly**: fires on `dayOfMonth` each month (clamped for short months)
+/// - **yearly**: fires on the same month + day as startDate every year
+///
+/// The engine walks forward from `lastGeneratedDate` (or startDate) and
+/// creates a transaction for each missed occurrence up to today.
 enum RecurringEngine {
 
     static func generateMissing(in context: ModelContext) {
@@ -16,20 +21,15 @@ enum RecurringEngine {
         var didGenerateAnything = false
 
         for rule in rules where !rule.isPaused {
-            // Skip rules whose end date has passed
             if let endDate = rule.endDate, now > endDate { continue }
 
-            // Start walking from the last-generated date if any, else
-            // from the rule's startDate. We find the next occurrence after
-            // this point that matches the rule's dayOfMonth.
             let startFrom = rule.lastGeneratedDate ?? rule.startDate
             var currentTarget = nextOccurrence(
                 strictlyAfter: startFrom,
-                dayOfMonth: rule.dayOfMonth,
+                rule: rule,
                 calendar: calendar
             )
 
-            // Generate every missed occurrence up to today.
             while currentTarget <= now {
                 if let endDate = rule.endDate, currentTarget > endDate { break }
 
@@ -39,7 +39,7 @@ enum RecurringEngine {
 
                 currentTarget = nextOccurrence(
                     strictlyAfter: currentTarget,
-                    dayOfMonth: rule.dayOfMonth,
+                    rule: rule,
                     calendar: calendar
                 )
             }
@@ -50,16 +50,63 @@ enum RecurringEngine {
         }
     }
 
-    /// Computes the next date strictly after `date` that falls on `dayOfMonth`.
-    /// Handles month-length overflow (Feb 30 clamps to Feb 28/29).
+    /// Returns the next date strictly after `date` that the rule should fire.
+    /// Dispatches to the per-frequency helpers below.
     private static func nextOccurrence(
+        strictlyAfter date: Date,
+        rule: RecurringRule,
+        calendar: Calendar
+    ) -> Date {
+        switch rule.frequency {
+        case .weekly:
+            return nextWeekly(strictlyAfter: date, anchoredTo: rule.startDate, calendar: calendar)
+        case .monthly:
+            return nextMonthly(strictlyAfter: date, dayOfMonth: rule.dayOfMonth, calendar: calendar)
+        case .yearly:
+            return nextYearly(strictlyAfter: date, anchoredTo: rule.startDate, calendar: calendar)
+        }
+    }
+
+    // MARK: - Per-frequency next-occurrence logic
+
+    /// Weekly: anchored to startDate's weekday + time of day. Always adds 7 days.
+    private static func nextWeekly(
+        strictlyAfter date: Date,
+        anchoredTo anchor: Date,
+        calendar: Calendar
+    ) -> Date {
+        // If never fired yet, use startDate if it's in the future,
+        // else compute the next occurrence based on the day-of-week.
+        let weekday = calendar.component(.weekday, from: anchor)
+        let hour = calendar.component(.hour, from: anchor)
+        let minute = calendar.component(.minute, from: anchor)
+
+        // Move forward 1 day at a time looking for the right weekday after `date`.
+        var candidate = date
+        for _ in 0..<8 {  // at most 7 iterations
+            candidate = calendar.date(byAdding: .day, value: 1, to: candidate) ?? candidate
+            if calendar.component(.weekday, from: candidate) == weekday {
+                var components = calendar.dateComponents([.year, .month, .day], from: candidate)
+                components.hour = hour
+                components.minute = minute
+                components.second = 0
+                if let withTime = calendar.date(from: components), withTime > date {
+                    return withTime
+                }
+            }
+        }
+        return calendar.date(byAdding: .weekOfYear, value: 1, to: date) ?? date
+    }
+
+    /// Monthly: fires on `dayOfMonth` (clamped for Feb / 30-day months).
+    private static func nextMonthly(
         strictlyAfter date: Date,
         dayOfMonth: Int,
         calendar: Calendar
     ) -> Date {
-        // First, try this month at dayOfMonth (clamped).
+        // Try this month at dayOfMonth (clamped to month length).
         var components = calendar.dateComponents([.year, .month], from: date)
-        components.hour = 9     // morning, arbitrary but stable
+        components.hour = 9
         components.minute = 0
         components.second = 0
 
@@ -72,7 +119,7 @@ enum RecurringEngine {
             }
         }
 
-        // Otherwise, move to next month and clamp.
+        // Otherwise, next month at dayOfMonth (clamped).
         let nextMonth = calendar.date(byAdding: .month, value: 1, to: date) ?? date
         var nextComponents = calendar.dateComponents([.year, .month], from: nextMonth)
         nextComponents.hour = 9
@@ -85,6 +132,38 @@ enum RecurringEngine {
         }
         return nextMonth
     }
+
+    /// Yearly: fires on the same month + day as the anchor (start date),
+    /// every year. Falls back to clamped end-of-month for Feb 29 anchors.
+    private static func nextYearly(
+        strictlyAfter date: Date,
+        anchoredTo anchor: Date,
+        calendar: Calendar
+    ) -> Date {
+        let anchorComponents = calendar.dateComponents([.month, .day, .hour, .minute], from: anchor)
+        var components = calendar.dateComponents([.year], from: date)
+        components.month = anchorComponents.month
+        components.day = anchorComponents.day
+        components.hour = anchorComponents.hour ?? 9
+        components.minute = anchorComponents.minute ?? 0
+        components.second = 0
+
+        // Try this year first.
+        if let candidate = calendar.date(from: components), candidate > date {
+            return candidate
+        }
+
+        // Otherwise, next year.
+        if let year = components.year {
+            components.year = year + 1
+            if let candidate = calendar.date(from: components) {
+                return candidate
+            }
+        }
+        return calendar.date(byAdding: .year, value: 1, to: date) ?? date
+    }
+
+    // MARK: - Transaction creation
 
     private static func createTransaction(rule: RecurringRule, date: Date, in context: ModelContext) {
         switch rule.kind {
@@ -116,14 +195,16 @@ enum RecurringEngine {
         }
     }
 
+    // MARK: - Public helpers
+
     /// Computes the next upcoming due date for a rule. Used by the UI to
-    /// show "Next: 5 Jun".
+    /// display "Next: 5 Jun".
     static func nextDueDate(for rule: RecurringRule) -> Date? {
         if rule.isPaused { return nil }
         if let endDate = rule.endDate, endDate < .now { return nil }
         let calendar = Calendar.current
         let from = rule.lastGeneratedDate ?? rule.startDate
-        let next = nextOccurrence(strictlyAfter: from, dayOfMonth: rule.dayOfMonth, calendar: calendar)
+        let next = nextOccurrence(strictlyAfter: from, rule: rule, calendar: calendar)
         if let endDate = rule.endDate, next > endDate { return nil }
         return next
     }

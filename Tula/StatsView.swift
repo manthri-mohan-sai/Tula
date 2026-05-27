@@ -33,6 +33,9 @@ struct StatsView: View {
     /// 0 = current period, -1 = previous, etc. Reset to 0 when period changes.
     @State private var periodOffset: Int = 0
 
+    /// Date the user is dragging on the chart (nil when not interacting).
+    @State private var chartSelectedDate: Date?
+
     // MARK: - Period Math
 
     /// Returns the date range for the current period at the current offset.
@@ -206,21 +209,22 @@ struct StatsView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(spacing: Spacing.xl) {
+                VStack(spacing: Spacing.md) {
                     periodPicker
                     periodNavigator
                     heroCard
                     if hasAnySpend {
                         insightGrid
                         chartCard
+                        if !weekdayData.isEmpty { weekdayChartCard }
                         if !categoryBreakdown.isEmpty { categoryBreakdownCard }
                         if !topMerchants.isEmpty { topMerchantsCard }
                     } else {
                         emptyState
                     }
                 }
-                .padding(.horizontal)
-                .padding(.bottom, Spacing.xxl)
+                .padding(.horizontal, Spacing.md)
+                .padding(.bottom, Spacing.lg)
             }
             .background(Color(uiColor: .systemGroupedBackground))
             .navigationTitle("Stats")
@@ -323,7 +327,7 @@ struct StatsView: View {
             }
 
             Text(Currency.format(totalThisPeriod, code: currencyCode))
-                .font(.system(size: 40, weight: .bold, design: .rounded))
+                .font(.system(size: 36, weight: .bold, design: .rounded))
                 .minimumScaleFactor(0.5)
                 .lineLimit(1)
                 .contentTransition(.numericText())
@@ -341,7 +345,7 @@ struct StatsView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(Spacing.xl)
+        .padding(Spacing.lg)
         .background(
             RoundedRectangle(cornerRadius: CornerRadius.large, style: .continuous)
                 .fill(
@@ -414,7 +418,7 @@ struct StatsView: View {
     }
 
     private func insightCard(label: String, value: String, detail: String, icon: String, color: Color) -> some View {
-        VStack(alignment: .leading, spacing: Spacing.sm) {
+        VStack(alignment: .leading, spacing: Spacing.xs) {
             HStack {
                 Text(label)
                     .font(.caption2.weight(.semibold))
@@ -429,18 +433,19 @@ struct StatsView: View {
             }
 
             Text(value)
-                .font(.system(size: 20, weight: .bold, design: .rounded))
+                .font(.system(size: 19, weight: .bold, design: .rounded))
                 .lineLimit(1)
                 .minimumScaleFactor(0.6)
+                .padding(.top, 2)
 
             Text(detail)
-                .font(.caption)
+                .font(.caption2)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(Spacing.md)
-        .frame(minHeight: 96)
+        .frame(minHeight: 84)
         .background(
             RoundedRectangle(cornerRadius: CornerRadius.medium, style: .continuous)
                 .fill(Color.tulaCardSurface)
@@ -450,10 +455,10 @@ struct StatsView: View {
     // MARK: - Chart
 
     private var chartCard: some View {
-        VStack(alignment: .leading, spacing: Spacing.md) {
+        VStack(alignment: .leading, spacing: Spacing.sm) {
             SectionHeader(title: chartSectionTitle)
 
-            Card(padding: Spacing.lg, cornerRadius: CornerRadius.medium) {
+            Card(padding: Spacing.md, cornerRadius: CornerRadius.medium) {
                 if period == .sixMonths {
                     barChart
                 } else {
@@ -480,8 +485,8 @@ struct StatsView: View {
                 )
                 .foregroundStyle(
                     LinearGradient(
-                        colors: [Color.tulaBrandFallback.opacity(0.5),
-                                 Color.tulaBrandFallback.opacity(0.05)],
+                        colors: [Color.tulaBrandFallback.opacity(0.45),
+                                 Color.tulaBrandFallback.opacity(0.04)],
                         startPoint: .top,
                         endPoint: .bottom
                     )
@@ -496,26 +501,83 @@ struct StatsView: View {
                 .lineStyle(StrokeStyle(lineWidth: 2.5, lineCap: .round))
                 .interpolationMethod(.monotone)
             }
+
+            // Selection indicators — only when user is actively touching.
+            if let selected = chartSelectedDate,
+               let point = nearestPoint(to: selected) {
+                RuleMark(x: .value("Day", point.label, unit: .day))
+                    .foregroundStyle(Color.tulaBrandFallback.opacity(0.35))
+                    .lineStyle(StrokeStyle(lineWidth: 1.5))
+
+                PointMark(
+                    x: .value("Day", point.label, unit: .day),
+                    y: .value("Spent", point.total)
+                )
+                .foregroundStyle(Color.tulaBrandFallback)
+                .symbolSize(90)
+                .annotation(
+                    position: .top,
+                    alignment: .center,
+                    spacing: 8,
+                    overflowResolution: .init(x: .fit, y: .disabled)
+                ) {
+                    chartAnnotation(date: point.label, amount: point.total)
+                }
+            }
         }
         .chartXAxis {
             AxisMarks(values: .automatic(desiredCount: period == .week ? 7 : 4)) { _ in
-                AxisGridLine().foregroundStyle(Color.gray.opacity(0.15))
+                AxisGridLine().foregroundStyle(Color.gray.opacity(0.12))
                 AxisValueLabel(format: .dateTime.day().month(.abbreviated))
-                    .font(.caption2)
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(.secondary)
             }
         }
         .chartYAxis {
-            AxisMarks(values: .automatic(desiredCount: 3)) { value in
-                AxisGridLine().foregroundStyle(Color.gray.opacity(0.15))
+            AxisMarks(position: .leading, values: .automatic(desiredCount: 3)) { value in
+                AxisGridLine().foregroundStyle(Color.gray.opacity(0.12))
                 AxisValueLabel {
                     if let v = value.as(Double.self) {
                         Text(Currency.compact(v, code: currencyCode))
-                            .font(.caption2)
+                            .font(.caption2.weight(.medium))
+                            .foregroundStyle(.secondary)
                     }
                 }
             }
         }
-        .frame(height: 180)
+        // Native iOS 17+ selection — no custom DragGesture. iOS handles
+        // gesture priority correctly with the parent ScrollView, so the
+        // chart never blocks vertical scrolling.
+        .chartXSelection(value: $chartSelectedDate)
+        .frame(height: 220)
+    }
+
+    /// High-contrast annotation that's readable on any chart background.
+    /// Uses `.regularMaterial` (frosted glass) so it adapts to light/dark
+    /// mode and stays legible over the area fill.
+    private func chartAnnotation(date: Date, amount: Double) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(date, format: .dateTime.weekday(.abbreviated).day().month(.abbreviated))
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(.secondary)
+            Text(Currency.format(amount, code: currencyCode))
+                .font(.subheadline.weight(.bold))
+                .monospacedDigit()
+                .foregroundStyle(.primary)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .shadow(color: .black.opacity(0.18), radius: 8, y: 3)
+    }
+
+    private func pointForDate(_ date: Date) -> (label: Date, total: Double)? {
+        chartData.first { Calendar.current.isDate($0.label, equalTo: date, toGranularity: .day) }
+    }
+
+    private func nearestPoint(to date: Date) -> (label: Date, total: Double)? {
+        guard !chartData.isEmpty else { return nil }
+        return chartData.min(by: { abs($0.label.timeIntervalSince(date)) < abs($1.label.timeIntervalSince(date)) })
     }
 
     private var barChart: some View {
@@ -529,31 +591,128 @@ struct StatsView: View {
                 .foregroundStyle(Color.tulaBrandFallback.gradient)
                 .cornerRadius(6)
             }
+
+            // Selection indicator on bars too — same pattern, no scroll conflict.
+            if let selected = chartSelectedDate,
+               let point = nearestPoint(to: selected) {
+                RuleMark(x: .value("Month", point.label, unit: .month))
+                    .foregroundStyle(Color.tulaBrandFallback.opacity(0.35))
+                    .lineStyle(StrokeStyle(lineWidth: 1.5))
+                    .annotation(
+                        position: .top,
+                        alignment: .center,
+                        spacing: 8,
+                        overflowResolution: .init(x: .fit, y: .disabled)
+                    ) {
+                        chartAnnotation(date: point.label, amount: point.total)
+                    }
+            }
         }
         .chartXAxis {
             AxisMarks(values: .automatic(desiredCount: 6)) { _ in
                 AxisValueLabel(format: .dateTime.month(.abbreviated))
-                    .font(.caption2)
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(.secondary)
             }
         }
         .chartYAxis {
-            AxisMarks(values: .automatic(desiredCount: 3)) { value in
-                AxisGridLine().foregroundStyle(Color.gray.opacity(0.15))
+            AxisMarks(position: .leading, values: .automatic(desiredCount: 3)) { value in
+                AxisGridLine().foregroundStyle(Color.gray.opacity(0.12))
                 AxisValueLabel {
                     if let v = value.as(Double.self) {
                         Text(Currency.compact(v, code: currencyCode))
-                            .font(.caption2)
+                            .font(.caption2.weight(.medium))
+                            .foregroundStyle(.secondary)
                     }
                 }
             }
         }
-        .frame(height: 180)
+        .chartXSelection(value: $chartSelectedDate)
+        .frame(height: 220)
+    }
+
+    // MARK: - Weekday Pattern
+
+    /// "When do you spend most?" — a 7-bar chart showing average spend by
+    /// day of week across the current period. Surfaces patterns the linear
+    /// trend chart hides: people often spend more on weekends, or on a
+    /// particular weekday like Friday. Actionable insight in one glance.
+    private var weekdayData: [(weekday: Int, name: String, total: Double, count: Int)] {
+        let cal = Calendar.current
+        let symbols = cal.shortWeekdaySymbols  // ["Sun","Mon",...] for en_US
+
+        var totals: [Int: Double] = [:]
+        var counts: [Int: Int] = [:]
+        for expense in rangeExpenses {
+            let weekday = cal.component(.weekday, from: expense.date)
+            totals[weekday, default: 0] += expense.amount
+            counts[weekday, default: 0] += 1
+        }
+
+        // Only return if there's enough data to reveal a pattern.
+        let totalDays = totals.keys.count
+        guard totalDays >= 3 else { return [] }
+
+        return (1...7).map { weekday in
+            (
+                weekday: weekday,
+                name: symbols[weekday - 1],
+                total: totals[weekday] ?? 0,
+                count: counts[weekday] ?? 0
+            )
+        }
+    }
+
+    private var weekdayChartCard: some View {
+        VStack(alignment: .leading, spacing: Spacing.sm) {
+            SectionHeader(title: "By Weekday")
+
+            Card(padding: Spacing.lg, cornerRadius: CornerRadius.medium) {
+                VStack(alignment: .leading, spacing: Spacing.sm) {
+                    if let peak = weekdayData.max(by: { $0.total < $1.total }), peak.total > 0 {
+                        Text("Peak day: ")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.secondary)
+                        + Text(peakDayName(peak.weekday))
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(.primary)
+                        + Text(" · \(Currency.format(peak.total, code: currencyCode))")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Chart(weekdayData, id: \.weekday) { item in
+                        BarMark(
+                            x: .value("Day", item.name),
+                            y: .value("Spent", item.total),
+                            width: .ratio(0.55)
+                        )
+                        .foregroundStyle(Color.tulaBrandFallback.gradient)
+                        .cornerRadius(4)
+                    }
+                    .chartXAxis {
+                        AxisMarks { _ in
+                            AxisValueLabel()
+                                .font(.caption2.weight(.medium))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .chartYAxis(.hidden)
+                    .frame(height: 120)
+                }
+            }
+        }
+    }
+
+    private func peakDayName(_ weekday: Int) -> String {
+        let cal = Calendar.current
+        return cal.weekdaySymbols[weekday - 1]   // full name like "Saturday"
     }
 
     // MARK: - Category Breakdown
 
     private var categoryBreakdownCard: some View {
-        VStack(alignment: .leading, spacing: Spacing.md) {
+        VStack(alignment: .leading, spacing: Spacing.sm) {
             SectionHeader(title: "By Category")
 
             Card(padding: 0, cornerRadius: CornerRadius.medium) {
@@ -561,7 +720,7 @@ struct StatsView: View {
                     ForEach(Array(categoryBreakdown.enumerated()), id: \.element.category.id) { index, item in
                         categoryRow(item.category, amount: item.amount)
                         if index != categoryBreakdown.count - 1 {
-                            Divider().padding(.leading, 64)
+                            Divider().padding(.leading, 60)
                         }
                     }
                 }
@@ -579,7 +738,6 @@ struct StatsView: View {
 
         return GeometryReader { geo in
             ZStack(alignment: .leading) {
-                // Background fill bar representing fraction
                 Rectangle()
                     .fill(color.opacity(0.08))
                     .frame(width: geo.size.width * fraction)
@@ -588,7 +746,7 @@ struct StatsView: View {
                     ZStack {
                         Circle()
                             .fill(color.opacity(0.18))
-                            .frame(width: 36, height: 36)
+                            .frame(width: 32, height: 32)
                         Image(systemName: category.iconKey)
                             .font(.subheadline.weight(.medium))
                             .foregroundStyle(color)
@@ -598,7 +756,7 @@ struct StatsView: View {
                         Text(category.name)
                             .font(.subheadline.weight(.semibold))
                         Text("\(percent)% of total")
-                            .font(.caption)
+                            .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
 
@@ -611,13 +769,13 @@ struct StatsView: View {
                 .padding(.horizontal, Spacing.md)
             }
         }
-        .frame(height: 60)
+        .frame(height: 52)
     }
 
     // MARK: - Top Merchants
 
     private var topMerchantsCard: some View {
-        VStack(alignment: .leading, spacing: Spacing.md) {
+        VStack(alignment: .leading, spacing: Spacing.sm) {
             SectionHeader(title: "Top Merchants")
 
             Card(padding: 0, cornerRadius: CornerRadius.medium) {
@@ -625,7 +783,7 @@ struct StatsView: View {
                     ForEach(Array(topMerchants.enumerated()), id: \.offset) { index, item in
                         merchantRow(rank: index + 1, name: item.name, count: item.count, amount: item.amount)
                         if index != topMerchants.count - 1 {
-                            Divider().padding(.leading, 56)
+                            Divider().padding(.leading, 52)
                         }
                     }
                 }
@@ -646,7 +804,7 @@ struct StatsView: View {
                     .font(.subheadline.weight(.semibold))
                     .lineLimit(1)
                 Text("\(count) transaction\(count == 1 ? "" : "s")")
-                    .font(.caption)
+                    .font(.caption2)
                     .foregroundStyle(.secondary)
             }
 
@@ -657,7 +815,7 @@ struct StatsView: View {
                 .monospacedDigit()
         }
         .padding(.horizontal, Spacing.md)
-        .padding(.vertical, Spacing.md)
+        .padding(.vertical, Spacing.sm + 2)
     }
 
     // MARK: - Empty State
