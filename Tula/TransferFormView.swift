@@ -80,7 +80,7 @@ struct TransferFormView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(spacing: Spacing.xxl) {
+                VStack(spacing: Spacing.xl) {
                     amountSection
                     routingSection
                     optionalSection
@@ -120,14 +120,14 @@ struct TransferFormView: View {
                 value: $amount,
                 currencyCode: currencyCode,
                 placeholder: "0",
-                font: .system(size: 56, weight: .bold, design: .rounded),
+                font: .system(size: 52, weight: .bold, design: .rounded),
                 alignment: .center
             )
             .focused($amountFocused)
             .frame(maxWidth: .infinity)
             .foregroundStyle(amount > 0 ? .primary : .tertiary)
         }
-        .padding(.vertical, Spacing.lg)
+        .padding(.vertical, Spacing.sm)
     }
 
     // MARK: - Routing
@@ -154,25 +154,42 @@ struct TransferFormView: View {
     private func accountStrip(accounts: [Account],
                               selection: Binding<Account?>,
                               isLocked: Bool) -> some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: Spacing.sm) {
-                ForEach(accounts) { account in
-                    AccountChip(
-                        account: account,
-                        isSelected: selection.wrappedValue?.id == account.id
-                    )
-                    .onTapGesture {
-                        guard !isLocked else { return }
-                        Haptics.selection()
-                        withAnimation(AppAnimation.snappy) {
-                            selection.wrappedValue = account
+        // ScrollViewReader for auto-scroll-to-selected (same pattern as
+        // AddExpenseView's account section). When the user taps a chip
+        // that's partially off-screen, the scroll animates it into view.
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: Spacing.sm) {
+                    ForEach(accounts) { account in
+                        AccountChip(
+                            account: account,
+                            isSelected: selection.wrappedValue?.id == account.id
+                        )
+                        .id(account.id)
+                        .onTapGesture {
+                            guard !isLocked else { return }
+                            Haptics.selection()
+                            withAnimation(AppAnimation.snappy) {
+                                selection.wrappedValue = account
+                            }
                         }
+                        .opacity(isLocked && selection.wrappedValue?.id != account.id ? 0.4 : 1)
+                        .transition(.asymmetric(
+                            insertion: .opacity.combined(with: .move(edge: .leading)),
+                            removal: .opacity
+                        ))
                     }
-                    .opacity(isLocked && selection.wrappedValue?.id != account.id ? 0.4 : 1)
+                }
+                .padding(.horizontal, 2)
+                .padding(.vertical, 12)
+            }
+            .scrollClipDisabled()
+            .onChange(of: selection.wrappedValue?.id) { _, newID in
+                guard let id = newID else { return }
+                withAnimation(.snappy(duration: 0.4)) {
+                    proxy.scrollTo(id, anchor: .center)
                 }
             }
-            .padding(.horizontal, 2)
-            .padding(.vertical, 12)
         }
     }
 

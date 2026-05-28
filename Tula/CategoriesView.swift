@@ -1,14 +1,22 @@
 import SwiftUI
 import SwiftData
 
-/// Manage categories — list, add, edit, archive.
+/// Manage categories — list, add, edit, archive, reorder.
+///
+/// Switched from a custom scroll-of-cards layout to a native List so we
+/// get free `.onMove` reordering, `EditButton`, and consistent platform
+/// behavior. Two sections — Active (with drag-to-reorder in edit mode)
+/// and Archived (with an unarchive button on each row).
 struct CategoriesView: View {
     @Environment(\.modelContext) private var context
     @Environment(\.dismiss) private var dismiss
+    @AppStorage("primaryCurrencyCode") private var currencyCode: String = "INR"
+
     @Query(sort: \Category.sortOrder) private var allCategories: [Category]
 
     @State private var showingAdd = false
     @State private var editingCategory: Category?
+    @State private var editMode: EditMode = .inactive
 
     private var activeCategories: [Category] {
         allCategories.filter { !$0.isArchived }
@@ -20,29 +28,81 @@ struct CategoriesView: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(spacing: Spacing.md) {
-                    section(title: "Active", categories: activeCategories)
-                    if !archivedCategories.isEmpty {
-                        section(title: "Archived", categories: archivedCategories)
+            List {
+                Section("Active") {
+                    ForEach(activeCategories) { cat in
+                        Button {
+                            Haptics.tap()
+                            editingCategory = cat
+                        } label: {
+                            CategoryListRow(
+                                category: cat,
+                                currencyCode: currencyCode
+                            )
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .onMove(perform: moveActive)
+                }
+
+                if !archivedCategories.isEmpty {
+                    Section("Archived") {
+                        ForEach(archivedCategories) { cat in
+                            HStack {
+                                CategoryListRow(
+                                    category: cat,
+                                    currencyCode: currencyCode
+                                )
+                                Spacer(minLength: 8)
+                                Button {
+                                    Haptics.tap()
+                                    unarchive(cat)
+                                } label: {
+                                    Text("Unarchive")
+                                        .font(.caption.weight(.semibold))
+                                        .padding(.horizontal, 10)
+                                        .padding(.vertical, 5)
+                                        .background(
+                                            Color.tulaBrandFallback.opacity(0.15),
+                                            in: Capsule()
+                                        )
+                                        .foregroundStyle(Color.tulaBrandFallback)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                Haptics.tap()
+                                editingCategory = cat
+                            }
+                        }
                     }
                 }
-                .padding(.horizontal, Spacing.md)
-                .padding(.vertical, Spacing.sm)
             }
-            .background(Color(uiColor: .systemGroupedBackground))
+            .listStyle(.insetGrouped)
             .navigationTitle("Categories")
             .navigationBarTitleDisplayMode(.large)
+            .environment(\.editMode, $editMode)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button("Done") { dismiss() }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        Haptics.tap()
-                        showingAdd = true
-                    } label: {
-                        Image(systemName: "plus")
+                    HStack(spacing: 12) {
+                        // Show Edit toggle only when there's something to reorder.
+                        if activeCategories.count > 1 {
+                            Button(editMode.isEditing ? "Done" : "Edit") {
+                                withAnimation {
+                                    editMode = editMode.isEditing ? .inactive : .active
+                                }
+                            }
+                        }
+                        Button {
+                            Haptics.tap()
+                            showingAdd = true
+                        } label: {
+                            Image(systemName: "plus")
+                        }
                     }
                 }
             }
@@ -55,45 +115,57 @@ struct CategoriesView: View {
         }
     }
 
-    private func section(title: String, categories: [Category]) -> some View {
-        VStack(alignment: .leading, spacing: Spacing.sm) {
-            SectionHeader(title: title.uppercased())
-            Card(padding: 0, cornerRadius: CornerRadius.medium) {
-                VStack(spacing: 0) {
-                    ForEach(categories) { cat in
-                        Button {
-                            Haptics.tap()
-                            editingCategory = cat
-                        } label: {
-                            CategoryListRow(category: cat)
-                                .padding(.horizontal, Spacing.md)
-                        }
-                        .buttonStyle(PlainRowButtonStyle())
-                        if cat.id != categories.last?.id {
-                            Divider().padding(.leading, 64)
-                        }
-                    }
-                }
-            }
+    // MARK: - Reorder
+
+    /// Updates the `sortOrder` field of every active category to match the
+    /// new on-screen order. Uses 10-step increments so future manual edits
+    /// don't immediately need a renumber.
+    private func moveActive(from source: IndexSet, to destination: Int) {
+        var items = activeCategories
+        items.move(fromOffsets: source, toOffset: destination)
+        for (index, cat) in items.enumerated() {
+            cat.sortOrder = index * 10
         }
+        try? context.save()
+        Haptics.tap()
+    }
+
+    private func unarchive(_ cat: Category) {
+        cat.isArchived = false
+        try? context.save()
+        Haptics.success()
     }
 }
 
 // MARK: - Row
 
+/// Single category line in the list. Three pieces of info:
+///   • icon in category color
+///   • name + total spent (lifetime — most actionable summary)
+///   • transaction count (smaller, supporting)
 private struct CategoryListRow: View {
     let category: Category
+    let currencyCode: String
 
     private var color: Color { Color(hex: category.colorHex) }
 
+    private var totalSpent: Double {
+        category.expenses.reduce(0) { $0 + $1.amount }
+    }
+
+    private var countLabel: String {
+        let n = category.expenses.count
+        return "\(n) \(n == 1 ? "expense" : "expenses")"
+    }
+
     var body: some View {
-        HStack(spacing: Spacing.md) {
+        HStack(spacing: 12) {
             ZStack {
                 Circle()
                     .fill(color.opacity(0.18))
-                    .frame(width: 40, height: 40)
+                    .frame(width: 38, height: 38)
                 Image(systemName: category.iconKey)
-                    .font(.subheadline.weight(.medium))
+                    .font(.subheadline.weight(.semibold))
                     .foregroundStyle(color)
             }
 
@@ -101,18 +173,22 @@ private struct CategoryListRow: View {
                 Text(category.name)
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.primary)
-                Text("\(category.expenses.count) expense\(category.expenses.count == 1 ? "" : "s")")
+                    .lineLimit(1)
+                Text(countLabel)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
 
             Spacer()
 
-            Image(systemName: "chevron.right")
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(.tertiary)
+            if totalSpent > 0 {
+                Text(Currency.format(totalSpent, code: currencyCode))
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
         }
-        .padding(.vertical, Spacing.md)
+        .padding(.vertical, 4)
         .opacity(category.isArchived ? 0.6 : 1)
     }
 }
@@ -268,17 +344,27 @@ struct CategoryFormView: View {
             cat.iconKey = iconKey
             cat.colorHex = colorHex
         } else {
+            // Place new categories at the end of the active list.
             let cat = Category(
                 name: name,
                 iconKey: iconKey,
                 colorHex: colorHex,
-                sortOrder: 100
+                sortOrder: nextSortOrder()
             )
             context.insert(cat)
         }
         try? context.save()
         Haptics.success()
         dismiss()
+    }
+
+    /// Find the next sortOrder slot — append after the highest existing.
+    private func nextSortOrder() -> Int {
+        let descriptor = FetchDescriptor<Category>(
+            sortBy: [SortDescriptor(\.sortOrder, order: .reverse)]
+        )
+        let last = (try? context.fetch(descriptor))?.first
+        return (last?.sortOrder ?? 0) + 10
     }
 
     private func archive() {

@@ -1,22 +1,20 @@
-//
-//  TulaApp.swift
-//  Tula
-//
-//  Created by Mohan Manthri on 26/05/26.
-
 import SwiftUI
 import SwiftData
+import WidgetKit
 
 @main
 struct TulaApp: App {
+    @UIApplicationDelegateAdaptor(TulaAppDelegate.self) var appDelegate
     @AppStorage("primaryCurrencyCode") private var primaryCurrencyCode: String = "INR"
     @AppStorage("seedDataInstalled") private var seedDataInstalled: Bool = false
     @AppStorage("onboardingComplete") private var onboardingComplete: Bool = false
 
+    @Environment(\.scenePhase) private var scenePhase
+
     let sharedContainer: ModelContainer = {
         let schema = Schema([
             Account.self, Category.self, Expense.self, Transfer.self,
-            RecurringRule.self, MerchantRule.self,
+            RecurringRule.self, MerchantRule.self, Budget.self,
         ])
         let primaryConfig = ModelConfiguration("Tula", schema: schema)
         if let container = try? ModelContainer(for: schema, configurations: [primaryConfig]) {
@@ -42,6 +40,7 @@ struct TulaApp: App {
                         seedDataInstalled = true
                     }
                     RecurringEngine.generateMissing(in: context)
+                    refreshWidgetSnapshot(using: context)
                 }
                 .sheet(isPresented: Binding(
                     get: { !onboardingComplete },
@@ -51,6 +50,111 @@ struct TulaApp: App {
                 }
         }
         .modelContainer(sharedContainer)
+        .onChange(of: scenePhase) { _, newPhase in
+            // Refresh the widget snapshot whenever the app becomes active.
+            // Cheaper than observing every save — the widget only needs
+            // refresh on transitions the user is likely to see (post-edit
+            // backgrounding, then re-foregrounding to glance at it).
+            if newPhase == .active {
+                let context = ModelContext(sharedContainer)
+                refreshWidgetSnapshot(using: context)
+            }
+        }
+    }
+
+    // MARK: - Widget Snapshot
+
+    /// Rebuilds the widget snapshot from current data and writes it to the
+    /// App Group. Cheap enough to call on every foreground; ~milliseconds
+    /// for typical expense counts. Triggers a widget reload at the end.
+    private func refreshWidgetSnapshot(using context: ModelContext) {
+        let calendar = Calendar.current
+        let now = Date.now
+
+        // Pull expenses for this month — sufficient for both today and month totals.
+        guard let monthStart = calendar.dateInterval(of: .month, for: now)?.start else { return }
+        let dayStart = calendar.startOfDay(for: now)
+
+        let monthExpenseFetch = FetchDescriptor<Expense>(
+            predicate: #Predicate { $0.date >= monthStart }
+        )
+        let monthExpenses = (try? context.fetch(monthExpenseFetch)) ?? []
+        let monthTotal = monthExpenses.reduce(0) { $0 + $1.amount }
+        let todayTotal = monthExpenses
+            .filter { $0.date >= dayStart }
+            .reduce(0) { $0 + $1.amount }
+
+        // Active budgets — only monthly ones for the snapshot. Other periods
+        // exist but the widget surface is monthly-focused.
+        let budgetFetch = FetchDescriptor<Budget>(
+            predicate: #Predicate { $0.isActive == true }
+        )
+        let allBudgets = (try? context.fetch(budgetFetch)) ?? []
+        let monthlyBudgets = allBudgets.filter { $0.period == .monthly }
+
+        // Aggregate cap is informative even when individual budgets are
+        // category-scoped: it's "what I've committed to spending this month".
+        let totalCap = monthlyBudgets.reduce(0) { $0 + $1.amount }
+
+        // Top 4 monthly budgets by % used (most urgent first), so the
+        // widget surfaces what the user most needs to see.
+        let entries: [WidgetSnapshot.Entry] = monthlyBudgets
+            .map { b -> WidgetSnapshot.Entry in
+                let spent = b.spent(in: monthExpenses)
+                return WidgetSnapshot.Entry(
+                    id: b.id,
+                    name: b.displayName,
+                    amount: b.amount,
+                    spent: spent,
+                    colorHex: b.category?.colorHex ?? "#D97706",
+                    iconKey: b.category?.iconKey ?? "infinity",
+                    isOverall: b.category == nil
+                )
+            }
+            .sorted { $0.progress > $1.progress }
+            .prefix(4)
+            .map { $0 }
+
+        let snapshot = WidgetSnapshot(
+            currencyCode: primaryCurrencyCode,
+            todayTotal: todayTotal,
+            monthTotal: monthTotal,
+            monthlyBudgetCap: totalCap,
+            topBudgets: entries,
+            recentExpenses: buildRecentExpenses(in: context),
+            generatedAt: now
+        )
+
+        WidgetStorage.write(snapshot)
+        WidgetCenter.shared.reloadAllTimelines()
+    }
+
+    /// Last 4 expenses (any date) for the Quick Log widget. Plain Codable
+    /// payload — no SwiftData references — so the widget can render
+    /// without any database access.
+    private func buildRecentExpenses(in context: ModelContext) -> [WidgetSnapshot.RecentExpense] {
+        var descriptor = FetchDescriptor<Expense>(
+            sortBy: [SortDescriptor(\.date, order: .reverse)]
+        )
+        descriptor.fetchLimit = 4
+        let expenses = (try? context.fetch(descriptor)) ?? []
+        return expenses.map { e in
+            let label: String = {
+                if let m = e.merchant?.trimmingCharacters(in: .whitespaces), !m.isEmpty {
+                    return m
+                }
+                if let c = e.category?.name { return c }
+                return "Spend"
+            }()
+            return WidgetSnapshot.RecentExpense(
+                id: e.id,
+                amount: e.amount,
+                date: e.date,
+                label: label,
+                colorHex: e.category?.colorHex ?? "#D97706",
+                iconKey: e.category?.iconKey ?? "questionmark.circle"
+            )
+        }
     }
 }
 
@@ -113,5 +217,39 @@ struct RootTabView: View {
         .sheet(isPresented: $showingAddExpense) {
             AddExpenseView()
         }
+        // Handle deep links from widgets. `tula://add` opens the Add
+        // Expense sheet directly. `tula://voice` keeps the user on Home
+        // and posts a notification that the QuickLogBar listens to —
+        // starting voice capture without manual tap.
+        .onOpenURL { url in
+            guard url.scheme == "tula" else { return }
+            switch url.host {
+            case "add":
+                Haptics.impact()
+                showingAddExpense = true
+            case "voice":
+                Haptics.impact()
+                selectedTab = .home
+                // Slight delay lets the view hierarchy settle (especially
+                // if the app is launching cold) before the QuickLogBar
+                // reads and acts on the notification.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                    NotificationCenter.default.post(
+                        name: .tulaStartVoiceCapture,
+                        object: nil
+                    )
+                }
+            default: break
+            }
+        }
     }
+}
+
+// MARK: - Notifications
+
+extension Notification.Name {
+    /// Posted when the user taps the Voice button on the Quick Actions
+    /// widget. The QuickLogBar on Home observes this and starts the
+    /// microphone automatically.
+    static let tulaStartVoiceCapture = Notification.Name("tula.startVoiceCapture")
 }

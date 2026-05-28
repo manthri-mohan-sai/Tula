@@ -82,8 +82,30 @@ enum ExpenseParser {
     /// Splits multi-expense input on natural conjunctions / punctuation.
     /// Returns the original input as a single-element array if no separators
     /// were found.
+    ///
+    /// **Voice-dictation hardening**: we only split on conjunction words
+    /// (`and`, `then`, `also`, `plus`) when the input contains **two or
+    /// more numeric tokens**. Otherwise "200 for bills and utilities"
+    /// gets fragmented into "200 for bills" + "utilities" and the
+    /// "Bills & Utilities" category never matches. Punctuation splits
+    /// (commas, semicolons, `+`) still fire unconditionally — those are
+    /// unambiguous separators.
     private static func splitIntoSegments(_ input: String) -> [String] {
-        let pattern = #"\s+(?:and|then|also|plus)\s+|\s*[,;]\s*|\s*\+\s*"#
+        let numericMatches = input.matches(of: #/\d+/#)
+        let numericCount = numericMatches.count
+
+        let pattern: String
+        if numericCount >= 2 {
+            // Multi-expense input — conjunction words can legitimately
+            // mean "now a new expense".
+            pattern = #"\s+(?:and|then|also|plus)\s+|\s*[,;]\s*|\s*\+\s*"#
+        } else {
+            // Zero or one amount in the input — "and" is part of a
+            // category/merchant phrase, not a separator. Only split on
+            // unambiguous punctuation.
+            pattern = #"\s*[,;]\s*|\s*\+\s*"#
+        }
+
         let split = input.replacingOccurrences(
             of: pattern,
             with: "|||",
@@ -112,6 +134,23 @@ enum ExpenseParser {
         for marker in currencyMarkers {
             remaining = remaining.replacingOccurrences(of: marker, with: " ")
         }
+
+        // 1b. Collapse Indian/comma-grouped numbers ("1,000", "1,25,000")
+        // into plain digits so the amount regex captures the full value.
+        // Apple's en-IN dictation routinely produces comma-grouped output
+        // — without this we'd get "1" instead of "1000".
+        remaining = remaining.replacingOccurrences(
+            of: #"(\d),(\d)"#,
+            with: "$1$2",
+            options: .regularExpression
+        )
+        // Run a second pass to handle 3-group numbers like "1,25,000"
+        // (Indian lakh grouping) where the first pass leaves "1,25000".
+        remaining = remaining.replacingOccurrences(
+            of: #"(\d),(\d)"#,
+            with: "$1$2",
+            options: .regularExpression
+        )
 
         // 2. Extract the first numeric token as amount.
         // No number = no expense — skip this segment.
@@ -145,19 +184,37 @@ enum ExpenseParser {
         // 4. Match category by direct name (word-boundary) — "food",
         // "groceries", "transport" should match Food, Groceries, Transport.
         // Longest first to avoid partial matches.
+        //
+        // For names containing `&`, we also try the "and" alias (and vice
+        // versa) so that dictating "bills and utilities" matches a category
+        // stored as "Bills & Utilities", and typing "tea and coffee" matches
+        // "Tea & Coffee". This is the single biggest win for voice input.
         let activeCategories = categories.filter { !$0.isArchived }
             .sorted { $0.name.count > $1.name.count }
         for category in activeCategories {
             let nameLower = category.name.lowercased()
-            let escaped = NSRegularExpression.escapedPattern(for: nameLower)
-            let pattern = #"\b"# + escaped + #"\b"#
-            if remaining.range(of: pattern, options: .regularExpression) != nil {
-                result.category = category
-                remaining = remaining.replacingOccurrences(
-                    of: pattern, with: " ", options: .regularExpression
-                )
-                break
+            var aliases: [String] = [nameLower]
+            if nameLower.contains("&") {
+                aliases.append(nameLower.replacingOccurrences(of: "&", with: "and"))
             }
+            if nameLower.contains(" and ") {
+                aliases.append(nameLower.replacingOccurrences(of: " and ", with: " & "))
+            }
+
+            var matched = false
+            for alias in aliases {
+                let escaped = NSRegularExpression.escapedPattern(for: alias)
+                let pattern = #"\b"# + escaped + #"\b"#
+                if remaining.range(of: pattern, options: .regularExpression) != nil {
+                    result.category = category
+                    remaining = remaining.replacingOccurrences(
+                        of: pattern, with: " ", options: .regularExpression
+                    )
+                    matched = true
+                    break
+                }
+            }
+            if matched { break }
         }
 
         // 5. Clean and tokenize remaining text for merchant extraction.

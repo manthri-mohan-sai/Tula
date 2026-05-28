@@ -12,17 +12,38 @@ struct AllExpensesView: View {
     @Environment(\.modelContext) private var context
     @Environment(\.dismiss) private var dismiss
     @Query(sort: \Expense.date, order: .reverse) private var allExpenses: [Expense]
+    @Query(sort: \Category.sortOrder) private var allCategories: [Category]
+    @Query(sort: \Account.sortOrder) private var allAccounts: [Account]
     @PrimaryCurrency private var currencyCode
 
     @State private var searchText: String = ""
     @State private var editingExpense: Expense?
 
+    // Filter state — kept on this view so it survives the sheet open/close.
+    @State private var filter: ExpenseFilter = .empty
+    @State private var showingFilterSheet = false
+
+    /// Optional preset filter passed in from another screen (e.g. Stats
+    /// → tap "Top Category" deep-links here with that category preselected).
+    /// nil means "no preset" — the user starts unfiltered.
+    private let presetFilter: ExpenseFilter?
+
+    init(presetFilter: ExpenseFilter? = nil) {
+        self.presetFilter = presetFilter
+        if let preset = presetFilter {
+            _filter = State(initialValue: preset)
+        }
+    }
+
     // MARK: - Filtering & Grouping
 
+    /// Combined search + filter pipeline. Filter clauses are ANDed; search
+    /// is the final fuzzy pass over what filters left behind.
     private var filtered: [Expense] {
+        let afterFilters = allExpenses.filter { filter.matches($0) }
         let trimmed = searchText.trimmingCharacters(in: .whitespaces).lowercased()
-        guard !trimmed.isEmpty else { return allExpenses }
-        return allExpenses.filter { expense in
+        guard !trimmed.isEmpty else { return afterFilters }
+        return afterFilters.filter { expense in
             if let m = expense.merchant?.lowercased(), m.contains(trimmed) { return true }
             if let n = expense.note?.lowercased(), n.contains(trimmed) { return true }
             if let c = expense.category?.name.lowercased(), c.contains(trimmed) { return true }
@@ -68,9 +89,32 @@ struct AllExpensesView: View {
     }
 
     // MARK: - Body
+    //
+    // No outer NavigationStack — this view is wrapped by its presenter:
+    //   • As a sheet from Home: presenter wraps in NavigationStack
+    //   • As a pushed destination from Stats: parent's NavigationStack hosts
+    // Wrapping ourselves caused nested-stack runtime warnings and a
+    // blank "destination" page when navigated to as a push.
 
     var body: some View {
-        NavigationStack {
+        VStack(spacing: 0) {
+            // Active filter chips — only visible when filters are set.
+            // Sits above the list to make it obvious what's narrowing
+            // the results and to provide one-tap removal. Bottom gap
+            // larger than top so the chips visually attach to the
+            // search bar above them, with breathing room before the
+            // first day-section header below.
+            if filter.hasAnyFilter {
+                ActiveFilterChipBar(
+                    filter: $filter,
+                    currencyCode: currencyCode
+                )
+                .padding(.horizontal, Spacing.lg)
+                .padding(.top, Spacing.sm)
+                .padding(.bottom, Spacing.md)
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+
             Group {
                 if filtered.isEmpty {
                     emptyState
@@ -80,24 +124,59 @@ struct AllExpensesView: View {
                     expensesList
                 }
             }
-            .navigationTitle("Activity")
-            .navigationSubtitle(subtitleText)
-            .navigationBarTitleDisplayMode(.inline)
-            .searchable(
-                text: $searchText,
-                placement: .navigationBarDrawer(displayMode: .always),
-                prompt: "Search by merchant, category, amount"
-            )
-            .toolbar {
+        }
+        .animation(.snappy(duration: 0.25), value: filter.hasAnyFilter)
+        .navigationTitle("Activity")
+        .navigationSubtitle(subtitleText)
+        .navigationBarTitleDisplayMode(.inline)
+        .searchable(
+            text: $searchText,
+            placement: .navigationBarDrawer(displayMode: .always),
+            prompt: "Search by merchant, category, amount"
+        )
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button {
+                    Haptics.tap()
+                    showingFilterSheet = true
+                } label: {
+                    // Show the badge when any filter is active so the
+                    // entry point reads as "currently filtered".
+                    Image(systemName: filter.hasAnyFilter
+                          ? "line.3.horizontal.decrease.circle.fill"
+                          : "line.3.horizontal.decrease.circle")
+                        .font(.body.weight(.medium))
+                }
+                .tint(filter.hasAnyFilter ? Color.tulaBrandFallback : .primary)
+                .accessibilityLabel("Filters")
+            }
+            // "Done" only when presented as a sheet (dismiss is meaningful);
+            // when pushed, the default back chevron handles return.
+            if showsDoneButton {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Done") { dismiss() }
                         .fontWeight(.semibold)
                 }
             }
-            .sheet(item: $editingExpense) { expense in
-                AddExpenseView(existingExpense: expense)
-            }
         }
+        .sheet(item: $editingExpense) { expense in
+            AddExpenseView(existingExpense: expense)
+        }
+        .sheet(isPresented: $showingFilterSheet) {
+            FilterSheet(
+                filter: $filter,
+                categories: allCategories.filter { !$0.isArchived },
+                accounts: allAccounts.filter { !$0.isArchived }
+            )
+        }
+    }
+
+    /// Whether to render the "Done" toolbar button. True when this view
+    /// is the root of its own NavigationStack (sheet presentation); false
+    /// when it's pushed onto an existing stack and the back chevron is
+    /// already doing the job.
+    private var showsDoneButton: Bool {
+        presetFilter == nil
     }
 
     /// Subtitle showing transaction count + grand total.

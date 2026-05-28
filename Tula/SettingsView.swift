@@ -1,13 +1,24 @@
 import SwiftUI
 import SwiftData
 
+/// Top-level settings screen reached from the Home toolbar.
+///
+/// Reorganized into clear groups:
+///   - **General**: currency, daily reminder
+///   - **Alerts**: budget threshold notifications
+///   - **Data**: accounts, categories, recurring
+///   - **Privacy**: backup/restore
+///   - **Tools**: export
+///   - **About**: version footer
 struct SettingsView: View {
     @Environment(\.modelContext) private var context
     @Environment(\.dismiss) private var dismiss
+
     @AppStorage("primaryCurrencyCode") private var primaryCurrencyCode: String = "INR"
     @AppStorage("reminderEnabled") private var reminderEnabled: Bool = false
     @AppStorage("reminderHour") private var reminderHour: Int = 21
     @AppStorage("reminderMinute") private var reminderMinute: Int = 0
+    @AppStorage("budgetAlertsEnabled") private var budgetAlertsEnabled: Bool = false
 
     @State private var showingAccounts = false
     @State private var showingCategories = false
@@ -15,7 +26,11 @@ struct SettingsView: View {
     @State private var showingCurrencyPicker = false
     @State private var showingReminders = false
     @State private var showingBackup = false
+    @State private var showingExport = false
+    @State private var showingNotificationDeniedAlert = false
 
+    /// Pretty-printed status for the daily reminder row trailing label.
+    /// "Off" when disabled, otherwise the formatted hh:mm.
     private var reminderSummary: String {
         guard reminderEnabled else { return "Off" }
         var comps = DateComponents()
@@ -28,86 +43,13 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             List {
-                // General
-                Section {
-                    settingsLinkRow(
-                        title: "Currency",
-                        icon: "indianrupeesign.circle.fill",
-                        color: .green,
-                        trailing: "\(Currency.symbol(for: primaryCurrencyCode)) \(primaryCurrencyCode)"
-                    ) { showingCurrencyPicker = true }
-
-                    settingsLinkRow(
-                        title: "Reminders",
-                        icon: "bell.badge.fill",
-                        color: .red,
-                        trailing: reminderSummary
-                    ) { showingReminders = true }
-                } header: {
-                    Text("General")
-                }
-
-                // Data
-                Section {
-                    settingsLinkRow(title: "Accounts", icon: "creditcard.fill", color: .blue) {
-                        showingAccounts = true
-                    }
-                    settingsLinkRow(title: "Categories", icon: "tag.fill", color: .pink) {
-                        showingCategories = true
-                    }
-                    settingsLinkRow(title: "Recurring", icon: "arrow.clockwise.circle.fill", color: .orange) {
-                        showingRecurring = true
-                    }
-                } header: {
-                    Text("Data")
-                }
-
-                // Voice
-                Section {
-                    HStack {
-                        settingsLabel("Siri & Shortcuts", icon: "mic.fill", color: .indigo)
-                        Spacer()
-                        Image(systemName: "checkmark")
-                            .font(.caption.weight(.bold))
-                            .foregroundStyle(.green)
-                    }
-                } header: {
-                    Text("Voice")
-                } footer: {
-                    Text("Say \"Hey Siri, log expense in Tula\" or assign a custom phrase in the Shortcuts app.")
-                }
-
-                // Backup
-                Section {
-                    settingsLinkRow(title: "Backup & Restore", icon: "externaldrive.fill", color: .gray) {
-                        showingBackup = true
-                    }
-                } header: {
-                    Text("Privacy")
-                } footer: {
-                    Text("Encrypted backups with your passphrase. Your data never leaves your device unless you share it.")
-                }
-
-                // About
-                Section {
-                    HStack {
-                        settingsLabel("Version", icon: "info.circle.fill", color: .gray)
-                        Spacer()
-                        Text("1.0")
-                            .foregroundStyle(.secondary)
-                    }
-                } header: {
-                    Text("About")
-                } footer: {
-                    HStack {
-                        Spacer()
-                        Text("तुला · Balance your spend")
-                            .font(.caption)
-                            .foregroundStyle(.tertiary)
-                        Spacer()
-                    }
-                    .padding(.top, Spacing.md)
-                }
+                generalSection
+                alertsSection
+                dataSection
+                voiceSection
+                toolsSection
+                privacySection
+                aboutSection
             }
             .navigationTitle("Settings")
             .toolbar {
@@ -121,9 +63,182 @@ struct SettingsView: View {
             .sheet(isPresented: $showingRecurring) { RecurringRulesView() }
             .sheet(isPresented: $showingReminders) { RemindersView() }
             .sheet(isPresented: $showingBackup) { BackupRestoreView() }
+            .sheet(isPresented: $showingExport) { ExportView() }
             .sheet(isPresented: $showingCurrencyPicker) {
                 CurrencyPickerView(selectedCode: $primaryCurrencyCode)
             }
+            .alert("Notifications are off", isPresented: $showingNotificationDeniedAlert) {
+                Button("Open Settings") {
+                    if let url = URL(string: UIApplication.openSettingsURLString) {
+                        UIApplication.shared.open(url)
+                    }
+                }
+                Button("Cancel", role: .cancel) { }
+            } message: {
+                Text("Enable Notifications for Tula in iOS Settings to receive budget alerts.")
+            }
+        }
+    }
+
+    // MARK: - Sections
+
+    private var generalSection: some View {
+        Section {
+            settingsLinkRow(
+                title: "Currency",
+                icon: "indianrupeesign.circle.fill",
+                color: .green,
+                trailing: "\(Currency.symbol(for: primaryCurrencyCode)) \(primaryCurrencyCode)"
+            ) { showingCurrencyPicker = true }
+
+            settingsLinkRow(
+                title: "Daily Reminder",
+                icon: "bell.badge.fill",
+                color: .red,
+                trailing: reminderSummary
+            ) { showingReminders = true }
+        } header: {
+            Text("General")
+        }
+    }
+
+    /// Budget threshold alerts — single toggle. When turned on we request
+    /// notification permission immediately; if denied we prompt the user
+    /// to open iOS Settings (one-tap deep link).
+    private var alertsSection: some View {
+        Section {
+            Toggle(isOn: Binding(
+                get: { budgetAlertsEnabled },
+                set: { newValue in toggleBudgetAlerts(to: newValue) }
+            )) {
+                settingsLabel("Budget Alerts", icon: "chart.pie.fill", color: .orange)
+            }
+        } header: {
+            Text("Alerts")
+        } footer: {
+            Text("Get a notification when any budget reaches 75% or goes over.")
+        }
+    }
+
+    private var dataSection: some View {
+        Section {
+            settingsLinkRow(title: "Accounts", icon: "creditcard.fill", color: .blue) {
+                showingAccounts = true
+            }
+            settingsLinkRow(title: "Categories", icon: "tag.fill", color: .pink) {
+                showingCategories = true
+            }
+            settingsLinkRow(title: "Recurring", icon: "arrow.clockwise.circle.fill", color: .orange) {
+                showingRecurring = true
+            }
+        } header: {
+            Text("Data")
+        }
+    }
+
+    private var voiceSection: some View {
+        Section {
+            HStack {
+                settingsLabel("Siri & Shortcuts", icon: "mic.fill", color: .indigo)
+                Spacer()
+                Image(systemName: "checkmark")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(.green)
+            }
+        } header: {
+            Text("Voice")
+        } footer: {
+            Text("Say \"Hey Siri, log expense in Tula\" or assign a custom phrase in the Shortcuts app.")
+        }
+    }
+
+    /// Tools section is for one-shot actions that act *on* the data —
+    /// exports, deep links, etc. Backups stay in Privacy since they're
+    /// about data safety, not data export.
+    private var toolsSection: some View {
+        Section {
+            settingsLinkRow(title: "Export", icon: "square.and.arrow.up.fill", color: .teal) {
+                showingExport = true
+            }
+        } header: {
+            Text("Tools")
+        } footer: {
+            Text("Save your expenses as a CSV spreadsheet or PDF report.")
+        }
+    }
+
+    private var privacySection: some View {
+        Section {
+            settingsLinkRow(title: "Backup & Restore", icon: "externaldrive.fill", color: .gray) {
+                showingBackup = true
+            }
+        } header: {
+            Text("Privacy")
+        } footer: {
+            Text("Encrypted backups with your passphrase. Your data never leaves your device unless you share it.")
+        }
+    }
+
+    private var aboutSection: some View {
+        Section {
+            HStack {
+                settingsLabel("Version", icon: "info.circle.fill", color: .gray)
+                Spacer()
+                Text(appVersion)
+                    .foregroundStyle(.secondary)
+            }
+        } header: {
+            Text("About")
+        } footer: {
+            HStack {
+                Spacer()
+                Text("तुला · Balance your spend")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                Spacer()
+            }
+            .padding(.top, Spacing.md)
+        }
+    }
+
+    /// Version string from the bundle. Falls back to "1.0" if missing —
+    /// matches the previous hardcoded value so older test builds still
+    /// read sensibly.
+    private var appVersion: String {
+        let dict = Bundle.main.infoDictionary
+        let version = dict?["CFBundleShortVersionString"] as? String ?? "1.0"
+        let build = dict?["CFBundleVersion"] as? String
+        if let build, build != version { return "\(version) (\(build))" }
+        return version
+    }
+
+    // MARK: - Budget Alerts Toggle
+
+    /// Handles flipping the budget alerts toggle. Requests notification
+    /// permission on enable; resets the per-budget "has fired" flags on
+    /// disable so re-enabling later starts fresh.
+    private func toggleBudgetAlerts(to newValue: Bool) {
+        if newValue {
+            Task {
+                let status = await NotificationManager.currentStatus()
+                if status == .denied {
+                    showingNotificationDeniedAlert = true
+                    return
+                }
+                let granted = await NotificationManager.requestAuthorization()
+                await MainActor.run {
+                    if granted {
+                        budgetAlertsEnabled = true
+                        Haptics.success()
+                    } else {
+                        showingNotificationDeniedAlert = true
+                    }
+                }
+            }
+        } else {
+            budgetAlertsEnabled = false
+            NotificationManager.resetAllBudgetAlertFlags()
+            Haptics.tap()
         }
     }
 

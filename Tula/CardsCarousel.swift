@@ -25,6 +25,11 @@ struct CardsCarousel: View {
     let accounts: [Account]
     let namespace: Namespace.ID
     let onTap: (Account) -> Void
+    /// Long-press context menu actions. Default no-ops keep older
+    /// CardsCarousel call sites compiling without forcing them to
+    /// supply the new handlers immediately.
+    var onEdit: (Account) -> Void = { _ in }
+    var onArchive: (Account) -> Void = { _ in }
     /// The currently centered card. Updated by the system as the user
     /// swipes; can also be set programmatically to scroll to a card.
     @Binding var activeID: UUID?
@@ -59,6 +64,26 @@ struct CardsCarousel: View {
                         .onTapGesture {
                             Haptics.tap()
                             onTap(account)
+                        }
+                        // Long-press → standard iOS context menu with
+                        // Edit and Archive. Matches the gesture pattern
+                        // of Photos / Mail thumbnails — primary tap
+                        // navigates, long-press surfaces secondary
+                        // actions without cluttering the visible UI.
+                        .contextMenu {
+                            Button {
+                                Haptics.tap()
+                                onEdit(account)
+                            } label: {
+                                Label("Edit Account", systemImage: "pencil")
+                            }
+
+                            Button(role: .destructive) {
+                                Haptics.warning()
+                                onArchive(account)
+                            } label: {
+                                Label("Archive", systemImage: "archivebox")
+                            }
                         }
                         .id(account.id)
                 }
@@ -269,6 +294,8 @@ struct AccountCardView: View {
                 .lineLimit(1)
                 .minimumScaleFactor(0.5)
                 .shadow(color: .black.opacity(0.20), radius: 1, y: 0.5)
+                .contentTransition(.numericText(value: account.derivedBalance))
+                .animation(.snappy(duration: 0.35), value: account.derivedBalance)
 
             Text(balanceLabel.uppercased())
                 .font(.caption2.weight(.bold))

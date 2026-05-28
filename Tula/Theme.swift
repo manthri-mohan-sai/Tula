@@ -1,35 +1,22 @@
 import SwiftUI
 
 // MARK: - Brand
+//
+// Color(hex:), Color(light:dark:), and Color.tulaBrandFallback live in
+// SharedAppearance.swift so both the main app and widget extension can
+// share them. This file keeps only main-app-specific surfaces.
 
 extension Color {
-    /// Tula's primary accent — saffron amber rooted in Indian visual culture.
-    /// Brighter in dark mode for readability against deep grays.
-    static let tulaBrandFallback = Color(
-        light: Color(red: 0.85, green: 0.46, blue: 0.10),  // #D97706
-        dark:  Color(red: 0.96, green: 0.62, blue: 0.24)   // #F59E0B
-    )
-
     /// Primary surface for cards, lists.
     static let tulaCardSurface = Color(uiColor: .secondarySystemGroupedBackground)
 
     /// Page background, slightly cooler than the cards.
     static let tulaBackground = Color(uiColor: .systemGroupedBackground)
 
-    init(light: Color, dark: Color) {
-        self.init(uiColor: UIColor { trait in
-            trait.userInterfaceStyle == .dark ? UIColor(dark) : UIColor(light)
-        })
-    }
-
     /// Transforms a vibrant brand color into a sophisticated card-surface
     /// tone. Caps brightness ≤ 0.50 and saturation ≤ 0.75 so any input —
     /// even a neon primary — emerges as a deep, refined hue rather than a
     /// cartoony Material-design swatch.
-    ///
-    /// This is what makes a user-chosen bright blue render as deep navy,
-    /// bright green as forest green, bright yellow as muted ochre, etc.,
-    /// matching the visual language of real premium credit cards.
     func cardified() -> Color {
         let ui = UIColor(self)
         var h: CGFloat = 0, s: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
@@ -90,25 +77,39 @@ enum AppAnimation {
 
 // MARK: - Liquid Glass
 
-/// Standard glass background. On iOS 26+ this participates in the Liquid
-/// Glass system automatically via .regularMaterial.
+/// Standard glass background. Uses iOS 26's `.glassEffect()` modifier for
+/// true Liquid Glass — proper background refraction, dynamic light
+/// response, and edge highlights rendered by the system. Falls back to
+/// a hand-crafted material + border approximation on iOS 18 and below.
 struct LiquidGlass: ViewModifier {
     var cornerRadius: CGFloat = CornerRadius.medium
 
     func body(content: Content) -> some View {
-        content
-            .background(.regularMaterial)
-            .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .strokeBorder(
-                        LinearGradient(
-                            colors: [.white.opacity(0.15), .white.opacity(0.02)],
-                            startPoint: .top, endPoint: .bottom
-                        ),
-                        lineWidth: 0.5
-                    )
-            )
+        if #available(iOS 26.0, *) {
+            // Native iOS 26 — single line, system-rendered glass.
+            content
+                .glassEffect(
+                    .regular,
+                    in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                )
+        } else {
+            // Backport: material + soft top-edge highlight to suggest the
+            // refraction band Liquid Glass renders natively. The 0.15→0.02
+            // gradient mimics the brighter top edge of true glass.
+            content
+                .background(.regularMaterial)
+                .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        .strokeBorder(
+                            LinearGradient(
+                                colors: [.white.opacity(0.15), .white.opacity(0.02)],
+                                startPoint: .top, endPoint: .bottom
+                            ),
+                            lineWidth: 0.5
+                        )
+                )
+        }
     }
 }
 
@@ -213,7 +214,12 @@ struct HeroAmountText: View {
             .font(.system(size: size, weight: .bold, design: .rounded))
             .lineLimit(1)
             .minimumScaleFactor(0.5)
-            .contentTransition(.numericText())
+            // value-bound transition so SwiftUI can interpolate digits
+            // when the amount changes. Pairing with an explicit
+            // .animation(value:) ensures the rolling actually happens
+            // (without it, transitions need an outer withAnimation).
+            .contentTransition(.numericText(value: amount))
+            .animation(.snappy(duration: 0.35), value: amount)
             .monospacedDigit()
     }
 }

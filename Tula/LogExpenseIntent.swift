@@ -113,6 +113,47 @@ struct LogExpenseIntent: AppIntent {
     }
 }
 
+// MARK: - ShowTodaySpendIntent
+
+/// Reports today's spend. Pairs with the Live Activity / Lock Screen so
+/// the user can also voice-query it ("How much did I spend today in Tula?")
+/// instead of glancing at the screen.
+struct ShowTodaySpendIntent: AppIntent {
+    static var title: LocalizedStringResource = "Today's Spend"
+
+    static var description = IntentDescription(
+        "Show how much you've spent in Tula today.",
+        categoryName: "Insights"
+    )
+
+    static var openAppWhenRun: Bool = false
+    static var isDiscoverable: Bool = true
+
+    @MainActor
+    func perform() async throws -> some IntentResult & ProvidesDialog {
+        let context = try sharedModelContext()
+
+        let cal = Calendar.current
+        let todayStart = cal.startOfDay(for: .now)
+        let descriptor = FetchDescriptor<Expense>(
+            predicate: #Predicate { $0.date >= todayStart }
+        )
+        let expenses = (try? context.fetch(descriptor)) ?? []
+        let total = expenses.reduce(0) { $0 + $1.amount }
+        let count = expenses.count
+        let code = UserDefaults.standard.string(forKey: "primaryCurrencyCode") ?? "INR"
+
+        if count == 0 {
+            return .result(dialog: IntentDialog("You haven't logged any expenses today."))
+        }
+        let totalFormatted = Currency.format(total, code: code)
+        if count == 1 {
+            return .result(dialog: IntentDialog("Today you've spent \(totalFormatted)."))
+        }
+        return .result(dialog: IntentDialog("Today you've spent \(totalFormatted) across \(count) transactions."))
+    }
+}
+
 // MARK: - ShowMonthlySpendIntent
 
 /// A simpler intent that doesn't take parameters — just reports the user's
@@ -258,6 +299,22 @@ struct TulaShortcuts: AppShortcutsProvider {
             ],
             shortTitle: "Log Expense",
             systemImageName: "indianrupeesign.circle.fill"
+        )
+
+        AppShortcut(
+            intent: ShowTodaySpendIntent(),
+            phrases: [
+                "How much have I spent today in \(.applicationName)",
+                "How much I spent today in \(.applicationName)",
+                "Show today's spend in \(.applicationName)",
+                "Show me today in \(.applicationName)",
+                "\(.applicationName) today",
+                "\(.applicationName) today's spend",
+                "\(.applicationName) how much today",
+                "What did I spend today in \(.applicationName)"
+            ],
+            shortTitle: "Today's Spend",
+            systemImageName: "sun.max.fill"
         )
 
         AppShortcut(

@@ -47,7 +47,7 @@ struct AccountDetailView: View {
                 actionButtons
                 timelineSection
             }
-            .padding(.horizontal, Spacing.md)
+            .padding(.horizontal, Spacing.lg)
             .padding(.bottom, Spacing.lg)
         }
         .background(Color(uiColor: .systemGroupedBackground))
@@ -102,6 +102,8 @@ struct AccountDetailView: View {
                 .font(.system(size: 36, weight: .bold, design: .rounded))
                 .minimumScaleFactor(0.5)
                 .lineLimit(1)
+                .contentTransition(.numericText(value: account.derivedBalance))
+                .animation(.snappy(duration: 0.35), value: account.derivedBalance)
 
             if account.kind == .creditCard, let limit = account.creditLimit, limit > 0 {
                 creditLimitBar(used: account.derivedBalance, limit: limit)

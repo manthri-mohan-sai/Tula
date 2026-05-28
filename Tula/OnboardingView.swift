@@ -1,9 +1,14 @@
 import SwiftUI
+import AVFoundation
+import Speech
+import UserNotifications
 
-/// First-launch onboarding. Three pages:
+/// First-launch onboarding. Four pages:
 /// 1. Brand intro — Devanagari "तुला" + tagline
-/// 2. Pillar features — Quick log, Stats, Recurring (3 feature cards)
-/// 3. Currency selection — locks in the user's primary currency
+/// 2. Pillar features — Quick log, Voice, Recurring
+/// 3. Permissions — proactively requests mic + notifications so first
+///    use isn't interrupted by surprise iOS dialogs. Skippable.
+/// 4. Currency selection — locks in the user's primary currency
 ///
 /// Dismissal sets @AppStorage("onboardingComplete") = true so this never
 /// appears again. Built as a TabView with .page style for swipe navigation.
@@ -14,12 +19,17 @@ struct OnboardingView: View {
 
     @State private var page: Int = 0
 
+    /// Total number of swipeable pages. Drives the "Continue" vs
+    /// "Get Started" label on the action button.
+    private let totalPages = 4
+
     var body: some View {
         VStack(spacing: 0) {
             TabView(selection: $page) {
                 introPage.tag(0)
                 featuresPage.tag(1)
-                currencyPage.tag(2)
+                permissionsPage.tag(2)
+                currencyPage.tag(3)
             }
             .tabViewStyle(.page(indexDisplayMode: .always))
             .indexViewStyle(.page(backgroundDisplayMode: .always))
@@ -83,15 +93,64 @@ struct OnboardingView: View {
                 )
                 featureRow(
                     icon: "mic.fill",
-                    color: .indigo,
-                    title: "Siri",
-                    detail: "Hands-free with \"Log expense in Tula\"."
+                    color: .red,
+                    title: "Voice",
+                    detail: "Tap the mic or use Siri to add expenses hands-free."
                 )
                 featureRow(
                     icon: "arrow.clockwise.circle.fill",
                     color: .orange,
                     title: "Recurring",
                     detail: "Rent, subscriptions, EMIs — auto-logged each month."
+                )
+            }
+            .padding(.horizontal, Spacing.lg)
+            .padding(.top, Spacing.md)
+
+            Spacer()
+            Spacer()
+        }
+    }
+
+    /// Page 3 — proactively request mic + notification permissions so the
+    /// user isn't surprised by iOS dialogs the first time they tap the
+    /// mic or enable budget alerts. Both are independent and skippable.
+    @State private var micGranted: Bool = false
+    @State private var notificationsGranted: Bool = false
+    @State private var micRequested: Bool = false
+    @State private var notificationsRequested: Bool = false
+
+    private var permissionsPage: some View {
+        VStack(spacing: Spacing.lg) {
+            Spacer()
+
+            Text("Two quick permissions")
+                .font(.title2.weight(.bold))
+
+            Text("Both are optional and you can change them later in iOS Settings.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, Spacing.lg)
+
+            VStack(spacing: Spacing.md) {
+                permissionTile(
+                    icon: "mic.fill",
+                    color: .red,
+                    title: "Microphone",
+                    detail: "Required for voice expense logging.",
+                    isGranted: micGranted,
+                    isRequested: micRequested,
+                    action: requestMicrophone
+                )
+                permissionTile(
+                    icon: "bell.badge.fill",
+                    color: .indigo,
+                    title: "Notifications",
+                    detail: "Budget alerts and daily reminders.",
+                    isGranted: notificationsGranted,
+                    isRequested: notificationsRequested,
+                    action: requestNotifications
                 )
             }
             .padding(.horizontal, Spacing.lg)
@@ -185,12 +244,112 @@ struct OnboardingView: View {
         }
     }
 
+    /// Permission tile — same layout as feature rows but with a trailing
+    /// "Allow" button that morphs into a green checkmark once granted
+    /// (or a gray "Denied" pill if the user refused).
+    private func permissionTile(icon: String, color: Color,
+                                  title: String, detail: String,
+                                  isGranted: Bool, isRequested: Bool,
+                                  action: @escaping () -> Void) -> some View {
+        HStack(spacing: Spacing.md) {
+            ZStack {
+                Circle()
+                    .fill(color.opacity(0.18))
+                    .frame(width: 44, height: 44)
+                Image(systemName: icon)
+                    .font(.title3.weight(.medium))
+                    .foregroundStyle(color)
+            }
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+            Spacer(minLength: 8)
+
+            permissionAction(isGranted: isGranted, isRequested: isRequested, action: action)
+        }
+        .padding(.horizontal, Spacing.md)
+        .padding(.vertical, Spacing.sm + 2)
+        .background(
+            RoundedRectangle(cornerRadius: CornerRadius.medium, style: .continuous)
+                .fill(Color.tulaCardSurface)
+        )
+    }
+
+    @ViewBuilder
+    private func permissionAction(isGranted: Bool, isRequested: Bool,
+                                    action: @escaping () -> Void) -> some View {
+        if isGranted {
+            HStack(spacing: 4) {
+                Image(systemName: "checkmark.circle.fill")
+                Text("On")
+            }
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.green)
+        } else if isRequested {
+            Text("Skipped")
+                .font(.caption.weight(.semibold))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(Color.gray.opacity(0.15), in: Capsule())
+                .foregroundStyle(.secondary)
+        } else {
+            Button(action: action) {
+                Text("Allow")
+                    .font(.caption.weight(.bold))
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(Color.tulaBrandFallback, in: Capsule())
+                    .foregroundStyle(.white)
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    // MARK: - Permission requests
+
+    private func requestMicrophone() {
+        Haptics.tap()
+        Task {
+            // Mic is meaningful only with speech recognition, so request
+            // both together and gate the green state on both being on.
+            let speechStatus = await withCheckedContinuation { (cont: CheckedContinuation<SFSpeechRecognizerAuthorizationStatus, Never>) in
+                SFSpeechRecognizer.requestAuthorization { status in cont.resume(returning: status) }
+            }
+            let micGrantedNow = await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
+                AVAudioApplication.requestRecordPermission { granted in cont.resume(returning: granted) }
+            }
+            await MainActor.run {
+                micGranted = micGrantedNow && speechStatus == .authorized
+                micRequested = true
+                if micGranted { Haptics.success() }
+            }
+        }
+    }
+
+    private func requestNotifications() {
+        Haptics.tap()
+        Task {
+            let granted = await NotificationManager.requestAuthorization()
+            await MainActor.run {
+                notificationsGranted = granted
+                notificationsRequested = true
+                if granted { Haptics.success() }
+            }
+        }
+    }
+
     // MARK: - Action
 
     private var actionButton: some View {
         Button {
             Haptics.tap()
-            if page < 2 {
+            if page < totalPages - 1 {
                 withAnimation { page += 1 }
             } else {
                 onboardingComplete = true
@@ -198,7 +357,7 @@ struct OnboardingView: View {
                 dismiss()
             }
         } label: {
-            Text(page < 2 ? "Continue" : "Get Started")
+            Text(page < totalPages - 1 ? "Continue" : "Get Started")
                 .font(.headline)
                 .foregroundStyle(.white)
                 .frame(maxWidth: .infinity)

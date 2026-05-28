@@ -39,6 +39,15 @@ struct StatsView: View {
     /// Namespace for the period picker's animated selection pill.
     @Namespace private var pickerNamespace
 
+    // MARK: - Drill-down state
+    //
+    // Stats cards (Top Category, Biggest Day, etc.) are tappable and
+    // push to AllExpensesView with a preset filter applied. The two
+    // navigation states map 1:1 to the two cards that have a meaningful
+    // drill-down destination — others (Per Day, Transactions) push
+    // unfiltered or are informational.
+    @State private var navPath = NavigationPath()
+
     // MARK: - Period Math
 
     /// Returns the date range for the current period at the current offset.
@@ -210,9 +219,9 @@ struct StatsView: View {
     // MARK: - Body
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $navPath) {
             ScrollView {
-                VStack(spacing: Spacing.md) {
+                VStack(spacing: Spacing.lg) {
                     periodPicker
                     heroCard
                     if hasAnySpend {
@@ -226,10 +235,14 @@ struct StatsView: View {
                     }
                 }
                 .padding(.horizontal, Spacing.md)
+                .padding(.top, Spacing.md)
                 .padding(.bottom, Spacing.lg)
             }
             .background(Color(uiColor: .systemGroupedBackground))
             .navigationTitle("Stats")
+            .navigationDestination(for: ExpenseFilter.self) { filter in
+                AllExpensesView(presetFilter: filter)
+            }
             .onChange(of: period) { _, _ in
                 Haptics.selection()
                 withAnimation(AppAnimation.gentle) {
@@ -241,46 +254,18 @@ struct StatsView: View {
 
     // MARK: - Period Picker
 
-    /// iOS 26 liquid-glass segmented control. Compact 36pt total height,
-    /// a single floating pill that slides between segments via
-    /// `matchedGeometryEffect`. The container uses `.regularMaterial`
-    /// for the glass effect; the selected pill rides on a solid surface
-    /// so the active label always reads as fully opaque against any
-    /// background — exactly the Apple Music / Calendar pattern.
+    /// Native segmented Picker. The hand-rolled glass-on-solid pill
+    /// version had a visual clash — `.glassEffect` on the container with
+    /// an opaque `systemBackground` pill inside read as two competing
+    /// materials. Apple's stock segmented picker handles iOS 26's
+    /// material treatment correctly without custom layering.
     private var periodPicker: some View {
-        HStack(spacing: 0) {
+        Picker("Period", selection: $period) {
             ForEach(StatsPeriod.allCases) { p in
-                let isSelected = p == period
-                Button {
-                    guard period != p else { return }
-                    Haptics.selection()
-                    withAnimation(.spring(response: 0.38, dampingFraction: 0.82)) {
-                        period = p
-                    }
-                } label: {
-                    ZStack {
-                        if isSelected {
-                            Capsule()
-                                .fill(Color(uiColor: .systemBackground))
-                                .shadow(color: .black.opacity(0.08), radius: 3, y: 1)
-                                .matchedGeometryEffect(id: "periodSelector", in: pickerNamespace)
-                        }
-                        Text(p.shortLabel)
-                            .font(.subheadline.weight(isSelected ? .semibold : .regular))
-                            .foregroundStyle(isSelected ? .primary : .secondary)
-                    }
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 30)
-                    .contentShape(Capsule())
-                }
-                .buttonStyle(.plain)
+                Text(p.shortLabel).tag(p)
             }
         }
-        .padding(3)
-        .background(
-            Capsule()
-                .fill(.regularMaterial)
-        )
+        .pickerStyle(.segmented)
     }
 
     // MARK: - Hero
@@ -299,13 +284,16 @@ struct StatsView: View {
                     .font(.system(size: 36, weight: .bold, design: .rounded))
                     .minimumScaleFactor(0.5)
                     .lineLimit(1)
-                    .contentTransition(.numericText())
+                    .contentTransition(.numericText(value: totalThisPeriod))
+                    .animation(.snappy(duration: 0.35), value: totalThisPeriod)
 
                 if hasAnySpend {
                     HStack(spacing: Spacing.xs) {
                         Text(Currency.format(averagePerDay, code: currencyCode))
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(.primary)
+                            .contentTransition(.numericText(value: averagePerDay))
+                            .animation(.snappy(duration: 0.35), value: averagePerDay)
                         Text("avg / day")
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -409,6 +397,11 @@ struct StatsView: View {
     }
 
     // MARK: - Insight Grid (2x2)
+    //
+    // Three of the four cards drill down to AllExpensesView with the
+    // matching filter preset. "Per Day" is informational only — no
+    // deep-link since "all expenses across an average day" isn't a
+    // meaningful subset to scroll through.
 
     private var insightGrid: some View {
         let columns = [
@@ -416,35 +409,88 @@ struct StatsView: View {
             GridItem(.flexible(), spacing: Spacing.md),
         ]
         return LazyVGrid(columns: columns, spacing: Spacing.md) {
-            insightCard(
+            insightCardButton(
                 label: "Top Category",
                 value: topCategoryItem?.category.name ?? "—",
                 detail: topCategoryItem.map { Currency.format($0.amount, code: currencyCode) } ?? "",
                 icon: topCategoryItem?.category.iconKey ?? "circle.dashed",
-                color: topCategoryItem.map { Color(hex: $0.category.colorHex) } ?? .gray
+                color: topCategoryItem.map { Color(hex: $0.category.colorHex) } ?? .gray,
+                drillDown: topCategoryItem.map { topCategoryFilter(for: $0.category) }
             )
-            insightCard(
+            insightCardButton(
                 label: "Biggest Day",
                 value: biggestDay.map { Currency.format($0.amount, code: currencyCode) } ?? "—",
                 detail: biggestDay.map { $0.date.formatted(.dateTime.day().month(.abbreviated)) } ?? "",
                 icon: "flame.fill",
-                color: .orange
+                color: .orange,
+                drillDown: biggestDay.map { biggestDayFilter(for: $0.date) }
             )
-            insightCard(
+            insightCardButton(
                 label: "Per Day",
                 value: Currency.format(averagePerDay, code: currencyCode),
                 detail: isCurrentPeriod ? "so far" : "average",
                 icon: "calendar",
-                color: .blue
+                color: .blue,
+                drillDown: nil
             )
-            insightCard(
+            insightCardButton(
                 label: "Transactions",
                 value: "\(transactionCount)",
                 detail: transactionCount == 1 ? "logged" : "logged",
                 icon: "list.bullet",
-                color: .purple
+                color: .purple,
+                drillDown: periodRangeFilter
             )
         }
+    }
+
+    /// Tappable wrapper around `insightCard`. When `drillDown` is non-nil,
+    /// the whole card becomes a Button that pushes AllExpensesView via
+    /// `navPath`. When nil, the card renders as a plain (non-interactive)
+    /// surface — used for purely informational cards like "Per Day".
+    @ViewBuilder
+    private func insightCardButton(label: String, value: String, detail: String,
+                                     icon: String, color: Color,
+                                     drillDown: ExpenseFilter?) -> some View {
+        if let filter = drillDown {
+            Button {
+                Haptics.tap()
+                navPath.append(filter)
+            } label: {
+                insightCard(label: label, value: value, detail: detail, icon: icon, color: color)
+            }
+            .buttonStyle(InsightCardButtonStyle())
+        } else {
+            insightCard(label: label, value: value, detail: detail, icon: icon, color: color)
+        }
+    }
+
+    // MARK: - Drill-down filter builders
+
+    /// Filter for "Top Category" — single category, current period.
+    private func topCategoryFilter(for category: Category) -> ExpenseFilter {
+        var f = periodRangeFilter
+        f.categoryIDs = [category.id]
+        return f
+    }
+
+    /// Filter for "Biggest Day" — narrow the range to that single calendar day.
+    private func biggestDayFilter(for date: Date) -> ExpenseFilter {
+        let cal = Calendar.current
+        let start = cal.startOfDay(for: date)
+        let end = cal.date(byAdding: .day, value: 1, to: start) ?? start
+        var f = ExpenseFilter.empty
+        f.dateRange = .custom(start: start, end: end)
+        return f
+    }
+
+    /// Filter matching the currently-selected stats period — used as the
+    /// base for category/merchant drill-downs and for the "Transactions"
+    /// card so tapping it shows the same expenses the stats summarize.
+    private var periodRangeFilter: ExpenseFilter {
+        var f = ExpenseFilter.empty
+        f.dateRange = .custom(start: currentRange.start, end: currentRange.end)
+        return f
     }
 
     private func insightCard(label: String, value: String, detail: String, icon: String, color: Color) -> some View {
@@ -467,11 +513,15 @@ struct StatsView: View {
                 .lineLimit(1)
                 .minimumScaleFactor(0.6)
                 .padding(.top, 2)
+                .contentTransition(.numericText())
+                .animation(.snappy(duration: 0.35), value: value)
 
             Text(detail)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
+                .contentTransition(.numericText())
+                .animation(.snappy(duration: 0.35), value: detail)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(Spacing.md)
@@ -485,7 +535,7 @@ struct StatsView: View {
     // MARK: - Chart
 
     private var chartCard: some View {
-        VStack(alignment: .leading, spacing: Spacing.sm) {
+        VStack(alignment: .leading, spacing: Spacing.md) {
             SectionHeader(title: chartSectionTitle)
 
             Card(padding: Spacing.md, cornerRadius: CornerRadius.medium) {
@@ -717,7 +767,7 @@ struct StatsView: View {
     }
 
     private var weekdayChartCard: some View {
-        VStack(alignment: .leading, spacing: Spacing.sm) {
+        VStack(alignment: .leading, spacing: Spacing.md) {
             SectionHeader(title: "By Weekday")
 
             Card(padding: Spacing.lg, cornerRadius: CornerRadius.medium) {
@@ -765,11 +815,23 @@ struct StatsView: View {
     // MARK: - Category Breakdown
 
     private var categoryBreakdownCard: some View {
-        VStack(alignment: .leading, spacing: Spacing.sm) {
+        VStack(alignment: .leading, spacing: Spacing.md) {
             SectionHeader(title: "By Category")
 
             Card(padding: 0, cornerRadius: CornerRadius.medium) {
                 VStack(spacing: 0) {
+                    // Donut header — proportional slices for the top 5
+                    // categories, "Other" for the rest. Center shows the
+                    // period total so the donut both anchors the view
+                    // and answers the "how much in total" question
+                    // without needing to look elsewhere.
+                    categoryDonutHeader
+                        .padding(.horizontal, Spacing.md)
+                        .padding(.top, Spacing.md)
+                        .padding(.bottom, Spacing.md + 4)
+
+                    Divider()
+
                     ForEach(Array(categoryBreakdown.enumerated()), id: \.element.category.id) { index, item in
                         categoryRow(item.category, amount: item.amount)
                         if index != categoryBreakdown.count - 1 {
@@ -779,6 +841,92 @@ struct StatsView: View {
                 }
             }
         }
+    }
+
+    // MARK: - Donut
+
+    /// Donut chart of category proportions for the current period, with
+    /// the period total in the center. Limits to top 5 distinct slices
+    /// + an "Other" bucket so the donut stays readable; the full list
+    /// is still visible in the rows below.
+    private var categoryDonutHeader: some View {
+        HStack(alignment: .center, spacing: Spacing.lg) {
+            ZStack {
+                CategoryDonut(
+                    slices: donutSlices,
+                    lineWidth: 14
+                )
+                .frame(width: 120, height: 120)
+
+                VStack(spacing: 2) {
+                    Text("Total")
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(.secondary)
+                        .textCase(.uppercase)
+                        .kerning(0.5)
+                    Text(Currency.compact(totalThisPeriod, code: currencyCode))
+                        .font(.title3.weight(.semibold))
+                        .monospacedDigit()
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                        .contentTransition(.numericText(value: totalThisPeriod))
+                        .animation(.snappy(duration: 0.35), value: totalThisPeriod)
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(donutSlices.prefix(4)) { slice in
+                    HStack(spacing: 8) {
+                        Circle()
+                            .fill(slice.color)
+                            .frame(width: 8, height: 8)
+                        Text(slice.name)
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+                        Spacer(minLength: 4)
+                        Text("\(Int((slice.fraction * 100).rounded()))%")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
+                            .contentTransition(.numericText(value: slice.fraction))
+                            .animation(.snappy(duration: 0.35), value: slice.fraction)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    /// Top 5 categories as donut slices, with "Other" rolling up the rest.
+    /// Each slice carries its display name, color, and fractional share.
+    private var donutSlices: [DonutSlice] {
+        guard totalThisPeriod > 0 else { return [] }
+        let sorted = categoryBreakdown
+        let topN = 5
+        let head = sorted.prefix(topN)
+        let tail = sorted.dropFirst(topN)
+
+        var slices: [DonutSlice] = head.map { item in
+            DonutSlice(
+                name: item.category.name,
+                color: Color(hex: item.category.colorHex),
+                amount: item.amount,
+                fraction: item.amount / totalThisPeriod
+            )
+        }
+
+        let tailTotal = tail.reduce(0) { $0 + $1.amount }
+        if tailTotal > 0 {
+            slices.append(DonutSlice(
+                name: "Other",
+                color: .gray.opacity(0.6),
+                amount: tailTotal,
+                fraction: tailTotal / totalThisPeriod
+            ))
+        }
+
+        return slices
     }
 
     /// Wider, more readable category row — the subtle bar runs as a background
@@ -828,7 +976,7 @@ struct StatsView: View {
     // MARK: - Top Merchants
 
     private var topMerchantsCard: some View {
-        VStack(alignment: .leading, spacing: Spacing.sm) {
+        VStack(alignment: .leading, spacing: Spacing.md) {
             SectionHeader(title: "Top Merchants")
 
             Card(padding: 0, cornerRadius: CornerRadius.medium) {
@@ -893,5 +1041,101 @@ struct StatsView: View {
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, Spacing.xxl * 2)
+    }
+}
+
+// MARK: - Insight Card Button Style
+
+/// Subtle press affordance for tappable insight cards. Scales down 2%
+/// and fades 5% on press — same feel Apple uses for icon grids in
+/// Settings / Photos. Reads as "this is interactive" without adding
+/// a chevron or any visual ornament to the card itself.
+private struct InsightCardButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.98 : 1.0)
+            .opacity(configuration.isPressed ? 0.95 : 1.0)
+            .animation(.snappy(duration: 0.18), value: configuration.isPressed)
+    }
+}
+
+// MARK: - Donut Components
+
+/// One slice of the category donut. `fraction` is the proportion of the
+/// total (0...1); slices sum to 1.0 if there are any expenses.
+struct DonutSlice: Identifiable, Equatable {
+    let id = UUID()
+    let name: String
+    let color: Color
+    let amount: Double
+    let fraction: Double
+}
+
+/// Minimalist donut chart that renders slices as colored arc segments
+/// with a small gap between each. No animations on initial render — the
+/// donut sits in a stats screen where data changes are deliberate user
+/// actions (period change), not surprises.
+///
+/// Drawn with SwiftUI `Path` arcs rather than Charts framework because:
+///   1. We need precise control over slice gaps + corner-rounding.
+///   2. No interactivity needed — display-only chart.
+///   3. Smaller surface area / no Charts ceremony.
+struct CategoryDonut: View {
+    let slices: [DonutSlice]
+    let lineWidth: CGFloat
+
+    /// Visual gap between adjacent slices, in degrees. Small enough not
+    /// to lose space but visible enough to read each slice as distinct.
+    private let gapDegrees: Double = 2.0
+
+    var body: some View {
+        GeometryReader { geo in
+            let size = min(geo.size.width, geo.size.height)
+            let radius = (size - lineWidth) / 2
+            let center = CGPoint(x: geo.size.width / 2, y: geo.size.height / 2)
+
+            ZStack {
+                // Background ring — visible only if slices don't sum to 1
+                // (defensive, since they should). Soft fill so it doesn't
+                // compete with slice colors.
+                Circle()
+                    .strokeBorder(Color.gray.opacity(0.10), lineWidth: lineWidth)
+
+                ForEach(Array(arcSpans.enumerated()), id: \.offset) { _, span in
+                    Path { path in
+                        path.addArc(
+                            center: center,
+                            radius: radius,
+                            startAngle: .degrees(span.start),
+                            endAngle: .degrees(span.end),
+                            clockwise: false
+                        )
+                    }
+                    .stroke(
+                        span.color,
+                        style: StrokeStyle(lineWidth: lineWidth, lineCap: .butt)
+                    )
+                }
+            }
+        }
+    }
+
+    /// Walks the slices and produces start/end angles, with a small gap
+    /// inserted between adjacent slices. Starts at the top of the circle
+    /// (-90°) so the first slice begins where the eye lands first.
+    private var arcSpans: [(start: Double, end: Double, color: Color)] {
+        var spans: [(Double, Double, Color)] = []
+        var cursor: Double = -90
+        let totalGap = gapDegrees * Double(slices.count)
+        let usable = 360 - totalGap
+
+        for slice in slices {
+            let span = slice.fraction * usable
+            let start = cursor
+            let end = cursor + span
+            spans.append((start, end, slice.color))
+            cursor = end + gapDegrees
+        }
+        return spans
     }
 }

@@ -31,6 +31,14 @@ struct CardsView: View {
     @State private var navigateAccount: Account?
     @State private var editingExpense: Expense?
     @State private var isAddingAccount: Bool = false
+    @State private var showingTransfer: Bool = false
+    /// Account currently being edited via the context menu's "Edit"
+    /// action. Drives the edit sheet presentation.
+    @State private var editingAccount: Account?
+    /// Account the user has chosen to archive. Drives the confirmation
+    /// alert — set to non-nil to show the alert, cleared after the
+    /// user confirms or cancels.
+    @State private var accountPendingArchive: Account?
 
     /// UUID of the card currently centered in the horizontal carousel.
     /// Bound to the carousel's `scrollPosition`; updating it programmatically
@@ -120,6 +128,12 @@ struct CardsView: View {
                         onTap: { account in
                             navigateAccount = account
                         },
+                        onEdit: { account in
+                            editingAccount = account
+                        },
+                        onArchive: { account in
+                            accountPendingArchive = account
+                        },
                         activeID: $activeCardID
                     )
                     .padding(.top, Spacing.sm)
@@ -141,8 +155,20 @@ struct CardsView: View {
         .navigationTitle("Cards")
         .navigationSubtitle(subtitleText)
         .navigationBarTitleDisplayMode(.large)
-        .toolbar(.hidden, for: .tabBar)
         .toolbar {
+            // Move money — transfer between accounts. Pre-selects the
+            // currently-active card as the source, so swiping to a
+            // card → tapping this opens a transfer FROM that card.
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    Haptics.tap()
+                    showingTransfer = true
+                } label: {
+                    Image(systemName: "arrow.left.arrow.right")
+                        .font(.body.weight(.semibold))
+                }
+                .accessibilityLabel("Move money")
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
                     Haptics.tap()
@@ -165,6 +191,36 @@ struct CardsView: View {
             NavigationStack {
                 AccountFormView()
             }
+        }
+        .sheet(isPresented: $showingTransfer) {
+            TransferFormView(presetFromAccount: activeAccount)
+        }
+        .sheet(item: $editingAccount) { account in
+            NavigationStack {
+                AccountFormView(account: account)
+            }
+        }
+        // Archive confirmation — context menu's destructive Archive
+        // surfaces here so the user can back out before the card
+        // disappears from the carousel. Uses presentation binding tied
+        // to `accountPendingArchive` so the alert only renders when
+        // a target account is set.
+        .alert(
+            "Archive this account?",
+            isPresented: Binding(
+                get: { accountPendingArchive != nil },
+                set: { if !$0 { accountPendingArchive = nil } }
+            ),
+            presenting: accountPendingArchive
+        ) { account in
+            Button("Archive", role: .destructive) {
+                archive(account)
+            }
+            Button("Cancel", role: .cancel) {
+                accountPendingArchive = nil
+            }
+        } message: { account in
+            Text("\(account.name) will be hidden from your active accounts. Existing transactions stay intact and you can unarchive any time from Settings → Accounts.")
         }
         .task {
             // Initialize the carousel to the most-recently-used card on
@@ -255,7 +311,8 @@ struct CardsView: View {
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.secondary)
                 .monospacedDigit()
-                .contentTransition(.numericText())
+                .contentTransition(.numericText(value: monthAmount))
+                .animation(.snappy(duration: 0.35), value: monthAmount)
         }
         .padding(.horizontal, Spacing.lg)
         .padding(.vertical, Spacing.md)
@@ -307,11 +364,11 @@ struct CardsView: View {
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
         .scrollDisabled(true)
-        // 62pt per row accounts for ExpenseRow (48pt minHeight + padding)
-        // plus the small implicit chrome iOS List adds even when listRowInsets
-        // is zero. A tighter calc (56pt) clipped the last row's bottom text.
-        // Same value HomeView's recent list uses, so they stay consistent.
-        .frame(height: CGFloat(expenses.count) * 62)
+        // 72pt per row matches ExpenseRow's actual rendered height
+        // (64pt minHeight + iOS list chrome ≈ ~70pt with a small buffer).
+        // Same value HomeView's recent list uses, so they stay
+        // consistent and neither leaves dead space at the end.
+        .frame(height: CGFloat(expenses.count) * 72)
     }
 
     /// Footer: tappable row that navigates to the full account detail
@@ -359,6 +416,30 @@ struct CardsView: View {
         context.delete(expense)
         try? context.save()
         Haptics.warning()
+    }
+
+    /// Soft-delete the given account — flips `isArchived` true so it
+    /// disappears from the carousel and account pickers throughout the
+    /// app. Existing transactions remain attached and visible; the user
+    /// can unarchive later from Settings → Accounts. If the archived
+    /// account was the currently focused card, we shift focus to
+    /// whichever other account remains so the page indicator and
+    /// active-card section don't render against a stale ID.
+    private func archive(_ account: Account) {
+        let wasActive = activeCardID == account.id
+        account.isArchived = true
+        try? context.save()
+        Haptics.success()
+
+        // Shift focus if we just archived the visible card. Picks the
+        // first remaining active account; the carousel resnaps on next
+        // layout. If no accounts remain, activeCardID becomes nil and
+        // the empty state takes over.
+        if wasActive {
+            let remaining = allAccounts.filter { !$0.isArchived && $0.id != account.id }
+            activeCardID = remaining.first?.id
+        }
+        accountPendingArchive = nil
     }
 
     // MARK: - Empty state

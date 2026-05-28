@@ -227,6 +227,15 @@ final class RecurringRule {
     /// Only used when frequency == .monthly.
     var dayOfMonth: Int = 1
 
+    /// For custom recurrence — number of units per cycle. Defaults to 1
+    /// so a fresh-default custom rule starts as "every 1 month" before
+    /// the user adjusts it. Ignored for non-custom frequencies.
+    var customInterval: Int = 1
+
+    /// For custom recurrence — the unit (day/week/month/year). Stored
+    /// as String for SwiftData; use `customUnit` for typed access.
+    var customUnitRaw: String = CustomIntervalUnit.month.rawValue
+
     var startDate: Date = Date()
     var endDate: Date? = nil
     var isPaused: Bool = false
@@ -246,6 +255,16 @@ final class RecurringRule {
     /// when the app launches and walks recurring rules, it generates any
     /// missing transactions for past due dates and updates this field.
     var lastGeneratedDate: Date? = nil
+
+    /// When true, the engine doesn't auto-log this rule's occurrences.
+    /// Instead, it sends an interactive notification with "Log it" / "Skip"
+    /// actions, so the user can decide per-occurrence. Designed for daily
+    /// patterns the user might skip (e.g. mess meals, gym fees on rest days,
+    /// commute fare on WFH days).
+    ///
+    /// Defaults to false to preserve pre-confirmation behavior on existing
+    /// rules — they keep auto-logging exactly as before.
+    var confirmationRequired: Bool = false
 
     @Relationship(deleteRule: .nullify, inverse: \Expense.recurringRule)
     var generatedExpenses: [Expense] = []
@@ -270,6 +289,23 @@ final class RecurringRule {
         get { RecurringFrequency(rawValue: frequencyRaw) ?? .monthly }
         set { frequencyRaw = newValue.rawValue }
     }
+
+    /// Typed access to the custom interval unit. Only meaningful when
+    /// frequency == .custom; safe to read otherwise (just returns month).
+    var customUnit: CustomIntervalUnit {
+        get { CustomIntervalUnit(rawValue: customUnitRaw) ?? .month }
+        set { customUnitRaw = newValue.rawValue }
+    }
+
+    /// Human-readable description of the cadence. Used in row subtitles.
+    var cadenceLabel: String {
+        switch frequency {
+        case .weekly, .monthly, .yearly:
+            return frequency.shortDescription
+        case .custom:
+            return "every \(customInterval) \(customUnit.label(for: customInterval))"
+        }
+    }
 }
 
 enum RecurringKind: String, Codable {
@@ -278,13 +314,17 @@ enum RecurringKind: String, Codable {
     case cardPayment   // Specifically a card bill payment transfer
 }
 
-/// How often a recurring rule fires. Weekly fires on the same weekday as
-/// the start date. Monthly fires on `dayOfMonth`. Yearly fires on the same
-/// month + day as the start date.
+/// How often a recurring rule fires.
+/// - **weekly**: fires on the same weekday as `startDate`
+/// - **monthly**: fires on `dayOfMonth` each month
+/// - **yearly**: fires on the same month + day as `startDate`
+/// - **custom**: fires every N units (days/weeks/months/years) from
+///   `startDate` — interval/unit live on `RecurringRule`
 enum RecurringFrequency: String, Codable, CaseIterable, Identifiable {
     case weekly
     case monthly
     case yearly
+    case custom
 
     var id: String { rawValue }
 
@@ -293,6 +333,7 @@ enum RecurringFrequency: String, Codable, CaseIterable, Identifiable {
         case .weekly:  return "Weekly"
         case .monthly: return "Monthly"
         case .yearly:  return "Yearly"
+        case .custom:  return "Custom"
         }
     }
 
@@ -301,6 +342,37 @@ enum RecurringFrequency: String, Codable, CaseIterable, Identifiable {
         case .weekly:  return "every week"
         case .monthly: return "every month"
         case .yearly:  return "every year"
+        case .custom:  return "custom"
+        }
+    }
+}
+
+/// Unit for a custom recurring interval. Stored as String on RecurringRule
+/// for SwiftData compatibility; the typed `CustomInterval` enum wraps it.
+enum CustomIntervalUnit: String, Codable, CaseIterable, Identifiable {
+    case day
+    case week
+    case month
+    case year
+
+    var id: String { rawValue }
+
+    /// Singular/plural-aware label for "Every N <unit>".
+    func label(for count: Int) -> String {
+        switch self {
+        case .day:   return count == 1 ? "day" : "days"
+        case .week:  return count == 1 ? "week" : "weeks"
+        case .month: return count == 1 ? "month" : "months"
+        case .year:  return count == 1 ? "year" : "years"
+        }
+    }
+
+    var calendarComponent: Calendar.Component {
+        switch self {
+        case .day:   return .day
+        case .week:  return .weekOfYear
+        case .month: return .month
+        case .year:  return .year
         }
     }
 }

@@ -2,12 +2,25 @@ import SwiftUI
 import SwiftData
 import Charts
 
+// MARK: - Navigation
+
+/// Destinations reachable from the Home screen via path-based navigation.
+/// Using a single value-based destination (instead of multiple
+/// `.navigationDestination(isPresented:)` bool modifiers) avoids a SwiftUI
+/// bug where stacked boolean destinations cause the push transition to hang.
+enum HomeDestination: Hashable {
+    case cards
+    case budgets
+    case reviewQueue
+}
+
 struct HomeView: View {
     @Environment(\.modelContext) private var context
     @Query(sort: \Expense.date, order: .reverse) private var allExpenses: [Expense]
     @Query(sort: \Account.sortOrder) private var allAccounts: [Account]
     @Query(sort: \Category.sortOrder) private var allCategories: [Category]
     @Query private var allMerchantRules: [MerchantRule]
+    @Query private var allRecurringRules: [RecurringRule]
     @PrimaryCurrency private var currencyCode
 
     let onShowStats: () -> Void
@@ -15,13 +28,15 @@ struct HomeView: View {
     @State private var editingExpense: Expense?
     @State private var showingAllExpenses = false
     @State private var showingSettings = false
-    @State private var showingCards = false
+    @State private var showingRecurring = false
+    @State private var navPath = NavigationPath()
     @State private var toastMessage: String?
     @State private var toastToken: UUID = UUID()
     @State private var savePulse: Bool = false
     @State private var heroTapPulse: Bool = false
 
     @AppStorage("lastUsedAccountID") private var lastUsedAccountID: String = ""
+    @AppStorage("budgetAlertsEnabled") private var budgetAlertsEnabled: Bool = false
 
     init(onShowStats: @escaping () -> Void = {}) {
         self.onShowStats = onShowStats
@@ -48,6 +63,43 @@ struct HomeView: View {
         todaysExpenses.reduce(0) { $0 + $1.amount }
     }
 
+    /// Count of expenses missing a category — the Quick Log voice flow can
+    /// land here when the parser can't infer the category. Surfaced as a
+    /// banner above Recent so the user can triage in one tap.
+    private var reviewCount: Int {
+        allExpenses.lazy.filter { $0.category == nil }.count
+    }
+
+    /// Upcoming recurring rules due in the next 7 days. Each row pairs a
+    /// rule with its computed next-due date. Capped at 3 in the surface
+    /// so the section doesn't dominate Home — the full list lives in
+    /// Settings → Recurring.
+    private var upcomingRecurring: [(rule: RecurringRule, date: Date)] {
+        let horizon = Calendar.current.date(byAdding: .day, value: 7, to: .now) ?? .now
+        return allRecurringRules
+            .filter { !$0.isPaused }
+            .compactMap { rule -> (RecurringRule, Date)? in
+                guard let next = RecurringEngine.nextDueDate(for: rule),
+                      next <= horizon else { return nil }
+                return (rule, next)
+            }
+            .sorted { $0.1 < $1.1 }
+            .prefix(3)
+            .map { $0 }
+    }
+
+    /// Computed insights for the Home carousel. Regenerated every render
+    /// from the current data — the engine is pure and fast enough that
+    /// caching adds complexity for no measurable win. Falls back to an
+    /// empty array (which hides the carousel) when no observations land.
+    private var insights: [Insight] {
+        InsightEngine.generate(
+            expenses: allExpenses,
+            accounts: allAccounts,
+            currencyCode: currencyCode
+        )
+    }
+
     private var monthOverMonthChange: Double? {
         let cal = Calendar.current
         let dayOfMonth = cal.component(.day, from: .now)
@@ -63,10 +115,20 @@ struct HomeView: View {
 
     private var recentExpenses: [Expense] { Array(allExpenses.prefix(5)) }
 
+    /// Sparkline data: 7 trailing days ending today. When today has zero
+    /// spend the rightmost bar is empty, making the chart visually shift
+    /// left with awkward whitespace on the right. We drop today in that
+    /// case and slide the window back one day so the chart always ends
+    /// on a "real" data point.
     private var last7DaysData: [(day: Date, total: Double)] {
         let cal = Calendar.current
         let today = cal.startOfDay(for: .now)
-        return (0..<7).reversed().compactMap { offset in
+
+        // Build the trailing window. We pull 7 days *including* today.
+        let includeToday = totalToday > 0
+        let endOffset = includeToday ? 0 : 1
+        let startOffset = endOffset + 6
+        return (endOffset...startOffset).reversed().compactMap { offset in
             guard let day = cal.date(byAdding: .day, value: -offset, to: today) else { return nil }
             let next = cal.date(byAdding: .day, value: 1, to: day) ?? day
             let total = allExpenses
@@ -88,11 +150,14 @@ struct HomeView: View {
     // MARK: - Body
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $navPath) {
             ScrollView {
-                VStack(alignment: .leading, spacing: Spacing.xxl) {
+                VStack(alignment: .leading, spacing: Spacing.xl) {
                     heroSection
                     quickLogSection
+                    if let context = activeContext {
+                        contextRow(for: context)
+                    }
                     recentSection
                 }
                 .padding(.horizontal, Spacing.xl)
@@ -115,7 +180,7 @@ struct HomeView: View {
                 ToolbarItem(placement: .topBarLeading) {
                     Button {
                         Haptics.tap()
-                        showingCards = true
+                        navPath.append(HomeDestination.cards)
                     } label: {
                         Image(systemName: "creditcard")
                             .font(.body.weight(.medium))
@@ -126,6 +191,17 @@ struct HomeView: View {
                     // competes with the hero amount below.
                     .tint(.primary)
                     .accessibilityLabel("Cards")
+                }
+                ToolbarItem(placement: .topBarLeading) {
+                    Button {
+                        Haptics.tap()
+                        navPath.append(HomeDestination.budgets)
+                    } label: {
+                        Image(systemName: "chart.pie")
+                            .font(.body.weight(.medium))
+                    }
+                    .tint(.primary)
+                    .accessibilityLabel("Budgets")
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
@@ -139,17 +215,30 @@ struct HomeView: View {
                     .accessibilityLabel("Settings")
                 }
             }
-            .navigationDestination(isPresented: $showingCards) {
-                CardsView()
+            // Single navigation destination handler — Apple's recommended
+            // pattern. Multiple `.navigationDestination(isPresented:)`
+            // modifiers on the same view cause the push transition to hang
+            // because SwiftUI can't reliably disambiguate them.
+            .navigationDestination(for: HomeDestination.self) { dest in
+                switch dest {
+                case .cards:       CardsView()
+                case .budgets:     BudgetsView()
+                case .reviewQueue: ReviewQueueView()
+                }
             }
             .sheet(item: $editingExpense) { expense in
                 AddExpenseView(existingExpense: expense)
             }
             .sheet(isPresented: $showingAllExpenses) {
-                AllExpensesView()
+                NavigationStack {
+                    AllExpensesView()
+                }
             }
             .sheet(isPresented: $showingSettings) {
                 SettingsView()
+            }
+            .sheet(isPresented: $showingRecurring) {
+                RecurringRulesView()
             }
             .overlay(alignment: .top) {
                 if let toast = toastMessage {
@@ -176,10 +265,10 @@ struct HomeView: View {
                     .offset(x: 20, y: -26)
                     .allowsHitTesting(false)
 
-                VStack(alignment: .leading, spacing: Spacing.md) {
+                VStack(alignment: .leading, spacing: 6) {
                     HStack {
                         Text(Date.now, format: .dateTime.month(.wide).year())
-                            .font(.subheadline.weight(.medium))
+                            .font(.caption.weight(.medium))
                             .foregroundStyle(.secondary)
                         Spacer()
                         if let change = monthOverMonthChange {
@@ -187,15 +276,15 @@ struct HomeView: View {
                         }
                     }
 
-                    VStack(alignment: .leading, spacing: 2) {
+                    VStack(alignment: .leading, spacing: 0) {
                         Text("Spent this month")
-                            .font(.subheadline)
+                            .font(.caption)
                             .foregroundStyle(.secondary)
 
                         HeroAmountText(
                             amount: totalThisMonth,
                             currencyCode: currencyCode,
-                            size: 44
+                            size: 36
                         )
                         .scaleEffect(savePulse ? 1.04 : 1.0)
                         .animation(AppAnimation.bouncy, value: savePulse)
@@ -207,11 +296,12 @@ struct HomeView: View {
 
                     if !last7DaysData.allSatisfy({ $0.total == 0 }) {
                         sparkline
-                            .frame(height: 48)
-                            .padding(.top, Spacing.sm)
+                            .frame(height: 32)
+                            .padding(.top, 2)
                     }
                 }
-                .padding(Spacing.lg)
+                .padding(.horizontal, Spacing.lg)
+                .padding(.vertical, Spacing.md - 2)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
@@ -258,22 +348,47 @@ struct HomeView: View {
         .clipShape(Capsule())
     }
 
+    /// Inline "today" summary that sits below the month total. A small
+    /// amber dot anchors the row visually (replaces the previous sun
+    /// icon — semantic "this is your active/current data" rather than
+    /// weather imagery). The text "·" separator was a typography hack;
+    /// a proper 3pt Circle reads as a deliberate separator dot rather
+    /// than a stray character, and aligns better with the amber anchor.
     private var todayInline: some View {
-        HStack(spacing: Spacing.sm) {
-            Image(systemName: "sun.max.fill")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.orange)
+        HStack(spacing: 0) {
+            // Brand-color anchor — small enough to be a visual cue, not
+            // an icon. Same pattern Apple Music uses for the "Now
+            // Playing" row indicator and Reminders' completed dots.
+            Circle()
+                .fill(Color.tulaBrandFallback)
+                .frame(width: 6, height: 6)
+                .padding(.trailing, 8)
+
             Text("Today")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
+                .padding(.trailing, 8)
+
             Text(Currency.format(totalToday, code: currencyCode))
                 .font(.subheadline.weight(.bold))
                 .monospacedDigit()
-                .contentTransition(.numericText())
-            Text("·").foregroundStyle(.tertiary)
+                .foregroundStyle(.primary)
+                .contentTransition(.numericText(value: totalToday))
+                .animation(.snappy(duration: 0.35), value: totalToday)
+                .padding(.trailing, 10)
+
+            // Refined separator — 3pt circle reads as a deliberate
+            // typographic mark, not a leftover character.
+            Circle()
+                .fill(Color.secondary.opacity(0.4))
+                .frame(width: 3, height: 3)
+                .padding(.trailing, 8)
+
             Text("\(todaysExpenses.count) tx")
                 .font(.caption.weight(.medium))
                 .foregroundStyle(.secondary)
+                .contentTransition(.numericText(value: Double(todaysExpenses.count)))
+                .animation(.snappy(duration: 0.35), value: todaysExpenses.count)
         }
     }
 
@@ -331,6 +446,23 @@ struct HomeView: View {
         Haptics.success()
         triggerSavePulse()
         showToast(valid.count == 1 ? "Expense saved" : "\(valid.count) expenses saved")
+        evaluateBudgetAlerts()
+    }
+
+    /// Evaluates whether any budget crossed a notification threshold after
+    /// the most recent save. Cheap — just walks budgets + summed expenses
+    /// and posts a notification per crossing. No-op when the user has
+    /// disabled budget alerts.
+    private func evaluateBudgetAlerts() {
+        guard budgetAlertsEnabled else { return }
+        let budgetFetch = FetchDescriptor<Budget>(
+            predicate: #Predicate<Budget> { $0.isActive == true }
+        )
+        let budgets = (try? context.fetch(budgetFetch)) ?? []
+        NotificationManager.evaluateBudgetThresholds(
+            budgets: budgets,
+            expenses: allExpenses
+        )
     }
 
     private func triggerSavePulse() {
@@ -346,6 +478,240 @@ struct HomeView: View {
             guard toastToken == token else { return }
             withAnimation(AppAnimation.gentle) { toastMessage = nil }
         }
+    }
+
+    // MARK: - Context Row
+    //
+    // Single, compact row that surfaces whatever needs attention right
+    // now — review queue, an imminent recurring bill, or the top
+    // insight. Only one shows at a time (highest priority wins) so the
+    // home screen doesn't pile three different banners on top of each
+    // other competing for the eye.
+
+    /// Possible attention items in priority order. Reviews come first
+    /// because they're an explicit user task. Imminent recurring bills
+    /// next — they need acknowledgement before they fire. Insights last,
+    /// since they're nice-to-have observations.
+    private enum HomeContext {
+        case review(count: Int)
+        case upcoming(rule: RecurringRule, date: Date)
+        case insight(Insight)
+    }
+
+    /// Returns the single most important context item to show, or nil
+    /// when nothing urgent applies. The order here defines the priority:
+    /// reviews → upcoming bills → insights → nothing.
+    private var activeContext: HomeContext? {
+        if reviewCount > 0 {
+            return .review(count: reviewCount)
+        }
+        if let next = upcomingRecurring.first {
+            return .upcoming(rule: next.rule, date: next.date)
+        }
+        if let topInsight = insights.first {
+            return .insight(topInsight)
+        }
+        return nil
+    }
+
+    /// Renders the active context as a single tappable row. Pattern
+    /// follows iOS Wallet/Health "callout" cells — icon disc on left,
+    /// title + subtitle stacked, chevron on the right. Glass surface
+    /// so it reads as a notice rather than a primary card.
+    private func contextRow(for context: HomeContext) -> some View {
+        let icon = contextIcon(for: context)
+        let color = contextColor(for: context)
+        let title = contextTitle(for: context)
+        let detail = contextDetail(for: context)
+
+        return Button {
+            Haptics.tap()
+            handleContextTap(context)
+        } label: {
+            HStack(spacing: Spacing.md) {
+                ZStack {
+                    Circle()
+                        .fill(color.opacity(0.15))
+                        .frame(width: 36, height: 36)
+                    Image(systemName: icon)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(color)
+                }
+
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(title)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                    Text(detail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+
+                Spacer(minLength: 0)
+
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.horizontal, Spacing.md)
+            .padding(.vertical, Spacing.sm + 2)
+            .background(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(Color.tulaCardSurface)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func contextIcon(for context: HomeContext) -> String {
+        switch context {
+        case .review:               return "tag.slash"
+        case .upcoming(let rule, _): return rule.category?.iconKey ?? "arrow.clockwise.circle.fill"
+        case .insight(let i):       return i.icon
+        }
+    }
+
+    private func contextColor(for context: HomeContext) -> Color {
+        switch context {
+        case .review:               return Color.tulaBrandFallback
+        case .upcoming(let rule, _): return Color(hex: rule.category?.colorHex ?? "#D97706")
+        case .insight(let i):       return i.color
+        }
+    }
+
+    private func contextTitle(for context: HomeContext) -> String {
+        switch context {
+        case .review(let count):
+            return count == 1 ? "1 expense to review" : "\(count) expenses to review"
+        case .upcoming(let rule, _):
+            return rule.name
+        case .insight(let i):
+            return i.title
+        }
+    }
+
+    private func contextDetail(for context: HomeContext) -> String {
+        switch context {
+        case .review:
+            return "Tap to categorize"
+        case .upcoming(_, let date):
+            return upcomingRelativeLabel(for: date)
+        case .insight(let i):
+            return i.detail
+        }
+    }
+
+    /// "Today", "Tomorrow", "in 3 days" — keeps the upcoming context row
+    /// human-readable without exposing raw dates in the compact subtitle.
+    private func upcomingRelativeLabel(for date: Date) -> String {
+        let cal = Calendar.current
+        if cal.isDateInToday(date) { return "Due today" }
+        if cal.isDateInTomorrow(date) { return "Due tomorrow" }
+        let days = cal.dateComponents([.day], from: .now, to: date).day ?? 0
+        if days <= 7 { return "Due in \(days) days" }
+        return "Due \(date.formatted(.dateTime.day().month(.abbreviated)))"
+    }
+
+    private func handleContextTap(_ context: HomeContext) {
+        switch context {
+        case .review:
+            navPath.append(HomeDestination.reviewQueue)
+        case .upcoming:
+            showingRecurring = true
+        case .insight:
+            // No destination for insights — they're informational. Tapping
+            // is a no-op but the haptic acknowledges the gesture.
+            break
+        }
+    }
+
+    // MARK: - Legacy banners (kept for reference / future use)
+    //
+    // The standalone reviewBanner and upcomingSection are no longer
+    // wired into the body — replaced by the unified contextRow above.
+    // Kept defined so future flows (e.g. a dedicated Activity tab) can
+    // re-surface them without rebuilding from scratch.
+
+    private var upcomingSection: some View {
+        VStack(alignment: .leading, spacing: Spacing.md) {
+            SectionHeader(
+                title: "Upcoming",
+                trailing: AnyView(SeeAllLink {
+                    Haptics.tap()
+                    showingRecurring = true
+                })
+            )
+
+            VStack(spacing: 0) {
+                ForEach(Array(upcomingRecurring.enumerated()), id: \.element.rule.id) { idx, entry in
+                    Button {
+                        Haptics.tap()
+                        showingRecurring = true
+                    } label: {
+                        UpcomingRecurringRow(
+                            rule: entry.rule,
+                            dueDate: entry.date,
+                            currencyCode: currencyCode
+                        )
+                        .padding(.horizontal, Spacing.lg)
+                        .padding(.vertical, Spacing.sm + 2)
+                    }
+                    .buttonStyle(.plain)
+
+                    if idx < upcomingRecurring.count - 1 {
+                        Divider().padding(.leading, Spacing.lg + 38 + Spacing.md)
+                    }
+                }
+            }
+            .background(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(Color.tulaCardSurface)
+            )
+        }
+    }
+
+    // MARK: - Review Banner
+
+    /// Compact callout above Recent when there are uncategorized expenses
+    /// pending triage. Subtle amber styling — it's a nudge, not an alarm.
+    private var reviewBanner: some View {
+        Button {
+            Haptics.tap()
+            navPath.append(HomeDestination.reviewQueue)
+        } label: {
+            HStack(spacing: Spacing.md) {
+                Image(systemName: "tag.slash")
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(Color.tulaBrandFallback)
+                    .frame(width: 36, height: 36)
+                    .background(Color.tulaBrandFallback.opacity(0.15), in: Circle())
+
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(reviewCount == 1
+                         ? "1 expense to review"
+                         : "\(reviewCount) expenses to review")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.primary)
+                    Text("Tap to categorize")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(14)
+            .background(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(Color.tulaCardSurface)
+            )
+        }
+        .buttonStyle(.plain)
     }
 
     // MARK: - Recent
@@ -376,7 +742,12 @@ struct HomeView: View {
     /// above the ExpenseRow's minHeight (56pt) to account for separator
     /// space and rounding. If this drifts, only visible symptom is small
     /// extra/missing whitespace at the bottom of the section.
-    private var rowHeight: CGFloat { 62 }
+    /// Per-row height for the recent activity list. Matches the actual
+    /// rendered height of ExpenseRow (64pt minHeight + 24pt vertical
+    /// padding clamped by minHeight = 64pt content + iOS list chrome
+    /// ≈ ~70pt). A 72pt buffer gives a few points of safety without
+    /// leaving large empty space at the end of the list frame.
+    private var rowHeight: CGFloat { 72 }
 
     private var recentList: some View {
         List {
@@ -498,6 +869,72 @@ struct HomeView: View {
     }
 }
 
+// MARK: - Upcoming Recurring Row
+
+/// One row in Home's "Upcoming" section. Compact tile showing the rule's
+/// icon, name, and the relative due-date string. Amount on the right.
+private struct UpcomingRecurringRow: View {
+    let rule: RecurringRule
+    let dueDate: Date
+    let currencyCode: String
+
+    private var color: Color {
+        if rule.kind == .expense, let cat = rule.category {
+            return Color(hex: cat.colorHex)
+        }
+        return Color.tulaBrandFallback
+    }
+
+    private var iconKey: String {
+        switch rule.kind {
+        case .expense:     return rule.category?.iconKey ?? "arrow.triangle.2.circlepath"
+        case .transfer:    return "arrow.left.arrow.right"
+        case .cardPayment: return "creditcard"
+        }
+    }
+
+    private var relativeDue: String {
+        let cal = Calendar.current
+        if cal.isDateInToday(dueDate) { return "Today" }
+        if cal.isDateInTomorrow(dueDate) { return "Tomorrow" }
+        let days = cal.dateComponents([.day], from: cal.startOfDay(for: .now),
+                                       to: cal.startOfDay(for: dueDate)).day ?? 0
+        if days <= 7 { return "In \(days) days" }
+        return dueDate.formatted(.dateTime.day().month(.abbreviated))
+    }
+
+    var body: some View {
+        HStack(spacing: Spacing.md) {
+            ZStack {
+                Circle()
+                    .fill(color.opacity(0.18))
+                    .frame(width: 38, height: 38)
+                Image(systemName: iconKey)
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(color)
+            }
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(rule.name)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                Text("\(relativeDue) · \(rule.cadenceLabel)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: Spacing.xs)
+
+            Text(Currency.format(rule.amount, code: currencyCode))
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.primary)
+                .monospacedDigit()
+        }
+    }
+}
+
 // MARK: - Keyboard dismissal helper
 
 extension View {
@@ -584,6 +1021,14 @@ private struct QuickLogBar: View {
         .animation(AppAnimation.snappy, value: speech.isRecording)
         .onChange(of: speech.transcript) { _, newValue in
             input = newValue
+        }
+        // Voice deep-link from the Quick Actions widget posts this
+        // notification — auto-start the mic so the user goes straight
+        // from widget tap to speaking.
+        .onReceive(NotificationCenter.default.publisher(for: .tulaStartVoiceCapture)) { _ in
+            if !speech.isRecording {
+                startVoice()
+            }
         }
         .alert("Voice access needed", isPresented: $showingPermissionDenied) {
             Button("Open Settings") {

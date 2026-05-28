@@ -19,7 +19,16 @@ struct BackupRestoreView: View {
     @State private var exportError: String?
 
     @State private var showingImportPicker = false
-    @State private var importedFileURL: URL?
+    /// Raw bytes of the picked backup file. We read these *inside* the
+    /// file picker callback while iOS's security-scoped access is
+    /// still live — storing just the URL fails on the subsequent
+    /// `Data(contentsOf:)` because the scoped access ends with the
+    /// callback's defer block, before the user has typed the passphrase.
+    @State private var importedFileData: Data?
+    /// Original filename for the picked backup — purely for display
+    /// in the passphrase prompt so the user knows which file they're
+    /// about to restore from.
+    @State private var importedFileName: String?
     @State private var showingPassphrasePrompt = false
     @State private var restorePassphrase: String = ""
     @State private var restoreError: String?
@@ -60,10 +69,15 @@ struct BackupRestoreView: View {
                 Button("Restore", role: .destructive) { attemptRestore() }
                 Button("Cancel", role: .cancel) {
                     restorePassphrase = ""
-                    importedFileURL = nil
+                    importedFileData = nil
+                    importedFileName = nil
                 }
             } message: {
-                Text("This will replace all current data with the backup. Type the passphrase used when creating the backup.")
+                if let name = importedFileName {
+                    Text("Restoring from \(name). This will replace all current data. Type the passphrase used when creating the backup.")
+                } else {
+                    Text("This will replace all current data with the backup. Type the passphrase used when creating the backup.")
+                }
             }
             .alert("Backup restored", isPresented: $restoreSuccess) {
                 Button("OK") { dismiss() }
@@ -82,6 +96,20 @@ struct BackupRestoreView: View {
             SecureField("Confirm passphrase", text: $confirmPassphrase)
                 .textContentType(.newPassword)
 
+            // Live validation hint — replaces the silent "button is
+            // disabled, why?" puzzle with an explicit reason. Only
+            // shown when the user has typed something but the rules
+            // aren't satisfied yet.
+            if let hint = validationHint {
+                HStack(spacing: 6) {
+                    Image(systemName: "info.circle")
+                        .font(.caption)
+                    Text(hint)
+                        .font(.caption)
+                }
+                .foregroundStyle(.secondary)
+            }
+
             Button {
                 runExport()
             } label: {
@@ -90,6 +118,7 @@ struct BackupRestoreView: View {
                     Text("Create Encrypted Backup")
                 }
                 .frame(maxWidth: .infinity)
+                .foregroundStyle(canExport ? Color.tulaBrandFallback : .secondary)
             }
             .disabled(!canExport)
 
@@ -101,12 +130,31 @@ struct BackupRestoreView: View {
         } header: {
             Text("Export")
         } footer: {
-            Text("Pick a passphrase you'll remember. You'll need it to restore.")
+            Text("Pick a passphrase of at least 6 characters. You'll need it to restore.")
         }
     }
 
     private var canExport: Bool {
         passphrase.count >= 6 && passphrase == confirmPassphrase
+    }
+
+    /// Why the export button is disabled, or nil when it's ready to go.
+    /// We only return a hint once the user has started typing — empty
+    /// fields show no hint (they're self-explanatory from the placeholders).
+    private var validationHint: String? {
+        if passphrase.isEmpty && confirmPassphrase.isEmpty {
+            return nil
+        }
+        if passphrase.count < 6 {
+            return "Passphrase needs at least 6 characters."
+        }
+        if confirmPassphrase.isEmpty {
+            return "Confirm your passphrase."
+        }
+        if passphrase != confirmPassphrase {
+            return "Passphrases don't match."
+        }
+        return nil
     }
 
     private func runExport() {
@@ -153,19 +201,32 @@ struct BackupRestoreView: View {
     private func handleFileImport(_ result: Result<[URL], Error>) {
         guard case .success(let urls) = result, let url = urls.first else { return }
 
+        // Read the file's bytes IMMEDIATELY while iOS's scoped access
+        // is live. Storing just the URL would fail on the later
+        // `Data(contentsOf:)` because access ends with this function's
+        // defer block — before the user types the passphrase.
         let didStart = url.startAccessingSecurityScopedResource()
         defer { if didStart { url.stopAccessingSecurityScopedResource() } }
 
-        importedFileURL = url
-        restorePassphrase = ""
-        restoreError = nil
-        showingPassphrasePrompt = true
+        do {
+            let bytes = try Data(contentsOf: url)
+            importedFileData = bytes
+            importedFileName = url.lastPathComponent
+            restorePassphrase = ""
+            restoreError = nil
+            showingPassphrasePrompt = true
+        } catch {
+            restoreError = "Couldn't read the file: \(error.localizedDescription)"
+            Haptics.error()
+        }
     }
 
     private func attemptRestore() {
-        guard let url = importedFileURL else { return }
+        guard let data = importedFileData else {
+            restoreError = "Backup file is missing — try selecting it again."
+            return
+        }
         do {
-            let data = try Data(contentsOf: url)
             try BackupManager.importBackup(data, into: context, passphrase: restorePassphrase)
             Haptics.success()
             restoreSuccess = true

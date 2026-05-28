@@ -17,6 +17,7 @@ struct AddExpenseView: View {
     @Query private var allMerchantRules: [MerchantRule]
 
     @AppStorage("lastUsedAccountID") private var lastUsedAccountID: String = ""
+    @AppStorage("budgetAlertsEnabled") private var budgetAlertsEnabled: Bool = false
 
     let existingExpense: Expense?
 
@@ -26,7 +27,6 @@ struct AddExpenseView: View {
     @State private var merchant: String
     @State private var note: String
     @State private var date: Date
-    @State private var showingDetails: Bool
     @State private var categoryManuallySet: Bool
     @State private var showingDeleteConfirm = false
     /// When true, the category grid shows all categories; when false, only
@@ -45,9 +45,6 @@ struct AddExpenseView: View {
             _merchant = State(initialValue: e.merchant ?? "")
             _note = State(initialValue: e.note ?? "")
             _date = State(initialValue: e.date)
-            _showingDetails = State(initialValue: (e.merchant?.isEmpty == false)
-                                    || (e.note?.isEmpty == false)
-                                    || !Calendar.current.isDateInToday(e.date))
             _categoryManuallySet = State(initialValue: true)
         } else {
             _amount = State(initialValue: 0)
@@ -56,7 +53,6 @@ struct AddExpenseView: View {
             _merchant = State(initialValue: "")
             _note = State(initialValue: "")
             _date = State(initialValue: .now)
-            _showingDetails = State(initialValue: false)
             _categoryManuallySet = State(initialValue: false)
         }
     }
@@ -136,27 +132,56 @@ struct AddExpenseView: View {
         VStack(alignment: .leading, spacing: Spacing.md) {
             SectionHeader(title: "Paid with")
 
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: Spacing.sm) {
-                    ForEach(prioritizedAccounts) { account in
-                        AccountPill(
-                            account: account,
-                            isSelected: selectedAccount?.id == account.id
-                        )
-                        .onTapGesture {
-                            Haptics.selection()
-                            withAnimation(AppAnimation.bouncy) {
-                                selectedAccount = account
+            // ScrollViewReader gives us programmatic scroll-to-id. Used
+            // below to keep the selected account pill visible: if the
+            // user taps an account off-screen, the scroller animates it
+            // into view so the selection is always confirmed visually.
+            ScrollViewReader { proxy in
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: Spacing.sm) {
+                        ForEach(prioritizedAccounts) { account in
+                            AccountPill(
+                                account: account,
+                                isSelected: selectedAccount?.id == account.id
+                            )
+                            .id(account.id)
+                            .onTapGesture {
+                                Haptics.selection()
+                                withAnimation(AppAnimation.bouncy) {
+                                    selectedAccount = account
+                                }
                             }
+                            // Slide-in from leading + fade so freshly-
+                            // visible chips have a moment of motion
+                            // rather than popping in. Identifies the
+                            // surface as "alive" without being loud.
+                            .transition(.asymmetric(
+                                insertion: .opacity.combined(with: .move(edge: .leading)),
+                                removal: .opacity
+                            ))
                         }
                     }
+                    .padding(.vertical, Spacing.sm)
+                    .padding(.horizontal, 2)
                 }
-                .padding(.vertical, Spacing.sm)
-                .padding(.horizontal, 2)
+                // Let chip shadows render outside the horizontal scroll
+                // bounds — without this, the selected pill's amber drop
+                // shadow gets clipped at the top/bottom edges.
+                .scrollClipDisabled()
+                // Negate parent padding so the scroll extends edge-to-edge.
+                .padding(.horizontal, -Spacing.xl)
+                .padding(.horizontal, Spacing.xl)
+                // Auto-scroll the selected pill into view whenever the
+                // selection changes — covers both initial appearance
+                // (lastUsedAccountID gets selected during setupDefaults)
+                // and explicit user taps that hit an off-screen pill.
+                .onChange(of: selectedAccount?.id) { _, newID in
+                    guard let id = newID else { return }
+                    withAnimation(.snappy(duration: 0.4)) {
+                        proxy.scrollTo(id, anchor: .center)
+                    }
+                }
             }
-            // Negate parent padding so the scroll extends edge-to-edge.
-            .padding(.horizontal, -Spacing.xl)
-            .padding(.horizontal, Spacing.xl)
         }
     }
 
@@ -319,59 +344,37 @@ struct AddExpenseView: View {
     }
 
     // MARK: - Details (merchant, note, date)
+    //
+    // These three fields used to live behind a "+ Add details" toggle —
+    // a friction tax that hid the most-edited optional field (Note)
+    // behind an extra tap. Now they sit inline as a single card with
+    // three rows so the user can see what they're skipping and fill any
+    // of them in without expanding anything. Date defaults to today, so
+    // most quick logs still skip past these without typing.
 
     private var detailsSection: some View {
         VStack(alignment: .leading, spacing: Spacing.md) {
-            Button {
-                Haptics.tap()
-                withAnimation(AppAnimation.gentle) { showingDetails.toggle() }
-            } label: {
-                HStack {
-                    Image(systemName: showingDetails ? "minus.circle.fill" : "plus.circle.fill")
-                        .font(.subheadline)
-                        .foregroundStyle(Color.tulaBrandFallback)
-                    Text(showingDetails ? "Hide details" : "Add merchant, note or date")
-                        .font(.subheadline.weight(.medium))
-                        .foregroundStyle(.primary)
-                    Spacer()
-                    if !showingDetails && detailsSummary != nil {
-                        Text(detailsSummary!)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
-                }
-                .padding(.horizontal, Spacing.lg)
-                .padding(.vertical, Spacing.md + 2)
-                .background(
-                    RoundedRectangle(cornerRadius: CornerRadius.medium, style: .continuous)
-                        .fill(Color.tulaCardSurface)
-                )
-            }
-            .buttonStyle(PressableScaleStyle(scale: 0.98))
+            SectionHeader(title: "Details")
 
-            if showingDetails {
-                Card(padding: 0, cornerRadius: CornerRadius.medium) {
-                    VStack(spacing: 0) {
-                        detailRow(label: "Merchant", icon: "storefront.fill") {
-                            TextField("Swiggy, Uber…", text: $merchant)
-                                .textInputAutocapitalization(.words)
-                                .autocorrectionDisabled()
-                                .multilineTextAlignment(.trailing)
-                        }
-                        Divider().padding(.leading, 48)
-                        detailRow(label: "Note", icon: "text.alignleft") {
-                            TextField("Optional", text: $note)
-                                .multilineTextAlignment(.trailing)
-                        }
-                        Divider().padding(.leading, 48)
-                        detailRow(label: "Date", icon: "calendar") {
-                            DatePicker("", selection: $date, displayedComponents: .date)
-                                .labelsHidden()
-                        }
+            Card(padding: 0, cornerRadius: CornerRadius.medium) {
+                VStack(spacing: 0) {
+                    detailRow(label: "Merchant", icon: "storefront.fill") {
+                        TextField("Swiggy, Uber…", text: $merchant)
+                            .textInputAutocapitalization(.words)
+                            .autocorrectionDisabled()
+                            .multilineTextAlignment(.trailing)
+                    }
+                    Divider().padding(.leading, 48)
+                    detailRow(label: "Note", icon: "text.alignleft") {
+                        TextField("Optional", text: $note)
+                            .multilineTextAlignment(.trailing)
+                    }
+                    Divider().padding(.leading, 48)
+                    detailRow(label: "Date", icon: "calendar") {
+                        DatePicker("", selection: $date, displayedComponents: .date)
+                            .labelsHidden()
                     }
                 }
-                .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .top)))
             }
         }
     }
@@ -394,18 +397,6 @@ struct AddExpenseView: View {
         }
         .padding(.horizontal, Spacing.lg)
         .padding(.vertical, Spacing.md - 2)
-    }
-
-    /// A compact summary of the details state, shown next to the collapse
-    /// toggle. Gives the user confidence about what's been entered without
-    /// expanding the card.
-    private var detailsSummary: String? {
-        var parts: [String] = []
-        if !merchant.isEmpty { parts.append(merchant) }
-        if !Calendar.current.isDateInToday(date) {
-            parts.append(date.formatted(.dateTime.month(.abbreviated).day()))
-        }
-        return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
     private var deleteButton: some View {
@@ -515,7 +506,28 @@ struct AddExpenseView: View {
         try? context.save()
         lastUsedAccountID = account.id.uuidString
         Haptics.success()
+        // Evaluate budget thresholds after persisting — fires a
+        // notification if this expense pushed any active budget
+        // past 75% or 100%. No-op when budget alerts are disabled.
+        evaluateBudgetAlerts()
         dismiss()
+    }
+
+    /// Walks active budgets and posts threshold notifications for any
+    /// that just crossed 75% or 100%. Gated by the user's opt-in
+    /// AppStorage flag — won't fire when budget alerts are off.
+    private func evaluateBudgetAlerts() {
+        guard budgetAlertsEnabled else { return }
+        let budgetFetch = FetchDescriptor<Budget>(
+            predicate: #Predicate<Budget> { $0.isActive == true }
+        )
+        let expenseFetch = FetchDescriptor<Expense>()
+        let budgets = (try? context.fetch(budgetFetch)) ?? []
+        let expenses = (try? context.fetch(expenseFetch)) ?? []
+        NotificationManager.evaluateBudgetThresholds(
+            budgets: budgets,
+            expenses: expenses
+        )
     }
 
     private func delete() {

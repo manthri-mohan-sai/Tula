@@ -37,6 +37,15 @@ struct ExpenseRow: View {
                     Text(primaryLabel)
                         .font(.subheadline.weight(.semibold))
                         .lineLimit(1)
+                    if expense.recurringRule != nil {
+                        // Small recurring glyph — auto-generated from a
+                        // subscription/recurring rule. Subtle so it doesn't
+                        // compete with the merchant name; .secondary tint.
+                        Image(systemName: "arrow.triangle.2.circlepath")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .accessibilityLabel("Recurring")
+                    }
                     if needsReview {
                         Text("Review")
                             .font(.caption2.weight(.semibold))
@@ -75,8 +84,12 @@ struct ExpenseRow: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .padding(.vertical, Spacing.xs)
-        .frame(minHeight: 48)
+        // Generous vertical padding so rows feel like distinct cards
+        // rather than crammed list lines. The 10pt + 64pt floor gives
+        // each row ~84pt of clear height, matching the "tappable tile"
+        // density people expect from a modern finance app.
+        .padding(.vertical, Spacing.md)
+        .frame(minHeight: 64)
     }
 
     /// Compact relative date: "Today", "Yesterday", "3 May" otherwise.
@@ -89,23 +102,10 @@ struct ExpenseRow: View {
 }
 
 // MARK: - Color hex init
-
-extension Color {
-    /// Initialize from a hex string like "#FF6B6B" or "FF6B6B".
-    init(hex: String) {
-        let cleaned = hex.trimmingCharacters(in: .whitespaces)
-            .replacingOccurrences(of: "#", with: "")
-        var rgb: UInt64 = 0
-        guard Scanner(string: cleaned).scanHexInt64(&rgb), cleaned.count == 6 else {
-            self = .gray
-            return
-        }
-        let r = Double((rgb & 0xFF0000) >> 16) / 255
-        let g = Double((rgb & 0x00FF00) >> 8) / 255
-        let b = Double(rgb & 0x0000FF) / 255
-        self = Color(red: r, green: g, blue: b)
-    }
-}
+//
+// Color(hex:) is defined in SharedAppearance.swift (shared with the widget
+// extension target) so all of the app can use it without target-specific
+// duplication.
 
 // MARK: - Context Preview
 

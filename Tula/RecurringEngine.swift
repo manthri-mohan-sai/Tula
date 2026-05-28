@@ -23,6 +23,16 @@ enum RecurringEngine {
         for rule in rules where !rule.isPaused {
             if let endDate = rule.endDate, now > endDate { continue }
 
+            // Rules requiring confirmation don't auto-log. Schedule
+            // notifications for upcoming due dates instead — user
+            // taps Log/Skip on the notification banner. We pre-queue
+            // the next 14 occurrences so iOS can fire them even when
+            // the app is closed.
+            if rule.confirmationRequired {
+                scheduleUpcomingConfirmations(for: rule, calendar: calendar)
+                continue
+            }
+
             let startFrom = rule.lastGeneratedDate ?? rule.startDate
             var currentTarget = nextOccurrence(
                 strictlyAfter: startFrom,
@@ -50,6 +60,54 @@ enum RecurringEngine {
         }
     }
 
+    /// For confirmation-required rules, schedules the next N occurrences
+    /// as interactive notifications. iOS dedupes by request identifier,
+    /// so re-running on every app launch is safe — already-scheduled
+    /// notifications are simply replaced in place.
+    ///
+    /// We cap at 14 occurrences because iOS limits a single app to ~64
+    /// pending notifications total; daily rules would otherwise saturate
+    /// the budget within two months.
+    private static func scheduleUpcomingConfirmations(
+        for rule: RecurringRule,
+        calendar: Calendar
+    ) {
+        // Need a sensible account+currency to format the body line.
+        // For expense rules we use the linked account; for transfers
+        // (which also support recurrence) we use the fromAccount.
+        let code = rule.account?.currencyCode
+            ?? rule.fromAccount?.currencyCode
+            ?? UserDefaults.standard.string(forKey: "primaryCurrencyCode")
+            ?? "INR"
+
+        let now = Date.now
+        // Anchor walks forward from now (not from lastGeneratedDate) —
+        // we only want to schedule FUTURE occurrences. Past missed
+        // ones are gone; iOS can't fire notifications retroactively.
+        var nextDate = nextOccurrence(strictlyAfter: now, rule: rule, calendar: calendar)
+
+        var scheduled = 0
+        let cap = 14
+        while scheduled < cap {
+            if let endDate = rule.endDate, nextDate > endDate { break }
+
+            NotificationManager.scheduleConfirmation(
+                ruleID: rule.id,
+                ruleName: rule.name,
+                amount: rule.amount,
+                currencyCode: code,
+                dueDate: nextDate
+            )
+            scheduled += 1
+
+            nextDate = nextOccurrence(
+                strictlyAfter: nextDate,
+                rule: rule,
+                calendar: calendar
+            )
+        }
+    }
+
     /// Returns the next date strictly after `date` that the rule should fire.
     /// Dispatches to the per-frequency helpers below.
     private static func nextOccurrence(
@@ -64,6 +122,14 @@ enum RecurringEngine {
             return nextMonthly(strictlyAfter: date, dayOfMonth: rule.dayOfMonth, calendar: calendar)
         case .yearly:
             return nextYearly(strictlyAfter: date, anchoredTo: rule.startDate, calendar: calendar)
+        case .custom:
+            return nextCustom(
+                strictlyAfter: date,
+                anchoredTo: rule.startDate,
+                interval: max(1, rule.customInterval),
+                unit: rule.customUnit,
+                calendar: calendar
+            )
         }
     }
 
@@ -163,9 +229,46 @@ enum RecurringEngine {
         return calendar.date(byAdding: .year, value: 1, to: date) ?? date
     }
 
+    /// Custom: stride forward from the anchor in fixed-unit jumps until
+    /// landing strictly after `date`. Time-of-day is preserved from the
+    /// anchor so "every 2 weeks" fires at the same hour each occurrence.
+    ///
+    /// Walks forward via the calendar component rather than naive seconds
+    /// so DST/calendar-month boundaries are handled correctly (months
+    /// have varying lengths; date arithmetic on raw intervals would
+    /// drift over the year).
+    private static func nextCustom(
+        strictlyAfter date: Date,
+        anchoredTo anchor: Date,
+        interval: Int,
+        unit: CustomIntervalUnit,
+        calendar: Calendar
+    ) -> Date {
+        var candidate = anchor
+        // Stride forward in `interval` × unit jumps until we pass `date`.
+        // Capped at 10,000 iterations as a safety guard against pathological
+        // intervals (e.g. interval=0 would loop forever; we already clamp
+        // at the call site but defense-in-depth is cheap).
+        var iterations = 0
+        while candidate <= date && iterations < 10_000 {
+            guard let next = calendar.date(
+                byAdding: unit.calendarComponent,
+                value: interval,
+                to: candidate
+            ) else { break }
+            candidate = next
+            iterations += 1
+        }
+        return candidate
+    }
+
     // MARK: - Transaction creation
 
-    private static func createTransaction(rule: RecurringRule, date: Date, in context: ModelContext) {
+    /// Creates the rule's payload (expense or transfer) and inserts it
+    /// into the given context. Marked `internal` (no access level) so the
+    /// notification-response handler can call it when the user taps
+    /// "Log it" on a confirmation notification.
+    static func createTransaction(rule: RecurringRule, date: Date, in context: ModelContext) {
         switch rule.kind {
         case .expense:
             let expense = Expense(

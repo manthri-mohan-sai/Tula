@@ -6,14 +6,86 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		47FE5BAD2FC7308C00E58C93 /* WidgetKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 47FE5BAC2FC7308C00E58C93 /* WidgetKit.framework */; };
+		47FE5BAF2FC7308C00E58C93 /* SwiftUI.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 47FE5BAE2FC7308C00E58C93 /* SwiftUI.framework */; };
+		47FE5BBE2FC7308D00E58C93 /* Tula WidgetExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 47FE5BAA2FC7308C00E58C93 /* Tula WidgetExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		47FE5BBC2FC7308D00E58C93 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 47FE5AB02FC5D3B200E58C93 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 47FE5BA92FC7308C00E58C93;
+			remoteInfo = "Tula WidgetExtension";
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		47FE5BC32FC7308D00E58C93 /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				47FE5BBE2FC7308D00E58C93 /* Tula WidgetExtension.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
 /* Begin PBXFileReference section */
 		47FE5AB82FC5D3B200E58C93 /* Tula.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Tula.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		47FE5BAA2FC7308C00E58C93 /* Tula WidgetExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = "Tula WidgetExtension.appex"; sourceTree = BUILT_PRODUCTS_DIR; };
+		47FE5BAC2FC7308C00E58C93 /* WidgetKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WidgetKit.framework; path = System/Library/Frameworks/WidgetKit.framework; sourceTree = SDKROOT; };
+		47FE5BAE2FC7308C00E58C93 /* SwiftUI.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = SwiftUI.framework; path = System/Library/Frameworks/SwiftUI.framework; sourceTree = SDKROOT; };
+		47FE5BC92FC731E100E58C93 /* Tula WidgetExtension.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "Tula WidgetExtension.entitlements"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		47FE5BBF2FC7308D00E58C93 /* Exceptions for "Tula Widget" folder in "Tula WidgetExtension" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 47FE5BA92FC7308C00E58C93 /* Tula WidgetExtension */;
+		};
+		47FE5BC52FC731A900E58C93 /* Exceptions for "Tula" folder in "Tula WidgetExtension" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Currency.swift,
+				SharedAppearance.swift,
+				WidgetSnapshot.swift,
+			);
+			target = 47FE5BA92FC7308C00E58C93 /* Tula WidgetExtension */;
+		};
+		47FE5BD92FC8060200E58C93 /* Exceptions for "Tula" folder in "Tula" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 47FE5AB72FC5D3B200E58C93 /* Tula */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		47FE5ABA2FC5D3B200E58C93 /* Tula */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				47FE5BD92FC8060200E58C93 /* Exceptions for "Tula" folder in "Tula" target */,
+				47FE5BC52FC731A900E58C93 /* Exceptions for "Tula" folder in "Tula WidgetExtension" target */,
+			);
 			path = Tula;
+			sourceTree = "<group>";
+		};
+		47FE5BB02FC7308C00E58C93 /* Tula Widget */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				47FE5BBF2FC7308D00E58C93 /* Exceptions for "Tula Widget" folder in "Tula WidgetExtension" target */,
+			);
+			path = "Tula Widget";
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -26,13 +98,25 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		47FE5BA72FC7308C00E58C93 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				47FE5BAF2FC7308C00E58C93 /* SwiftUI.framework in Frameworks */,
+				47FE5BAD2FC7308C00E58C93 /* WidgetKit.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
 		47FE5AAF2FC5D3B200E58C93 = {
 			isa = PBXGroup;
 			children = (
+				47FE5BC92FC731E100E58C93 /* Tula WidgetExtension.entitlements */,
 				47FE5ABA2FC5D3B200E58C93 /* Tula */,
+				47FE5BB02FC7308C00E58C93 /* Tula Widget */,
+				47FE5BAB2FC7308C00E58C93 /* Frameworks */,
 				47FE5AB92FC5D3B200E58C93 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -41,8 +125,18 @@
 			isa = PBXGroup;
 			children = (
 				47FE5AB82FC5D3B200E58C93 /* Tula.app */,
+				47FE5BAA2FC7308C00E58C93 /* Tula WidgetExtension.appex */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		47FE5BAB2FC7308C00E58C93 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				47FE5BAC2FC7308C00E58C93 /* WidgetKit.framework */,
+				47FE5BAE2FC7308C00E58C93 /* SwiftUI.framework */,
+			);
+			name = Frameworks;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -55,10 +149,12 @@
 				47FE5AB42FC5D3B200E58C93 /* Sources */,
 				47FE5AB52FC5D3B200E58C93 /* Frameworks */,
 				47FE5AB62FC5D3B200E58C93 /* Resources */,
+				47FE5BC32FC7308D00E58C93 /* Embed Foundation Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				47FE5BBD2FC7308D00E58C93 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				47FE5ABA2FC5D3B200E58C93 /* Tula */,
@@ -69,6 +165,28 @@
 			productName = Tula;
 			productReference = 47FE5AB82FC5D3B200E58C93 /* Tula.app */;
 			productType = "com.apple.product-type.application";
+		};
+		47FE5BA92FC7308C00E58C93 /* Tula WidgetExtension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 47FE5BC02FC7308D00E58C93 /* Build configuration list for PBXNativeTarget "Tula WidgetExtension" */;
+			buildPhases = (
+				47FE5BA62FC7308C00E58C93 /* Sources */,
+				47FE5BA72FC7308C00E58C93 /* Frameworks */,
+				47FE5BA82FC7308C00E58C93 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				47FE5BB02FC7308C00E58C93 /* Tula Widget */,
+			);
+			name = "Tula WidgetExtension";
+			packageProductDependencies = (
+			);
+			productName = "Tula WidgetExtension";
+			productReference = 47FE5BAA2FC7308C00E58C93 /* Tula WidgetExtension.appex */;
+			productType = "com.apple.product-type.app-extension";
 		};
 /* End PBXNativeTarget section */
 
@@ -81,6 +199,9 @@
 				LastUpgradeCheck = 2640;
 				TargetAttributes = {
 					47FE5AB72FC5D3B200E58C93 = {
+						CreatedOnToolsVersion = 26.4.1;
+					};
+					47FE5BA92FC7308C00E58C93 = {
 						CreatedOnToolsVersion = 26.4.1;
 					};
 				};
@@ -100,12 +221,20 @@
 			projectRoot = "";
 			targets = (
 				47FE5AB72FC5D3B200E58C93 /* Tula */,
+				47FE5BA92FC7308C00E58C93 /* Tula WidgetExtension */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
 		47FE5AB62FC5D3B200E58C93 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		47FE5BA82FC7308C00E58C93 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -122,7 +251,22 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		47FE5BA62FC7308C00E58C93 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		47FE5BBD2FC7308D00E58C93 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 47FE5BA92FC7308C00E58C93 /* Tula WidgetExtension */;
+			targetProxy = 47FE5BBC2FC7308D00E58C93 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		47FE5AC32FC5D3B300E58C93 /* Debug */ = {
@@ -251,11 +395,13 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = Tula/Tula.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = WRT3S3RZSX;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Tula/Info.plist;
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "We use the microphone to capture voice input for quick expense logging.";
 				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "We use speech recognition to convert your voice into expense details.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
@@ -285,11 +431,13 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = Tula/Tula.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = WRT3S3RZSX;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Tula/Info.plist;
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "We use the microphone to capture voice input for quick expense logging.";
 				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "We use speech recognition to convert your voice into expense details.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
@@ -314,6 +462,68 @@
 			};
 			name = Release;
 		};
+		47FE5BC12FC7308D00E58C93 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
+				CODE_SIGN_ENTITLEMENTS = "Tula WidgetExtension.entitlements";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = WRT3S3RZSX;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "Tula Widget/Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = "Tula Widget";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.app.Tula.Tula-Widget";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		47FE5BC22FC7308D00E58C93 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
+				CODE_SIGN_ENTITLEMENTS = "Tula WidgetExtension.entitlements";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = WRT3S3RZSX;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "Tula Widget/Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = "Tula Widget";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.app.Tula.Tula-Widget";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -331,6 +541,15 @@
 			buildConfigurations = (
 				47FE5AC62FC5D3B300E58C93 /* Debug */,
 				47FE5AC72FC5D3B300E58C93 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		47FE5BC02FC7308D00E58C93 /* Build configuration list for PBXNativeTarget "Tula WidgetExtension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				47FE5BC12FC7308D00E58C93 /* Debug */,
+				47FE5BC22FC7308D00E58C93 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

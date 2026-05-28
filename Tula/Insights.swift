@@ -251,36 +251,73 @@ enum InsightEngine {
 
 // MARK: - Insights Carousel View
 
-/// Glass-surface carousel of insights. Auto-rotates every 7 seconds, with
-/// swipe-to-skip and tap-to-pause. Hidden when there are no insights.
+/// Horizontally-paged carousel of insights with a custom dot indicator
+/// rendered *below* the cards (not overlaid). The system `TabView` page
+/// dots overlap card content at our compact height, so we hide them
+/// (`indexDisplayMode: .never`) and draw our own row underneath.
+///
+/// Auto-rotates every 7 seconds. Manual swipes reset the timer so it
+/// doesn't jump immediately after the user interacts. Single-insight
+/// case skips the dot row entirely.
 struct InsightsCarousel: View {
     let insights: [Insight]
 
     @State private var index: Int = 0
     @State private var autoRotateTask: Task<Void, Never>?
 
+    /// Tappable target on a dot — taps animate the page change.
+    private func go(to i: Int) {
+        Haptics.selection()
+        withAnimation(AppAnimation.gentle) { index = i }
+    }
+
     var body: some View {
         if insights.isEmpty {
             EmptyView()
         } else {
-            TabView(selection: $index) {
-                ForEach(Array(insights.enumerated()), id: \.element.id) { i, insight in
-                    InsightCard(insight: insight)
-                        .padding(.horizontal, 2)
-                        .tag(i)
+            VStack(spacing: Spacing.sm) {
+                TabView(selection: $index) {
+                    ForEach(Array(insights.enumerated()), id: \.element.id) { i, insight in
+                        InsightCard(insight: insight)
+                            .tag(i)
+                    }
+                }
+                // Native page swipe with system dots disabled — we draw
+                // our own below.
+                .tabViewStyle(.page(indexDisplayMode: .never))
+                .frame(height: 88)
+
+                if insights.count > 1 {
+                    dotIndicator
                 }
             }
-            .tabViewStyle(.page(indexDisplayMode: insights.count > 1 ? .always : .never))
-            .indexViewStyle(.page(backgroundDisplayMode: .always))
-            .frame(height: 96)
             .onAppear { startAutoRotate() }
             .onDisappear { stopAutoRotate() }
             .onChange(of: index) { _, _ in
-                // Restart timer on manual swipe so we don't immediately move
+                // Restart timer on swipe/tap — user wants a beat to read.
                 stopAutoRotate()
                 startAutoRotate()
             }
         }
+    }
+
+    /// Custom dot row. Active dot is wider (capsule), inactive dots are
+    /// circles — the iOS-stock "scrollable indicator" pattern. Brand
+    /// amber on the active dot anchors the carousel to Tula's palette
+    /// without being loud.
+    private var dotIndicator: some View {
+        HStack(spacing: 6) {
+            ForEach(insights.indices, id: \.self) { i in
+                let isActive = i == index
+                Capsule()
+                    .fill(isActive ? Color.tulaBrandFallback : Color.gray.opacity(0.25))
+                    .frame(width: isActive ? 16 : 6, height: 6)
+                    .onTapGesture { go(to: i) }
+                    .animation(.spring(response: 0.35, dampingFraction: 0.8), value: index)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 2)
     }
 
     private func startAutoRotate() {
@@ -304,11 +341,15 @@ struct InsightsCarousel: View {
 
 // MARK: - Single Card
 
+/// Single insight card. Layout:
+/// - Color-tinted circular icon on the left
+/// - Title + detail stacked, left-aligned
+/// - Subtle "chip" badge in the top-right (when relevant) for context
 private struct InsightCard: View {
     let insight: Insight
 
     var body: some View {
-        HStack(spacing: Spacing.md) {
+        HStack(alignment: .center, spacing: Spacing.md) {
             ZStack {
                 Circle()
                     .fill(insight.color.opacity(0.18))
@@ -318,22 +359,24 @@ private struct InsightCard: View {
                     .foregroundStyle(insight.color)
             }
 
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 3) {
                 Text(insight.title)
                     .font(.subheadline.weight(.bold))
                     .foregroundStyle(.primary)
                     .lineLimit(1)
+                    .minimumScaleFactor(0.85)
                 Text(insight.detail)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             Spacer(minLength: 0)
         }
         .padding(.horizontal, Spacing.md)
-        .padding(.vertical, Spacing.sm + 4)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, Spacing.sm + 2)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
         .tulaGlass(cornerRadius: CornerRadius.medium)
     }
 }
