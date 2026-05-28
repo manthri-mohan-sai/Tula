@@ -248,7 +248,7 @@ struct AllExpensesView: View {
                         Spacer()
                         Text(Currency.format(section.total, code: currencyCode))
                             .font(.caption.weight(.semibold))
-                            .foregroundStyle(.tertiary)
+                            .foregroundStyle(.secondary)
                             .monospacedDigit()
                     }
                 }
