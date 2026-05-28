@@ -135,13 +135,24 @@ struct LaunchAnimationView: View {
                 }
                 .position(x: geo.size.width / 2, y: geo.size.height * 0.46)
 
-                // ─── Layer 3: तुला wordmark at 85% ──────────────────
-                Text("तुला")
-                    .font(.system(size: 18, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.78))
-                    .opacity(wordmarkOpacity)
-                    .offset(y: wordmarkOffset)
-                    .position(x: geo.size.width / 2, y: geo.size.height * 0.85)
+                // ─── Layer 3: तुला wordmark + tagline at ~85% ────────
+                // Wordmark on top, tagline beneath. Both fade together
+                // via the same wordmarkOpacity/offset state so they
+                // arrive as one unit, not two staggered elements.
+                VStack(spacing: 6) {
+                    Text("तुला")
+                        .font(.system(size: 18, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.92))
+                        .padding(.bottom, 5)
+                    Text("Balance your spend")
+                        .font(.system(size: 11, weight: .regular))
+                        .tracking(2)
+                        .textCase(.uppercase)
+                        .foregroundStyle(.white.opacity(0.62))
+                }
+                .opacity(wordmarkOpacity)
+                .offset(y: wordmarkOffset)
+                .position(x: geo.size.width / 2, y: geo.size.height * 0.83)
             }
         }
         .ignoresSafeArea()

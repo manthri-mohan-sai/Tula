@@ -217,9 +217,13 @@ struct SettingsView: View {
         } footer: {
             HStack {
                 Spacer()
+                // Tagline. Previously .tertiary which was barely
+                // readable — at the bottom of a scroll where the
+                // user has visually "arrived," the brand line
+                // deserves to be legible, not whispered.
                 Text("तुला · Balance your spend")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
                 Spacer()
             }
             .padding(.top, Spacing.md)

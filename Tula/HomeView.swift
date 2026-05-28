@@ -190,7 +190,7 @@ struct HomeView: View {
                     // button reads as "primary action" and visually
                     // competes with the hero amount below.
                     .tint(.primary)
-                    .accessibilityLabel("Cards")
+                    .accessibilityLabel("Accounts")
                 }
                 ToolbarItem(placement: .topBarLeading) {
                     Button {

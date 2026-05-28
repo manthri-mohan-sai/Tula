@@ -215,15 +215,13 @@ struct HomeTodayView: View {
                 .lineLimit(1)
                 .foregroundStyle(.primary)
                 .monospacedDigit()
-                .contentTransition(
-                    .numericText(
-                        value: Double(Currency
-                            .format(
-                                snapshot.todayTotal,
-                                code: snapshot.currencyCode
-                            )) ?? 0.0
-                    )
-                )
+                // No contentTransition here — widgets render each
+                // timeline snapshot as a discrete image, so SwiftUI
+                // has no continuous view tree to interpolate against.
+                // The modifier appears to do nothing in this context
+                // even when the value is a valid Double. Apple's
+                // own widgets (Wallet, Stocks, Health) all hard-cut
+                // between refresh values for the same reason.
 
                 Spacer(minLength: 0)
 

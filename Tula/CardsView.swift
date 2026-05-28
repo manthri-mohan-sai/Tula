@@ -152,7 +152,7 @@ struct CardsView: View {
             .padding(.bottom, Spacing.xxxl)
         }
         .background(Color.tulaBackground)
-        .navigationTitle("Cards")
+        .navigationTitle("Accounts")
         .navigationSubtitle(subtitleText)
         .navigationBarTitleDisplayMode(.large)
         .toolbar {
@@ -455,9 +455,9 @@ struct CardsView: View {
                     .foregroundStyle(Color.tulaBrandFallback)
             }
             VStack(spacing: Spacing.xs) {
-                Text("No cards yet")
+                Text("No accounts yet")
                     .font(.headline.weight(.semibold))
-                Text("Add accounts in Settings to see them here.")
+                Text("Add an account to see it here — bank, cash, credit card, or anything you spend from.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
