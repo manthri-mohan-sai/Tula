@@ -19,6 +19,7 @@ struct SettingsView: View {
     @AppStorage("reminderHour") private var reminderHour: Int = 21
     @AppStorage("reminderMinute") private var reminderMinute: Int = 0
     @AppStorage("budgetAlertsEnabled") private var budgetAlertsEnabled: Bool = false
+    @AppStorage("launchAnimationEnabled") private var launchAnimationEnabled: Bool = true
 
     @State private var showingAccounts = false
     @State private var showingCategories = false
@@ -97,6 +98,13 @@ struct SettingsView: View {
                 color: .red,
                 trailing: reminderSummary
             ) { showingReminders = true }
+
+            // The तु calligraphy intro that plays on cold launch.
+            // First-time users get the brand moment; long-time users
+            // can opt out if they've seen it enough times.
+            Toggle(isOn: $launchAnimationEnabled) {
+                settingsLabel("Launch Animation", icon: "sparkles", color: Color.tulaBrandFallback)
+            }
         } header: {
             Text("General")
         }
@@ -138,17 +146,34 @@ struct SettingsView: View {
 
     private var voiceSection: some View {
         Section {
-            HStack {
-                settingsLabel("Siri & Shortcuts", icon: "mic.fill", color: .indigo)
-                Spacer()
-                Image(systemName: "checkmark")
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(.green)
+            // Tappable row that opens iOS Settings → Siri & Search → Tula.
+            // We can't query Siri's authorization state from the app
+            // (no public Apple API), so this row is explicitly a
+            // navigation link to where the real toggle lives. The
+            // trailing "iOS Settings" label + chevron remove any
+            // ambiguity about it being a toggle vs a deep-link.
+            Button {
+                Haptics.tap()
+                if let url = URL(string: UIApplication.openSettingsURLString) {
+                    UIApplication.shared.open(url)
+                }
+            } label: {
+                HStack {
+                    settingsLabel("Siri & Shortcuts", icon: "mic.fill", color: .indigo)
+                    Spacer()
+                    Text("iOS Settings")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+                }
             }
+            .buttonStyle(.plain)
         } header: {
             Text("Voice")
         } footer: {
-            Text("Say \"Hey Siri, log expense in Tula\" or assign a custom phrase in the Shortcuts app.")
+            Text("Configure Tula's Siri phrases in iOS Settings. Say \"Hey Siri, log expense in Tula\" to log without opening the app.")
         }
     }
 

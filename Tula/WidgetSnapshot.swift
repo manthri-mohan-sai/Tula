@@ -6,9 +6,16 @@ import Foundation
 /// so the widget extension can render without database access. Refreshed
 /// on every app foreground transition (see `TulaApp.refreshWidgetSnapshot`).
 ///
-/// Designed to stay small (a few KB at most) — we only include what any
-/// active widget surface needs: today total, month total, top monthly
-/// budgets with their progress.
+/// Designed to stay small (a few KB at most). Includes only what active
+/// widget surfaces need: today's spend, month total, top monthly budgets,
+/// a 7-day sparkline trail, and upcoming recurring expenses.
+///
+/// **v2 changes:** Removed `recentExpenses` (past-data feed was not
+/// actionable on a home screen). Added `dailyTotals` for sparklines on
+/// the Today widget and lockscreen rectangular surface. Added
+/// `upcomingRecurrings` for the new Upcoming widget — surfaces what's
+/// *coming due* rather than what's already happened, which is the
+/// proactive value finance apps should offer at a glance.
 struct WidgetSnapshot: Codable, Equatable {
     /// Currency code the user is operating in. Widget formats using this.
     var currencyCode: String
@@ -19,19 +26,25 @@ struct WidgetSnapshot: Codable, Equatable {
     /// This month's total spend across everything.
     var monthTotal: Double
 
-    /// Sum of every active monthly budget's cap, when any exist. Used to
-    /// render an aggregate progress bar on the small widget. Zero when
-    /// the user has no monthly budgets.
+    /// Sum of every active monthly budget's cap. Zero when the user has
+    /// no monthly budgets. Used for an aggregate progress bar.
     var monthlyBudgetCap: Double
 
-    /// Top monthly budgets (capped at 4). For the medium widget.
+    /// Top monthly budgets (capped at 4). For the medium Budgets widget.
     var topBudgets: [Entry]
 
-    /// Most recent expenses for the Quick Log widget. Capped at 4.
-    var recentExpenses: [RecentExpense]
+    /// Last 7 days of daily totals, oldest-first (so index 0 is six days
+    /// ago, index 6 is today). Always exactly 7 values, zero-padded for
+    /// days with no spend. Drives the sparkline on Today (small) and the
+    /// lockscreen rectangular surface.
+    var dailyTotals: [Double]
 
-    /// When this snapshot was generated. Widget shows "as of N min ago"
-    /// if it's stale beyond a threshold (currently only used internally).
+    /// Next recurring expenses due, sorted by due date ascending. Capped
+    /// at 3 — the medium Upcoming widget renders 3 rows max. Paused
+    /// rules are excluded.
+    var upcomingRecurrings: [UpcomingRecurring]
+
+    /// When this snapshot was generated.
     var generatedAt: Date
 
     /// One budget summary row for the widget UI.
@@ -53,17 +66,14 @@ struct WidgetSnapshot: Codable, Equatable {
         }
     }
 
-    /// One recent-expense row for the Quick Log widget. Stripped of
-    /// SwiftData ties — just the bits the widget renders.
-    struct RecentExpense: Codable, Equatable, Identifiable {
+    /// One upcoming recurring rule. Stripped of SwiftData ties — pure
+    /// codable payload the widget extension can render without DB access.
+    struct UpcomingRecurring: Codable, Equatable, Identifiable {
         var id: UUID
+        var name: String
         var amount: Double
-        var date: Date
-        /// Best label: merchant name if present, else category name, else "Spend".
-        var label: String
-        /// Category color hex (or brand fallback if no category).
+        var dueDate: Date
         var colorHex: String
-        /// Category SF Symbol (or generic icon if no category).
         var iconKey: String
     }
 
@@ -73,7 +83,8 @@ struct WidgetSnapshot: Codable, Equatable {
         monthTotal: 0,
         monthlyBudgetCap: 0,
         topBudgets: [],
-        recentExpenses: [],
+        dailyTotals: Array(repeating: 0, count: 7),
+        upcomingRecurrings: [],
         generatedAt: .distantPast
     )
 }

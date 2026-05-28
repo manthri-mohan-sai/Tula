@@ -154,13 +154,33 @@ struct TransferFormView: View {
     private func accountStrip(accounts: [Account],
                               selection: Binding<Account?>,
                               isLocked: Bool) -> some View {
-        // ScrollViewReader for auto-scroll-to-selected (same pattern as
-        // AddExpenseView's account section). When the user taps a chip
-        // that's partially off-screen, the scroll animates it into view.
-        ScrollViewReader { proxy in
+        // Reorder so the selected account is the leading chip. When
+        // the user taps a chip mid-strip, it animates to position 0
+        // and the others shift right to fill the gap. This surfaces
+        // the user's current choice as the most prominent chip and
+        // mirrors how Apple Wallet's filter pills behave — selected
+        // state isn't just visual styling, it's positional priority.
+        //
+        // The reorder is computed every render. SwiftUI's ForEach
+        // diffs by `.id`, so items keep their identity through the
+        // reordering — `withAnimation` on the selection change
+        // (below in onTapGesture) animates each chip moving to its
+        // new slot, no manual offset math required.
+        let ordered: [Account] = {
+            guard let selectedID = selection.wrappedValue?.id,
+                  let idx = accounts.firstIndex(where: { $0.id == selectedID }) else {
+                return accounts
+            }
+            var result = accounts
+            let pick = result.remove(at: idx)
+            result.insert(pick, at: 0)
+            return result
+        }()
+
+        return ScrollViewReader { proxy in
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: Spacing.sm) {
-                    ForEach(accounts) { account in
+                    ForEach(ordered) { account in
                         AccountChip(
                             account: account,
                             isSelected: selection.wrappedValue?.id == account.id
@@ -186,8 +206,12 @@ struct TransferFormView: View {
             .scrollClipDisabled()
             .onChange(of: selection.wrappedValue?.id) { _, newID in
                 guard let id = newID else { return }
+                // Anchor .leading now (was .center) because the
+                // selected chip is the leading element after the
+                // reorder. If the strip was scrolled rightward, this
+                // pulls it back to show the new selection.
                 withAnimation(.snappy(duration: 0.4)) {
-                    proxy.scrollTo(id, anchor: .center)
+                    proxy.scrollTo(id, anchor: .leading)
                 }
             }
         }

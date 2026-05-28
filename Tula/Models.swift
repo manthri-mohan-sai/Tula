@@ -240,6 +240,13 @@ final class RecurringRule {
     var endDate: Date? = nil
     var isPaused: Bool = false
 
+    /// When set, the rule is treated as paused only until this date,
+    /// then auto-resumes on the next engine run. Used for "snooze
+    /// while on vacation" — set `pausedUntil` to the return date, the
+    /// engine skips all due-dates before it, then resumes naturally.
+    /// nil means indefinite pause (relies on `isPaused`).
+    var pausedUntil: Date? = nil
+
     // For expense rules:
     var category: Category? = nil
     var account: Account? = nil

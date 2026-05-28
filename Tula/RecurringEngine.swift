@@ -20,8 +20,30 @@ enum RecurringEngine {
         let calendar = Calendar.current
         var didGenerateAnything = false
 
-        for rule in rules where !rule.isPaused {
+        for rule in rules {
+            // Auto-resume: if rule is paused but its `pausedUntil` has
+            // elapsed, clear both flags here so downstream logic treats
+            // the rule as active again. Done before the isPaused check
+            // so the same launch that detects the expiry also picks up
+            // any past-due occurrences.
+            if rule.isPaused, let until = rule.pausedUntil, until <= now {
+                rule.isPaused = false
+                rule.pausedUntil = nil
+            }
+            if rule.isPaused { continue }
+
             if let endDate = rule.endDate, now > endDate { continue }
+
+            // Pause-until: if a future date is set, skip this run. If
+            // the date has passed, clear it (the rule auto-resumes).
+            if let until = rule.pausedUntil {
+                if until > now {
+                    continue
+                } else {
+                    rule.pausedUntil = nil
+                    didGenerateAnything = true   // ensure save fires
+                }
+            }
 
             // Rules requiring confirmation don't auto-log. Schedule
             // notifications for upcoming due dates instead — user

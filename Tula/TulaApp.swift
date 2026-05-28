@@ -8,6 +8,16 @@ struct TulaApp: App {
     @AppStorage("primaryCurrencyCode") private var primaryCurrencyCode: String = "INR"
     @AppStorage("seedDataInstalled") private var seedDataInstalled: Bool = false
     @AppStorage("onboardingComplete") private var onboardingComplete: Bool = false
+    /// User opt-out for the launch animation. Defaults true (animation
+    /// shown). Users who've seen the तु calligraphy 200 times can flip
+    /// this off in Settings → General.
+    @AppStorage("launchAnimationEnabled") private var launchAnimationEnabled: Bool = true
+
+    /// In-session flag: true once the launch animation has completed
+    /// (or was skipped, or is disabled). Using @State (not @AppStorage)
+    /// means the animation replays on every cold launch but not on
+    /// foreground returns within the same session.
+    @State private var launchAnimationDone: Bool = false
 
     @Environment(\.scenePhase) private var scenePhase
 
@@ -31,23 +41,55 @@ struct TulaApp: App {
 
     var body: some Scene {
         WindowGroup {
-            RootTabView()
-                .tint(Color.tulaBrandFallback)
-                .onAppear {
-                    let context = ModelContext(sharedContainer)
-                    if !seedDataInstalled {
-                        SeedData.installIfNeeded(into: context)
-                        seedDataInstalled = true
+            // The home view is always rendered, sitting behind the
+            // launch overlay. The launch animation's portal grows out
+            // of the merged dot at the end, "punching" a circular
+            // hole in the amber that reveals the home view through
+            // it. So home must be rendered *underneath* the launch
+            // overlay throughout the animation — otherwise there'd be
+            // nothing for the portal to reveal.
+            //
+            // Concurrent rendering is safe here because the launch
+            // overlay uses `.compositingGroup()` to confine its
+            // blend mode (`.destinationOut`) to its own layer —
+            // home view's layout below is untouched. And the home
+            // view's `onAppear` fires immediately at cold launch,
+            // so by the time the portal opens (~3.15s in) the home
+            // is fully rendered and ready.
+            ZStack {
+                RootTabView()
+                    .tint(Color.tulaBrandFallback)
+                    .onAppear {
+                        let context = ModelContext(sharedContainer)
+                        if !seedDataInstalled {
+                            SeedData.installIfNeeded(into: context)
+                            seedDataInstalled = true
+                        }
+                        RecurringEngine.generateMissing(in: context)
+                        refreshWidgetSnapshot(using: context)
                     }
-                    RecurringEngine.generateMissing(in: context)
-                    refreshWidgetSnapshot(using: context)
+                    .sheet(isPresented: Binding(
+                        get: { !onboardingComplete },
+                        set: { _ in }
+                    )) {
+                        OnboardingView()
+                    }
+
+                if !launchAnimationDone {
+                    LaunchAnimationView {
+                        // No animated transition here — the launch
+                        // overlay's portal has already exited the
+                        // screen by the time onComplete fires, so
+                        // removing it is visually a no-op.
+                        launchAnimationDone = true
+                    }
+                    .onAppear {
+                        if !launchAnimationEnabled {
+                            launchAnimationDone = true
+                        }
+                    }
                 }
-                .sheet(isPresented: Binding(
-                    get: { !onboardingComplete },
-                    set: { _ in }
-                )) {
-                    OnboardingView()
-                }
+            }
         }
         .modelContainer(sharedContainer)
         .onChange(of: scenePhase) { _, newPhase in
@@ -115,13 +157,38 @@ struct TulaApp: App {
             .prefix(4)
             .map { $0 }
 
+        // 7-day sparkline data — daily totals, oldest-first. For days
+        // that fall outside this month's fetched expenses (early in a
+        // new month), the corresponding entries are just zero, which
+        // is correct: no spend recorded yet.
+        var dailyTotals: [Double] = Array(repeating: 0, count: 7)
+        for dayOffset in 0..<7 {
+            guard let dayDate = calendar.date(byAdding: .day, value: -dayOffset, to: now),
+                  let dayInterval = calendar.dateInterval(of: .day, for: dayDate) else {
+                continue
+            }
+            let total = monthExpenses
+                .filter { $0.date >= dayInterval.start && $0.date < dayInterval.end }
+                .reduce(0) { $0 + $1.amount }
+            // Reverse the index: index 0 = oldest (6 days ago),
+            // index 6 = today. Sparkline reads naturally left-to-right.
+            dailyTotals[6 - dayOffset] = total
+        }
+
+        // Upcoming recurrings — surface what's coming due in the next
+        // little while. Excludes paused rules. Top 3 by closest due
+        // date. RecurringEngine.nextDueDate handles the per-cadence
+        // math (daily/weekly/monthly + start-date math).
+        let upcomingRecurrings = buildUpcomingRecurrings(in: context)
+
         let snapshot = WidgetSnapshot(
             currencyCode: primaryCurrencyCode,
             todayTotal: todayTotal,
             monthTotal: monthTotal,
             monthlyBudgetCap: totalCap,
             topBudgets: entries,
-            recentExpenses: buildRecentExpenses(in: context),
+            dailyTotals: dailyTotals,
+            upcomingRecurrings: upcomingRecurrings,
             generatedAt: now
         )
 
@@ -129,32 +196,30 @@ struct TulaApp: App {
         WidgetCenter.shared.reloadAllTimelines()
     }
 
-    /// Last 4 expenses (any date) for the Quick Log widget. Plain Codable
-    /// payload — no SwiftData references — so the widget can render
-    /// without any database access.
-    private func buildRecentExpenses(in context: ModelContext) -> [WidgetSnapshot.RecentExpense] {
-        var descriptor = FetchDescriptor<Expense>(
-            sortBy: [SortDescriptor(\.date, order: .reverse)]
+    /// Next 3 recurring expenses due, sorted by due date ascending.
+    /// Paused rules are excluded. Used by the medium Upcoming widget
+    /// which surfaces *what's coming* — more actionable than past
+    /// expenses on a home screen.
+    private func buildUpcomingRecurrings(in context: ModelContext) -> [WidgetSnapshot.UpcomingRecurring] {
+        let rulesFetch = FetchDescriptor<RecurringRule>(
+            predicate: #Predicate { $0.isPaused == false }
         )
-        descriptor.fetchLimit = 4
-        let expenses = (try? context.fetch(descriptor)) ?? []
-        return expenses.map { e in
-            let label: String = {
-                if let m = e.merchant?.trimmingCharacters(in: .whitespaces), !m.isEmpty {
-                    return m
-                }
-                if let c = e.category?.name { return c }
-                return "Spend"
-            }()
-            return WidgetSnapshot.RecentExpense(
-                id: e.id,
-                amount: e.amount,
-                date: e.date,
-                label: label,
-                colorHex: e.category?.colorHex ?? "#D97706",
-                iconKey: e.category?.iconKey ?? "questionmark.circle"
+        let rules = (try? context.fetch(rulesFetch)) ?? []
+        let upcoming = rules.compactMap { rule -> WidgetSnapshot.UpcomingRecurring? in
+            // Only include expense-type rules (not transfers — those
+            // don't have a "due" semantic that fits this widget).
+            guard rule.kind == .expense else { return nil }
+            guard let due = RecurringEngine.nextDueDate(for: rule) else { return nil }
+            return WidgetSnapshot.UpcomingRecurring(
+                id: rule.id,
+                name: rule.name,
+                amount: rule.amount,
+                dueDate: due,
+                colorHex: rule.category?.colorHex ?? "#D97706",
+                iconKey: rule.category?.iconKey ?? "calendar"
             )
         }
+        return Array(upcoming.sorted { $0.dueDate < $1.dueDate }.prefix(3))
     }
 }
 

@@ -136,7 +136,15 @@ private struct RuleRow: View {
     }
 
     private var subtitle: String {
-        if rule.isPaused { return "Paused" }
+        if rule.isPaused {
+            // Show resume date when set — gives the user context about
+            // when the rule will start producing transactions again.
+            if let until = rule.pausedUntil, until > .now {
+                let untilStr = until.formatted(.dateTime.day().month(.abbreviated))
+                return "Paused · resumes \(untilStr)"
+            }
+            return "Paused"
+        }
         if let next = RecurringEngine.nextDueDate(for: rule) {
             let nextStr = next.formatted(.dateTime.day().month(.abbreviated))
             return "Next: \(nextStr) · \(rule.cadenceLabel)"
@@ -215,6 +223,8 @@ struct RecurringRuleFormView: View {
     @State private var note: String
     @State private var isPaused: Bool
     @State private var confirmationRequired: Bool
+    @State private var hasPauseEnd: Bool
+    @State private var pauseUntil: Date
     @State private var showingDeleteConfirm = false
 
     init(rule: RecurringRule? = nil) {
@@ -237,6 +247,8 @@ struct RecurringRuleFormView: View {
             _note = State(initialValue: r.note ?? "")
             _isPaused = State(initialValue: r.isPaused)
             _confirmationRequired = State(initialValue: r.confirmationRequired)
+            _hasPauseEnd = State(initialValue: r.pausedUntil != nil)
+            _pauseUntil = State(initialValue: r.pausedUntil ?? .now.addingTimeInterval(60 * 60 * 24 * 7))
         } else {
             _name = State(initialValue: "")
             _amount = State(initialValue: 0)
@@ -255,6 +267,8 @@ struct RecurringRuleFormView: View {
             _note = State(initialValue: "")
             _isPaused = State(initialValue: false)
             _confirmationRequired = State(initialValue: false)
+            _hasPauseEnd = State(initialValue: false)
+            _pauseUntil = State(initialValue: .now.addingTimeInterval(60 * 60 * 24 * 7))
         }
     }
 
@@ -285,6 +299,7 @@ struct RecurringRuleFormView: View {
                 scheduleSection
                 confirmationSection
                 noteSection
+                pauseSection
                 if isEditing {
                     deleteSection
                 }
@@ -433,9 +448,43 @@ struct RecurringRuleFormView: View {
         }
     }
 
+    /// Pause controls. Two flavours:
+    ///   • Indefinite pause — the rule stays off until manually re-enabled
+    ///   • Pause until a date — auto-resumes on that date (e.g. vacation)
+    /// When the rule is editing (`isEditing` true) AND already isPaused
+    /// with a future pausedUntil, this section also reports when it'll
+    /// resume so the user has context before they save.
+    private var pauseSection: some View {
+        Section {
+            Toggle("Paused", isOn: $isPaused.animation(AppAnimation.gentle))
+
+            if isPaused {
+                Toggle("Resume on a date", isOn: $hasPauseEnd.animation(AppAnimation.gentle))
+
+                if hasPauseEnd {
+                    DatePicker(
+                        "Resume on",
+                        selection: $pauseUntil,
+                        in: Date.now...,
+                        displayedComponents: .date
+                    )
+                }
+            }
+        } header: {
+            Text("Pause")
+        } footer: {
+            if isPaused && hasPauseEnd {
+                Text("The rule will skip occurrences until \(pauseUntil.formatted(.dateTime.day().month(.wide).year())), then auto-resume.")
+            } else if isPaused {
+                Text("The rule is paused indefinitely. Turn this off to resume.")
+            } else {
+                Text("Pause to stop generating expenses without deleting the rule.")
+            }
+        }
+    }
+
     private var deleteSection: some View {
         Section {
-            Toggle("Paused", isOn: $isPaused)
             Button("Delete Rule", role: .destructive) {
                 showingDeleteConfirm = true
             }
@@ -615,6 +664,10 @@ struct RecurringRuleFormView: View {
         rule.note = note.isEmpty ? nil : note
         rule.isPaused = isPaused
         rule.confirmationRequired = confirmationRequired
+        // Persist pausedUntil only if user has both paused and chosen a
+        // resume date. Otherwise clear it (covers: not paused, or paused
+        // indefinitely, or just toggled off the resume-date option).
+        rule.pausedUntil = (isPaused && hasPauseEnd) ? pauseUntil : nil
 
         // Always wipe pending confirmations on save. If the user edited
         // the time-of-day, amount, or name, the old notifications carry
