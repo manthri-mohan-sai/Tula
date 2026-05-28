@@ -71,6 +71,11 @@
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
+		421A051F2FC741CC00BAF8D2 /* AI */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = AI;
+			sourceTree = "<group>";
+		};
 		47FE5ABA2FC5D3B200E58C93 /* Tula */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
@@ -118,6 +123,7 @@
 				47FE5BB02FC7308C00E58C93 /* Tula Widget */,
 				47FE5BAB2FC7308C00E58C93 /* Frameworks */,
 				47FE5AB92FC5D3B200E58C93 /* Products */,
+				421A051F2FC741CC00BAF8D2 /* AI */,
 			);
 			sourceTree = "<group>";
 		};
@@ -157,6 +163,7 @@
 				47FE5BBD2FC7308D00E58C93 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
+				421A051F2FC741CC00BAF8D2 /* AI */,
 				47FE5ABA2FC5D3B200E58C93 /* Tula */,
 			);
 			name = Tula;
