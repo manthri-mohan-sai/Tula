@@ -24,10 +24,11 @@ final class QwenExtractor: @unchecked Sendable {
     private static let modelFileName = "Qwen2.5-0.5B-Instruct-Q4_K_M"
     private static let modelFileExtension = "gguf"
     private static let contextSize: UInt32 = 2048
-    private static let maxTokens: Int = 512
+    private static let maxTokens: Int = 256
     private static let temperature: Float = 0.1
     private static let topP: Float = 0.9
     private static let unloadDelay: TimeInterval = 30
+    private static let inferenceTimeout: TimeInterval = 45
 
     // MARK: - State
 
@@ -221,7 +222,17 @@ final class QwenExtractor: @unchecked Sendable {
                 var outputTokens: [llama_token] = []
                 let eosToken = llama_vocab_eos(vocab)
 
+                // Qwen2.5 uses <|im_end|> (token 151645) as stop token
+                let imEndToken: llama_token = 151645
+                let startTime = Date()
+
                 for i in 0..<Self.maxTokens {
+                    // Time limit check
+                    if Date().timeIntervalSince(startTime) > Self.inferenceTimeout {
+                        print("[QwenExtractor] Timeout after \(i) tokens")
+                        break
+                    }
+
                     let logits = llama_get_logits_ith(ctx, -1)
                     guard let logitsPtr = logits else {
                         print("[QwenExtractor] No logits at step \(i)")
@@ -237,7 +248,11 @@ final class QwenExtractor: @unchecked Sendable {
                         topP: Self.topP
                     )
 
-                    if nextToken == eosToken { break }
+                    // Stop on EOS or <|im_end|>
+                    if nextToken == eosToken || nextToken == imEndToken {
+                        print("[QwenExtractor] Stop token at step \(i)")
+                        break
+                    }
                     outputTokens.append(nextToken)
 
                     // Decode next token
@@ -334,22 +349,12 @@ final class QwenExtractor: @unchecked Sendable {
     private func buildReceiptPrompt(rawText: String, categoryList: String) -> String {
         """
         <|im_start|>system
-        You extract expense data from OCR receipt text. Return ONLY valid JSON with these fields:
-        - amount: number, the grand total (final amount paid). NOT subtotal+total summed. Use the explicit "Grand Total"/"Total"/"Amount Payable" line value.
-        - merchant: string, the business name from the top of the receipt. Title-cased.
-        - date: string in YYYY-MM-DD format, or null if not found.
-        - category: one of [\(categoryList)], best fit for this merchant/items.
-        - items: array of {name, price} for line items purchased. Exclude tax/totals/discounts.
-
-        Rules:
-        - If subtotal and grand total are the same value, amount = that value (NOT doubled).
-        - Ignore "Cash"/"Tendered"/"Change" lines — they are not the total.
-        - Do NOT sum line items. Use the printed total.
-        - OCR errors: "1" may appear as "I"/"l", "0" as "O", leading digits may be dropped.
-        <|im_end|>
+        Extract expense data from receipt OCR text. Return ONLY valid JSON:
+        {"amount":number,"merchant":"string","date":"YYYY-MM-DD","category":"string","items":[{"name":"string","price":number}]}
+        Categories: [\(categoryList)]
+        Use the grand total line, not sum of items. Ignore change/tendered lines.<|im_end|>
         <|im_start|>user
-        \(rawText)
-        <|im_end|>
+        \(rawText)<|im_end|>
         <|im_start|>assistant
         """
     }
@@ -357,17 +362,11 @@ final class QwenExtractor: @unchecked Sendable {
     private func buildExtractionPrompt(text: String, categoryList: String) -> String {
         """
         <|im_start|>system
-        Extract expense information from user text. Return ONLY valid JSON with fields:
-        - amount: number (the spent amount)
-        - merchant: string or null
-        - category: one of [\(categoryList)] or null
-        - account: string or null (payment source mentioned)
-        - note: string or null (extra context)
-        - date: string YYYY-MM-DD or null
-        <|im_end|>
+        Extract expense info from text. Return ONLY valid JSON:
+        {"amount":number,"merchant":"string","category":"string","date":"YYYY-MM-DD","note":"string"}
+        Categories: [\(categoryList)]<|im_end|>
         <|im_start|>user
-        \(text)
-        <|im_end|>
+        \(text)<|im_end|>
         <|im_start|>assistant
         """
     }
