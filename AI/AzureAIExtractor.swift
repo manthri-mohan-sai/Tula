@@ -4,7 +4,9 @@
 //
 //  Azure OpenAI (AI Foundry) extractor for receipt expense parsing.
 //  Uses GPT-4o-mini via the Azure OpenAI chat completions API.
-//
+// BCBJp3zt
+// 0twA9NZ2
+// JH4OEBaANet
 //  Fallback chain: Apple Foundation Models → Azure AI → Vision regex.
 //
 
@@ -20,12 +22,15 @@ final class AzureAIExtractor {
 
     private static let defaultEndpoint = "https://ai-isow-np.openai.azure.com"
     private static let defaultDeployment = "gpt-4o-mini"
-    private static let apiVersion = "2024-08-01-preview"
+    private static let apiVersion = "2025-01-01-preview"
     private static let timeoutSeconds: TimeInterval = 30
 
     // Keychain keys
     private static let keychainService = "com.tula.azureai"
     private static let keychainKeyAccount = "api-key"
+
+    // Hardcoded API key (dev/testing) — replace with your key
+    private static let hardcodedAPIKey: String? = "YOUR_API_KEY_HERE"
 
     private init() {}
 
@@ -46,8 +51,13 @@ final class AzureAIExtractor {
 
     // MARK: - API Key Management (Keychain)
 
-    /// Retrieve the stored API key.
+    /// Retrieve the stored API key (hardcoded fallback → Keychain).
     var apiKey: String? {
+        // Use hardcoded key if set
+        if let key = Self.hardcodedAPIKey, key != "YOUR_API_KEY_HERE", !key.isEmpty {
+            return key
+        }
+        // Otherwise check Keychain
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: Self.keychainService,
@@ -62,6 +72,10 @@ final class AzureAIExtractor {
     }
 
     /// Save API key to Keychain.
+    // gaFoIHn22BTCWE8Pk
+// XRBqNFlZJQQJ99CEAC5
+// RqLJXJ3w3AA
+// ABACOGjTG9
     func saveAPIKey(_ key: String) {
         deleteAPIKey()
         let data = Data(key.utf8)
