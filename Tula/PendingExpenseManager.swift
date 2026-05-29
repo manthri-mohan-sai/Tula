@@ -34,6 +34,11 @@ final class PendingExpenseManager {
         FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroupID)
     }
 
+    /// Whether the App Group shared container is accessible.
+    var isContainerAvailable: Bool {
+        containerURL != nil
+    }
+
     private var pendingFileURL: URL? {
         containerURL?.appendingPathComponent(pendingFileName)
     }

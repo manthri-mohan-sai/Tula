@@ -73,6 +73,8 @@ struct TulaApp: App {
                         SeedData.installMissingDefaultMerchantRules(into: context)
                         RecurringEngine.generateMissing(in: context)
                         WidgetRefresh.refresh(using: context)
+                        // Import any expenses shared via Share Extension
+                        SharedExpenseImporter.importPending(into: context)
                     }
                     .sheet(isPresented: Binding(
                         get: { !onboardingComplete },
@@ -122,9 +124,15 @@ enum SharedExpenseImporter {
     static func importPending(into context: ModelContext) {
         let manager = PendingExpenseManager()
         let pending = manager.loadPendingExpenses()
+
+        print("[SharedExpenseImporter] Container available: \(manager.isContainerAvailable)")
+        print("[SharedExpenseImporter] Found \(pending.count) pending expense(s)")
+
         guard !pending.isEmpty else { return }
 
         for item in pending {
+            print("[SharedExpenseImporter] Importing: \(item.merchant ?? "unknown") — ₹\(item.amount)")
+
             let expense = Expense(
                 amount: item.amount,
                 date: item.date,
@@ -151,7 +159,12 @@ enum SharedExpenseImporter {
             context.insert(expense)
         }
 
-        try? context.save()
+        do {
+            try context.save()
+            print("[SharedExpenseImporter] ✓ Saved \(pending.count) expense(s) to SwiftData")
+        } catch {
+            print("[SharedExpenseImporter] ✗ Save failed: \(error)")
+        }
         manager.clearAll()
         WidgetRefresh.refresh(using: context)
     }
