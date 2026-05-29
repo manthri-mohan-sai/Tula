@@ -29,10 +29,6 @@ struct AddExpenseView: View {
     @State private var date: Date
     @State private var categoryManuallySet: Bool
     @State private var showingDeleteConfirm = false
-    /// When true, the category grid shows all categories; when false, only
-    /// the first 7 are shown (with a "More" tile as the 8th cell). Tapping
-    /// "More" expands. This keeps the form compact by default.
-    @State private var showingAllCategories = false
 
     @FocusState private var amountFocused: Bool
 
@@ -64,32 +60,71 @@ struct AddExpenseView: View {
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 0) {
-                ScrollView {
-                    VStack(spacing: Spacing.xxl) {
-                        amountSection
-                        accountSection
-                        categorySection
-                        detailsSection
-                        if isEditing { deleteButton }
-                    }
-                    .padding(.horizontal, Spacing.xl)
-                    .padding(.top, Spacing.md)
-                    .padding(.bottom, Spacing.xxl)
-                }
-                .background(Color.tulaBackground)
-                .scrollDismissesKeyboard(.immediately)
+            ScrollView {
+                VStack(spacing: Spacing.xl) {
+                    amountHero
+                        .padding(.top, Spacing.lg)
 
-                stickyBottomBar
+                    accountStrip
+
+                    // Category grid — inline, all categories visible.
+                    // Tap to select. No header label (the grid is obviously
+                    // a category picker; an "Category" header would just
+                    // be noise). 4 columns matches the previous design.
+                    categoryGrid
+                        .padding(.horizontal, Spacing.xl)
+
+                    // Merchant / Item / Date as inline rows with
+                    // text fields and date picker right there. No
+                    // sheets, no extra taps — same friction as the
+                    // original design but inside the new visual frame.
+                    detailsCard
+                        .padding(.horizontal, Spacing.xl)
+
+                    if isEditing {
+                        deleteButton
+                            .padding(.horizontal, Spacing.xl)
+                    }
+                }
+                .padding(.bottom, Spacing.xxl)
             }
-            .navigationTitle(isEditing ? "Edit Expense" : "New Expense")
+            .scrollDismissesKeyboard(.immediately)
+            .background(Color.tulaBackground)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+                    Button {
+                        Haptics.tap()
+                        dismiss()
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                    .accessibilityLabel("Cancel")
+                }
+                ToolbarItem(placement: .principal) {
+                    Text(isEditing ? "Edit Expense" : "Expense")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.primary)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button {
+                        save()
+                    } label: {
+                        Text("Save")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(canSave ? Color.tulaBrandFallback : Color.secondary.opacity(0.5))
+                    }
+                    .disabled(!canSave)
                 }
             }
-            .onAppear(perform: setupDefaults)
+            .onAppear {
+                setupDefaults()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                    amountFocused = true
+                }
+            }
             .onChange(of: merchant) { _, newValue in
                 applyMerchantRule(for: newValue)
             }
@@ -104,276 +139,136 @@ struct AddExpenseView: View {
         }
     }
 
-    // MARK: - Amount
+    // MARK: - Amount Hero
+    //
+    // Calculator-style display: massive number, no input chrome, currency
+    // symbol whispering above. The number IS the screen. Following Apple
+    // Cash and Calculator conventions — the value being entered earns the
+    // visual real estate proportional to its importance.
 
-    private var amountSection: some View {
+    private var amountHero: some View {
         VStack(spacing: Spacing.xs) {
             Text(Currency.symbol(for: currencyCode))
-                .font(.title3.weight(.medium))
-                .foregroundStyle(.secondary)
+                .font(.body.weight(.medium))
+                .foregroundStyle(.tertiary)
 
             FormattedAmountField(
                 value: $amount,
                 currencyCode: currencyCode,
                 placeholder: "0",
-                font: .system(size: 56, weight: .bold, design: .rounded),
+                // Larger and lighter than the previous 56pt bold. At
+                // 64pt the number commands the screen the way Apple Cash
+                // does ("$0" on Cash is ~80pt). `.rounded` keeps the
+                // numeric feel friendly rather than typographically heavy.
+                font: .system(size: 64, weight: .semibold, design: .rounded),
                 alignment: .center
             )
             .focused($amountFocused)
             .frame(maxWidth: .infinity)
             .foregroundStyle(amount > 0 ? .primary : .tertiary)
-        }
-        .padding(.vertical, Spacing.sm)
-    }
-
-    // MARK: - Account
-
-    private var accountSection: some View {
-        VStack(alignment: .leading, spacing: Spacing.md) {
-            SectionHeader(title: "Paid with")
-
-            // ScrollViewReader gives us programmatic scroll-to-id. Used
-            // below to keep the selected account pill visible: if the
-            // user taps an account off-screen, the scroller animates it
-            // into view so the selection is always confirmed visually.
-            ScrollViewReader { proxy in
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: Spacing.sm) {
-                        ForEach(prioritizedAccounts) { account in
-                            AccountPill(
-                                account: account,
-                                isSelected: selectedAccount?.id == account.id
-                            )
-                            .id(account.id)
-                            .onTapGesture {
-                                Haptics.selection()
-                                withAnimation(AppAnimation.bouncy) {
-                                    selectedAccount = account
-                                }
-                            }
-                            // Slide-in from leading + fade so freshly-
-                            // visible chips have a moment of motion
-                            // rather than popping in. Identifies the
-                            // surface as "alive" without being loud.
-                            .transition(.asymmetric(
-                                insertion: .opacity.combined(with: .move(edge: .leading)),
-                                removal: .opacity
-                            ))
-                        }
-                    }
-                    .padding(.vertical, Spacing.sm)
-                    .padding(.horizontal, 2)
-                }
-                // Let chip shadows render outside the horizontal scroll
-                // bounds — without this, the selected pill's amber drop
-                // shadow gets clipped at the top/bottom edges.
-                .scrollClipDisabled()
-                // Negate parent padding so the scroll extends edge-to-edge.
-                .padding(.horizontal, -Spacing.xl)
-                .padding(.horizontal, Spacing.xl)
-                // Auto-scroll the selected pill into view whenever the
-                // selection changes — covers both initial appearance
-                // (lastUsedAccountID gets selected during setupDefaults)
-                // and explicit user taps that hit an off-screen pill.
-                .onChange(of: selectedAccount?.id) { _, newID in
-                    guard let id = newID else { return }
-                    withAnimation(.snappy(duration: 0.4)) {
-                        proxy.scrollTo(id, anchor: .center)
-                    }
-                }
-            }
+            .contentTransition(.numericText())
+            .animation(.snappy(duration: 0.2), value: amount)
         }
     }
 
-    /// Account display order in the "Paid with" pills row:
-    /// 1. **Selected account first** (when editing or after a tap) — keeps the
-    ///    chosen pill anchored at the leading edge instead of forcing a scroll.
-    /// 2. **Most-recently-used next** — recency uses the latest date among
-    ///    that account's expenses + incoming + outgoing transfers.
-    /// 3. **`sortOrder` fallback** for accounts that have never been used.
-    private var prioritizedAccounts: [Account] {
-        let active = activeAccounts
-        return active.sorted { lhs, rhs in
-            // Tier 1: selected pinned first.
-            if let selectedID = selectedAccount?.id {
-                if lhs.id == selectedID && rhs.id != selectedID { return true }
-                if rhs.id == selectedID && lhs.id != selectedID { return false }
-            }
-
-            // Tier 2: most-recent activity.
-            let lDate = latestActivityDate(for: lhs)
-            let rDate = latestActivityDate(for: rhs)
-            switch (lDate, rDate) {
-            case let (.some(a), .some(b)): return a > b
-            case (.some, .none): return true
-            case (.none, .some): return false
-            case (.none, .none):
-                // Tier 3: stable sortOrder fallback.
-                return lhs.sortOrder < rhs.sortOrder
-            }
-        }
-    }
-
-    private func latestActivityDate(for account: Account) -> Date? {
-        var dates: [Date] = []
-        dates.append(contentsOf: account.expenses.map(\.date))
-        dates.append(contentsOf: account.outgoingTransfers.map(\.date))
-        dates.append(contentsOf: account.incomingTransfers.map(\.date))
-        return dates.max()
-    }
-
-    // MARK: - Category
-
-    /// 4-column grid with a compact default of 7 categories + a "More"
-    /// tile. Tapping More expands to show every category. Categories are
-    /// sorted by recent usage (last 30 days) so the user's most-used appear
-    /// first — a real workflow optimization.
-    private var categorySection: some View {
-        VStack(alignment: .leading, spacing: Spacing.md) {
-            HStack {
-                Text("Category".uppercased())
-                    .font(.caption.weight(.semibold))
-                    .tracking(0.8)
-                    .foregroundStyle(.secondary)
-                Spacer()
-                if selectedCategory == nil {
-                    Text("Optional")
-                        .font(.caption2.weight(.medium))
-                        .foregroundStyle(.tertiary)
-                }
-            }
-            .padding(.horizontal, 4)
-
-            LazyVGrid(
-                columns: Array(repeating: GridItem(.flexible(), spacing: Spacing.sm), count: 4),
-                spacing: Spacing.md
-            ) {
-                ForEach(displayedCategories) { category in
-                    CategoryGridItem(
-                        category: category,
-                        isSelected: selectedCategory?.id == category.id
-                    )
-                    .onTapGesture {
-                        Haptics.selection()
-                        withAnimation(AppAnimation.bouncy) {
-                            if selectedCategory?.id == category.id {
-                                selectedCategory = nil
-                                categoryManuallySet = false
-                            } else {
-                                selectedCategory = category
-                                categoryManuallySet = true
-                            }
-                        }
-                    }
-                }
-
-                if shouldShowMoreTile {
-                    moreTile
-                }
-            }
-        }
-    }
-
-    /// Categories actually shown in the grid — either prioritized first 7
-    /// (when collapsed) or all categories (when expanded).
-    private var displayedCategories: [Category] {
-        let sorted = prioritizedCategories
-        return showingAllCategories ? sorted : Array(sorted.prefix(7))
-    }
-
-    /// Sort categories with three tiers:
-    /// 1. **"Other" always last** regardless of usage — by design, it's the
-    ///    fallback bucket and shouldn't displace real categories.
-    /// 2. **Usage frequency (last 30 days), descending** — what the user
-    ///    actually picks most often rises to the top.
-    /// 3. **Alphabetical** for ties (including the common "zero usage" case
-    ///    for new installs).
-    private var prioritizedCategories: [Category] {
-        let cutoff = Calendar.current.date(byAdding: .day, value: -30, to: .now) ?? .now
-        let useCounts: [UUID: Int] = activeCategories.reduce(into: [:]) { dict, cat in
-            dict[cat.id] = cat.expenses.filter { $0.date >= cutoff }.count
-        }
-        return activeCategories.sorted { lhs, rhs in
-            // Tier 1: "Other" sinks to the bottom.
-            let lIsOther = lhs.name.localizedCaseInsensitiveCompare("Other") == .orderedSame
-            let rIsOther = rhs.name.localizedCaseInsensitiveCompare("Other") == .orderedSame
-            if lIsOther != rIsOther {
-                return !lIsOther   // the non-Other one comes first
-            }
-
-            // Tier 2: usage frequency, descending.
-            let l = useCounts[lhs.id] ?? 0
-            let r = useCounts[rhs.id] ?? 0
-            if l != r { return l > r }
-
-            // Tier 3: alphabetical for ties.
-            return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
-        }
-    }
-
-    private var shouldShowMoreTile: Bool {
-        !showingAllCategories && activeCategories.count > 7
-    }
-
-    /// "More" tile that lives as the 8th cell when categories are collapsed.
-    /// Expands the grid in place with a smooth spring.
-    private var moreTile: some View {
-        Button {
-            Haptics.tap()
-            withAnimation(AppAnimation.gentle) {
-                showingAllCategories = true
-            }
-        } label: {
-            VStack(spacing: Spacing.xs) {
-                ZStack {
-                    Circle()
-                        .fill(Color.secondary.opacity(0.15))
-                        .frame(width: 50, height: 50)
-                    Image(systemName: "ellipsis")
-                        .font(.title3.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                }
-                Text("More")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, Spacing.sm)
-        }
-        .buttonStyle(PressableScaleStyle(scale: 0.95))
-    }
-
-    // MARK: - Details (merchant, note, date)
+    // MARK: - Account Strip
     //
-    // These three fields used to live behind a "+ Add details" toggle —
-    // a friction tax that hid the most-edited optional field (Note)
-    // behind an extra tap. Now they sit inline as a single card with
-    // three rows so the user can see what they're skipping and fill any
-    // of them in without expanding anything. Date defaults to today, so
-    // most quick logs still skip past these without typing.
+    // Horizontal scrollable pills with NO header. The pills are visually
+    // self-explanatory (account icon + name) — adding a "Paid with" label
+    // above them is redundant noise. Selection auto-applies the user's
+    // last-used default, so the form opens with a sensible choice already
+    // made; the user typically just confirms with one glance, not a tap.
 
-    private var detailsSection: some View {
-        VStack(alignment: .leading, spacing: Spacing.md) {
-            SectionHeader(title: "Details")
+    private var accountStrip: some View {
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: Spacing.sm) {
+                    ForEach(prioritizedAccounts) { account in
+                        AccountPill(
+                            account: account,
+                            isSelected: selectedAccount?.id == account.id
+                        )
+                        .id(account.id)
+                        .onTapGesture {
+                            Haptics.selection()
+                            withAnimation(AppAnimation.bouncy) {
+                                selectedAccount = account
+                            }
+                        }
+                    }
+                }
+                .padding(.horizontal, Spacing.xl)
+                .padding(.vertical, Spacing.sm)
+            }
+            .scrollClipDisabled()
+            .onChange(of: selectedAccount?.id) { _, newID in
+                guard let id = newID else { return }
+                withAnimation(.snappy(duration: 0.4)) {
+                    proxy.scrollTo(id, anchor: .center)
+                }
+            }
+        }
+    }
 
-            Card(padding: 0, cornerRadius: CornerRadius.medium) {
-                VStack(spacing: 0) {
-                    detailRow(label: "Merchant", icon: "storefront.fill") {
-                        TextField("Swiggy, Uber…", text: $merchant)
-                            .textInputAutocapitalization(.words)
-                            .autocorrectionDisabled()
-                            .multilineTextAlignment(.trailing)
+    // MARK: - Category Grid
+    //
+    // Inline 4-column grid showing every active category at once. No
+    // expansion, no "More" tile — categories are the substance of the
+    // entry, not a fold-away detail. Scanning a full grid is fastest
+    // for the user; hiding categories behind a sheet was the wrong call.
+
+    private var categoryGrid: some View {
+        LazyVGrid(
+            columns: Array(repeating: GridItem(.flexible(), spacing: Spacing.sm), count: 4),
+            spacing: Spacing.md
+        ) {
+            ForEach(prioritizedCategories) { category in
+                CategoryGridItem(
+                    category: category,
+                    isSelected: selectedCategory?.id == category.id
+                )
+                .onTapGesture {
+                    Haptics.selection()
+                    withAnimation(AppAnimation.bouncy) {
+                        if selectedCategory?.id == category.id {
+                            selectedCategory = nil
+                            categoryManuallySet = false
+                        } else {
+                            selectedCategory = category
+                            categoryManuallySet = true
+                        }
                     }
-                    Divider().padding(.leading, 48)
-                    detailRow(label: "Note", icon: "text.alignleft") {
-                        TextField("Optional", text: $note)
-                            .multilineTextAlignment(.trailing)
-                    }
-                    Divider().padding(.leading, 48)
-                    detailRow(label: "Date", icon: "calendar") {
-                        DatePicker("", selection: $date, displayedComponents: .date)
-                            .labelsHidden()
-                    }
+                }
+            }
+        }
+    }
+
+    // MARK: - Details Card (merchant, item, date)
+    //
+    // Inline text fields stacked in a single rounded card. Each row is
+    // the field's icon + label + the live text input. No sheet detour
+    // for typing — tap and start typing. This was the right pattern
+    // all along; my sheet-based redesign was over-engineering.
+
+    private var detailsCard: some View {
+        Card(padding: 0, cornerRadius: CornerRadius.medium) {
+            VStack(spacing: 0) {
+                detailRow(label: "Merchant", icon: "storefront.fill") {
+                    TextField("Ramachandra Restaurant, Swiggy…", text: $merchant)
+                        .textInputAutocapitalization(.words)
+                        .autocorrectionDisabled()
+                        .multilineTextAlignment(.trailing)
+                }
+                Divider().padding(.leading, 48)
+                detailRow(label: "Item", icon: "text.alignleft") {
+                    TextField("Masala Dosa, Chai…", text: $note)
+                        .textInputAutocapitalization(.words)
+                        .multilineTextAlignment(.trailing)
+                }
+                Divider().padding(.leading, 48)
+                detailRow(label: "Date", icon: "calendar") {
+                    DatePicker("", selection: $date, displayedComponents: .date)
+                        .labelsHidden()
                 }
             }
         }
@@ -399,6 +294,8 @@ struct AddExpenseView: View {
         .padding(.vertical, Spacing.md - 2)
     }
 
+    // MARK: - Delete (edit mode only)
+
     private var deleteButton: some View {
         Button(role: .destructive) {
             Haptics.warning()
@@ -417,38 +314,68 @@ struct AddExpenseView: View {
             )
         }
         .buttonStyle(PressableScaleStyle(scale: 0.98))
-        .padding(.top, Spacing.lg)
     }
 
-    // MARK: - Sticky Bottom Bar
+    // MARK: - Account Priority
 
-    private var stickyBottomBar: some View {
-        VStack(spacing: 0) {
-            Divider()
-            Button {
-                save()
-            } label: {
-                Text(isEditing ? "Save Changes" : "Save Expense")
-                    .font(.headline)
-                    .foregroundStyle(.white)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, Spacing.md + 2)
-                    .background(
-                        RoundedRectangle(cornerRadius: CornerRadius.medium, style: .continuous)
-                            .fill(canSave ? Color.tulaBrandFallback : Color.gray.opacity(0.3))
-                    )
-                    .shadow(
-                        color: canSave ? Color.tulaBrandFallback.opacity(0.3) : .clear,
-                        radius: 12, y: 4
-                    )
+    /// Account display order in the strip:
+    /// 1. **Selected first** so the chosen pill is always at the leading edge.
+    /// 2. **Most-recently-used next** — recency uses the latest date among
+    ///    that account's expenses + incoming + outgoing transfers.
+    /// 3. **`sortOrder` fallback** for accounts that have never been used.
+    private var prioritizedAccounts: [Account] {
+        let active = activeAccounts
+        return active.sorted { lhs, rhs in
+            if let selectedID = selectedAccount?.id {
+                if lhs.id == selectedID && rhs.id != selectedID { return true }
+                if rhs.id == selectedID && lhs.id != selectedID { return false }
             }
-            .buttonStyle(PressableScaleStyle(scale: 0.97))
-            .disabled(!canSave)
-            .padding(.horizontal, Spacing.xl)
-            .padding(.top, Spacing.md)
-            .padding(.bottom, Spacing.sm)
+            let lDate = latestActivityDate(for: lhs)
+            let rDate = latestActivityDate(for: rhs)
+            switch (lDate, rDate) {
+            case let (.some(a), .some(b)): return a > b
+            case (.some, .none): return true
+            case (.none, .some): return false
+            case (.none, .none):
+                return lhs.sortOrder < rhs.sortOrder
+            }
         }
-        .background(.regularMaterial)
+    }
+
+    /// Latest activity date for an account — looks at expenses,
+    /// incoming transfers, and outgoing transfers. Returns nil for
+    /// accounts that have never been touched.
+    private func latestActivityDate(for account: Account) -> Date? {
+        let expenseLatest = account.expenses.map(\.date).max()
+        let outgoingLatest = account.outgoingTransfers.map(\.date).max()
+        let incomingLatest = account.incomingTransfers.map(\.date).max()
+        return [expenseLatest, outgoingLatest, incomingLatest]
+            .compactMap { $0 }
+            .max()
+    }
+
+    // MARK: - Category Priority
+
+    /// Sort categories with three tiers:
+    /// 1. **"Other" always last** — fallback bucket, shouldn't displace real categories.
+    /// 2. **Usage frequency (last 30 days), descending** — most-picked rises.
+    /// 3. **Alphabetical** for ties.
+    private var prioritizedCategories: [Category] {
+        let cutoff = Calendar.current.date(byAdding: .day, value: -30, to: .now) ?? .now
+        let useCounts: [UUID: Int] = activeCategories.reduce(into: [:]) { dict, cat in
+            dict[cat.id] = cat.expenses.filter { $0.date >= cutoff }.count
+        }
+        return activeCategories.sorted { lhs, rhs in
+            let lIsOther = lhs.name.localizedCaseInsensitiveCompare("Other") == .orderedSame
+            let rIsOther = rhs.name.localizedCaseInsensitiveCompare("Other") == .orderedSame
+            if lIsOther != rIsOther {
+                return !lIsOther
+            }
+            let l = useCounts[lhs.id] ?? 0
+            let r = useCounts[rhs.id] ?? 0
+            if l != r { return l > r }
+            return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+        }
     }
 
     // MARK: - Logic
@@ -503,7 +430,12 @@ struct AddExpenseView: View {
             )
             context.insert(expense)
         }
-        try? context.save()
+        // Learn from the user's choice: if they typed a merchant AND picked
+        // a category, remember that mapping so the next "icecream" or
+        // "office mess" auto-picks the right category. Silent — the user
+        // doesn't see anything happen, but the app gets smarter with use.
+        learnMerchantCategory()
+        try? context.save(); WidgetRefresh.refresh(using: context)
         lastUsedAccountID = account.id.uuidString
         Haptics.success()
         // Evaluate budget thresholds after persisting — fires a
@@ -511,6 +443,52 @@ struct AddExpenseView: View {
         // past 75% or 100%. No-op when budget alerts are disabled.
         evaluateBudgetAlerts()
         dismiss()
+    }
+
+    /// User-learning hook: upserts a user-defined MerchantRule when the
+    /// expense has both a merchant string and a category. Filters out
+    /// pollution (very short merchants, merchant equal to category name,
+    /// purely numeric merchants).
+    ///
+    /// Upsert semantics:
+    /// - If a user-defined rule exists for this merchant → update its category.
+    /// - If only a default rule exists → leave defaults alone; create a
+    ///   higher-priority user rule. The parser checks user rules first, so
+    ///   the user's choice wins.
+    /// - If no rule exists → create one.
+    private func learnMerchantCategory() {
+        let trimmed = merchant.trimmingCharacters(in: .whitespaces).lowercased()
+        guard let category = selectedCategory,
+              !trimmed.isEmpty,
+              trimmed.count >= 3,
+              // Avoid storing pure numbers ("100" → Food) which add no value.
+              !trimmed.allSatisfy({ $0.isNumber || $0.isWhitespace }),
+              // Avoid storing rules where merchant equals the category name —
+              // these add no new information and could collide.
+              trimmed != category.name.lowercased()
+        else { return }
+
+        // Look up existing user-defined rule for this exact pattern.
+        let fetch = FetchDescriptor<MerchantRule>()
+        let allRules = (try? context.fetch(fetch)) ?? []
+        let existingUserRule = allRules.first {
+            $0.isUserDefined && $0.pattern == trimmed
+        }
+
+        if let existing = existingUserRule {
+            // Update the category if the user picked a different one this time.
+            if existing.category?.id != category.id {
+                existing.category = category
+            }
+        } else {
+            // Brand new — insert a user-defined rule. Default rules with the
+            // same pattern are left untouched; the parser sees user rules
+            // first and they win.
+            let rule = MerchantRule(pattern: trimmed,
+                                    category: category,
+                                    isUserDefined: true)
+            context.insert(rule)
+        }
     }
 
     /// Walks active budgets and posts threshold notifications for any
@@ -533,7 +511,7 @@ struct AddExpenseView: View {
     private func delete() {
         guard let existingExpense else { return }
         context.delete(existingExpense)
-        try? context.save()
+        try? context.save(); WidgetRefresh.refresh(using: context)
         Haptics.success()
         dismiss()
     }

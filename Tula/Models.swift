@@ -161,7 +161,8 @@ final class Expense {
 
 enum ExpenseSource: String, Codable {
     case manual       // Typed into the form
-    case nlp          // Parsed from natural language
+    case nlp          // Parsed from natural language (rule-based parser)
+    case smartParsed  // Parsed by on-device Foundation Models (voice flow)
     case siri         // Via Siri shortcut
     case widget       // Quick-add from widget
     case recurring    // Auto-created by a RecurringRule
@@ -227,6 +228,22 @@ final class RecurringRule {
     /// Only used when frequency == .monthly.
     var dayOfMonth: Int = 1
 
+    /// Bitmask of weekdays the rule should fire on, when frequency == .weekly.
+    /// Bit 0 = Sunday, bit 1 = Monday, ..., bit 6 = Saturday — matching
+    /// `Calendar.component(.weekday, from:)` minus one.
+    ///
+    /// **A mask of 0 means "use startDate's weekday"** — preserves the
+    /// original single-weekday behavior for pre-multi-day rules. Any
+    /// non-zero mask overrides startDate's weekday: the rule fires on
+    /// every day whose bit is set.
+    ///
+    /// Examples:
+    /// - 0           → legacy: same weekday as startDate
+    /// - 0b0111110   → weekdays only (Mon-Fri)
+    /// - 0b1000001   → weekends only (Sat + Sun)
+    /// - 0b1111111   → every day
+    var weekdaysMask: Int = 0
+
     /// For custom recurrence — number of units per cycle. Defaults to 1
     /// so a fresh-default custom rule starts as "every 1 month" before
     /// the user adjusts it. Ignored for non-custom frequencies.
@@ -262,6 +279,17 @@ final class RecurringRule {
     /// when the app launches and walks recurring rules, it generates any
     /// missing transactions for past due dates and updates this field.
     var lastGeneratedDate: Date? = nil
+
+    /// When true, this rule fires at a specific time of day (taken from
+    /// `startDate`'s time-of-day component). When false, it's an all-day
+    /// rule — due "today" without a specific time. Affects home-screen
+    /// display: time-scheduled rules show only the nearest one (since
+    /// they have ordering by time), while all-day rules stack together.
+    ///
+    /// Defaults to false (all-day) for safety — existing rules created
+    /// before this field existed silently become general/all-day rules,
+    /// which matches the looser intent of pre-this-update behavior.
+    var hasSpecificTime: Bool = false
 
     /// When true, the engine doesn't auto-log this rule's occurrences.
     /// Instead, it sends an interactive notification with "Log it" / "Skip"
@@ -304,14 +332,52 @@ final class RecurringRule {
         set { customUnitRaw = newValue.rawValue }
     }
 
+    /// The set of weekdays this rule should fire on, derived from
+    /// `weekdaysMask`. Uses Calendar's 1-7 convention (1 = Sunday).
+    /// Empty set means "use startDate's weekday" (legacy single-day mode).
+    var weekdaysSet: Set<Int> {
+        get {
+            guard weekdaysMask != 0 else { return [] }
+            var result: Set<Int> = []
+            for i in 0..<7 where (weekdaysMask & (1 << i)) != 0 {
+                result.insert(i + 1)   // 1-indexed (Sun=1)
+            }
+            return result
+        }
+        set {
+            weekdaysMask = newValue.reduce(0) { acc, weekday in
+                acc | (1 << (weekday - 1))
+            }
+        }
+    }
+
     /// Human-readable description of the cadence. Used in row subtitles.
     var cadenceLabel: String {
         switch frequency {
-        case .weekly, .monthly, .yearly:
+        case .weekly:
+            // If multi-day mask is set, describe the days. Otherwise just
+            // say "every week" — same as before for legacy rules.
+            return weekdaysSummary ?? frequency.shortDescription
+        case .monthly, .yearly:
             return frequency.shortDescription
         case .custom:
             return "every \(customInterval) \(customUnit.label(for: customInterval))"
         }
+    }
+
+    /// Compact description of weekday selection — "Weekdays", "Weekends",
+    /// "Every day", or "Mon, Wed, Fri". Nil when no multi-day mask is set
+    /// (caller should fall back to single-day description).
+    var weekdaysSummary: String? {
+        let days = weekdaysSet
+        guard !days.isEmpty else { return nil }
+        if days == Set(1...7) { return "every day" }
+        if days == [2, 3, 4, 5, 6] { return "weekdays" }
+        if days == [1, 7] { return "weekends" }
+        // List form: "Mon, Wed, Fri". Order Sun→Sat for consistency.
+        let names = [1: "Sun", 2: "Mon", 3: "Tue", 4: "Wed",
+                     5: "Thu", 6: "Fri", 7: "Sat"]
+        return days.sorted().compactMap { names[$0] }.joined(separator: ", ")
     }
 }
 

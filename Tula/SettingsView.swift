@@ -20,6 +20,13 @@ struct SettingsView: View {
     @AppStorage("reminderMinute") private var reminderMinute: Int = 0
     @AppStorage("budgetAlertsEnabled") private var budgetAlertsEnabled: Bool = false
     @AppStorage("launchAnimationEnabled") private var launchAnimationEnabled: Bool = true
+    @AppStorage("smartParsingEnabled") private var smartParsingEnabled: Bool = true
+
+    /// Result of the most recent "Test smart parsing" tap in Settings —
+    /// nil while idle, populated after a test parse. Surfaces what
+    /// Foundation Models actually returned (or an error reason).
+    @State private var smartTestResult: String? = nil
+    @State private var smartTestInFlight: Bool = false
 
     @State private var showingAccounts = false
     @State private var showingCategories = false
@@ -48,6 +55,7 @@ struct SettingsView: View {
                 alertsSection
                 dataSection
                 voiceSection
+                smartParsingSection
                 toolsSection
                 privacySection
                 aboutSection
@@ -177,6 +185,135 @@ struct SettingsView: View {
         }
     }
 
+    /// Apple Foundation Models integration — opt-out toggle for letting
+    /// Tula's parser fall back to on-device Apple Intelligence for
+    /// inputs the rule-based parser can't categorize. Grayed out on
+    /// devices without Apple Intelligence support, with a status footer
+    /// explaining why.
+    private var smartParsingSection: some View {
+        Section {
+            if #available(iOS 26.0, *) {
+                let available = SmartExpenseParser.isAvailable
+                Toggle(isOn: $smartParsingEnabled) {
+                    settingsLabel("Smart parsing",
+                                  icon: "apple.intelligence",
+                                  color: Color.tulaBrandFallback)
+                }
+                .disabled(!available)
+                .tint(Color.tulaBrandFallback)
+
+                // Test row: actually fires FM with a sample sentence
+                // so the user gets a definitive yes/no on whether it's
+                // working on their device. Disabled when unavailable or
+                // the user has the feature off.
+                Button {
+                    runSmartParseTest()
+                } label: {
+                    HStack {
+                        settingsLabel("Test smart parsing",
+                                      icon: "play.circle.fill",
+                                      color: .indigo)
+                        Spacer()
+                        if smartTestInFlight {
+                            ProgressView()
+                                .controlSize(.small)
+                        } else {
+                            Image(systemName: "chevron.right")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
+                }
+                .buttonStyle(.plain)
+                .disabled(!available || !smartParsingEnabled || smartTestInFlight)
+
+                if let result = smartTestResult {
+                    Text(result)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .padding(.vertical, 4)
+                        .textSelection(.enabled)
+                }
+            } else {
+                Toggle(isOn: .constant(false)) {
+                    settingsLabel("Smart parsing",
+                                  icon: "sparkles",
+                                  color: .gray)
+                }
+                .disabled(true)
+            }
+        } header: {
+            Text("Smart Parsing")
+        } footer: {
+            smartParsingFooter
+        }
+    }
+
+    /// Fires Foundation Models with a sample expense sentence and
+    /// displays the result inline. Gives the user a deterministic
+    /// way to verify FM works on their device — without it, they'd
+    /// have to guess based on whether the "Smart parsing…" pill
+    /// flashed during a real save.
+    private func runSmartParseTest() {
+        guard #available(iOS 26.0, *) else { return }
+        smartTestInFlight = true
+        smartTestResult = nil
+        Haptics.tap()
+
+        let sample = "spent 350 on lunch with team at sagar ratna"
+        let categories = ["Food", "Groceries", "Transport", "Shopping",
+                          "Entertainment", "Bills & Utilities", "Rent",
+                          "Health", "Education", "Travel",
+                          "Personal Care", "Other"]
+        let startedAt = Date()
+
+        Task {
+            let parsed = await SmartExpenseParser.parse(
+                sample,
+                categoryNames: categories
+            )
+            let elapsed = Int(Date().timeIntervalSince(startedAt) * 1000)
+
+            await MainActor.run {
+                smartTestInFlight = false
+                if let parsed {
+                    let amount = String(format: "%.0f", parsed.amount)
+                    let merchant = parsed.merchant ?? "—"
+                    let category = parsed.category ?? "—"
+                    smartTestResult = """
+                    ✓ Tested with: "\(sample)"
+                    Amount: ₹\(amount) · Merchant: \(merchant) · Category: \(category)
+                    Round-trip: \(elapsed)ms — on-device, private
+                    """
+                    Haptics.success()
+                } else {
+                    let reason = SmartExpenseParser.unavailableReason
+                        ?? "Foundation Models call failed unexpectedly. Try again, or check Settings → Apple Intelligence."
+                    smartTestResult = "✗ \(reason)"
+                    Haptics.warning()
+                }
+            }
+        }
+    }
+
+    /// Footer copy explains current status: on, off, or unavailable
+    /// (with a reason). Honest about limitations — users on iPhone 14
+    /// shouldn't be left wondering why the toggle is gray.
+    @ViewBuilder
+    private var smartParsingFooter: some View {
+        if #available(iOS 26.0, *) {
+            if let reason = SmartExpenseParser.unavailableReason {
+                Text(reason)
+            } else if smartParsingEnabled {
+                Text("When the built-in parser can't categorize an entry, Tula asks on-device Apple Intelligence to help. Inputs never leave your device. Adds ~200-500ms for complex entries only.")
+            } else {
+                Text("Tula will use only its built-in rule-based parser. No on-device AI is invoked.")
+            }
+        } else {
+            Text("Smart parsing requires iOS 26 with Apple Intelligence enabled.")
+        }
+    }
+
     /// Tools section is for one-shot actions that act *on* the data —
     /// exports, deep links, etc. Backups stay in Privacy since they're
     /// about data safety, not data export.
@@ -203,6 +340,7 @@ struct SettingsView: View {
             Text("Encrypted backups with your passphrase. Your data never leaves your device unless you share it.")
         }
     }
+
 
     private var aboutSection: some View {
         Section {
@@ -316,6 +454,7 @@ struct SettingsView: View {
         }
     }
 }
+
 
 // MARK: - Currency Picker
 

@@ -4,7 +4,7 @@ import Foundation
 
 /// Compact JSON-codable snapshot the main app writes to App Group storage
 /// so the widget extension can render without database access. Refreshed
-/// on every app foreground transition (see `TulaApp.refreshWidgetSnapshot`).
+/// on every app foreground transition (see `WidgetRefresh.refresh`).
 ///
 /// Designed to stay small (a few KB at most). Includes only what active
 /// widget surfaces need: today's spend, month total, top monthly budgets,

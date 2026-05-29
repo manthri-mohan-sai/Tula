@@ -11,10 +11,54 @@ struct ExpenseRow: View {
         return Color(hex: hex)
     }
 
+    /// Primary display label for the row title. Merchant-first hierarchy:
+    /// the merchant is the aggregatable unit ("₹3,200 at Ramachandra this
+    /// month") so it earns the title slot. Specific items appear in the
+    /// subtitle as context.
+    ///
+    /// **Why merchant-first** (not item-first): at scale, users scan
+    /// expense lists to find patterns ("where am I spending too much?").
+    /// A list titled by item — "Masala Dosa, Chai, Lunch, Lunch, Chai" —
+    /// hides those patterns; a list titled by merchant — "Ramachandra,
+    /// Swiggy, Chai Point, Chai Point" — surfaces them immediately.
+    /// Apple's own data-driven apps (Wallet, Health, Calendar) all use
+    /// this pattern: the aggregatable group is primary, the specific
+    /// instance is supporting detail.
+    ///
+    /// Fallback chain when no merchant exists:
+    /// 1. Item (note) — for quick entries with just a dish name
+    /// 2. Category — last-resort label so the row isn't blank
+    /// 3. "Uncategorized" placeholder
     private var primaryLabel: String {
         if let merchant = expense.merchant, !merchant.isEmpty { return merchant }
+        if let note = expense.note, !note.isEmpty { return note }
         if let category = expense.category { return category.name }
         return "Uncategorized"
+    }
+
+    /// Subtitle stack. When the title is the merchant, the subtitle leads
+    /// with the item (so the user still sees what was bought at a glance),
+    /// then category, then account. When the title is the item (no merchant),
+    /// the subtitle drops the item prefix to avoid showing it twice.
+    private var subtitleParts: [String] {
+        var parts: [String] = []
+        let titleIsMerchant = !(expense.merchant ?? "").isEmpty
+
+        if titleIsMerchant,
+           let note = expense.note, !note.isEmpty,
+           note.lowercased() != expense.merchant?.lowercased() {
+            // Item appears in the subtitle when title is the merchant.
+            // Surfaces "Masala Dosa" alongside "Ramachandra" so the user
+            // sees both pieces in one glance.
+            parts.append(note)
+        }
+        if let category = expense.category {
+            parts.append(category.name)
+        }
+        if let account = expense.account {
+            parts.append(account.name)
+        }
+        return parts
     }
 
     private var needsReview: Bool {
@@ -38,13 +82,16 @@ struct ExpenseRow: View {
                         .font(.subheadline.weight(.semibold))
                         .lineLimit(1)
                     if expense.recurringRule != nil {
-                        // Small recurring glyph — auto-generated from a
-                        // subscription/recurring rule. Subtle so it doesn't
-                        // compete with the merchant name; .secondary tint.
                         Image(systemName: "arrow.triangle.2.circlepath")
                             .font(.caption2.weight(.semibold))
                             .foregroundStyle(.secondary)
                             .accessibilityLabel("Recurring")
+                    }
+                    if expense.source == .smartParsed {
+                        Image(systemName: "apple.intelligence")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(Color.tulaBrandFallback)
+                            .accessibilityLabel("Parsed by Apple Intelligence")
                     }
                     if needsReview {
                         Text("Review")
@@ -57,19 +104,24 @@ struct ExpenseRow: View {
                             .fixedSize()
                     }
                 }
-                HStack(spacing: 4) {
-                    if let category = expense.category, expense.merchant != nil {
-                        Text(category.name)
-                            .lineLimit(1)
-                        Text("·").foregroundStyle(.tertiary)
+                // Subtitle stack — merchant (when title is the item),
+                // then category, then account. Each piece appears only
+                // when present; the centralized `subtitleParts` array
+                // decides what's shown so the layout adapts to whatever
+                // data exists (entries with no merchant skip that piece
+                // gracefully).
+                if !subtitleParts.isEmpty {
+                    HStack(spacing: 4) {
+                        ForEach(Array(subtitleParts.enumerated()), id: \.offset) { idx, part in
+                            Text(part).lineLimit(1)
+                            if idx < subtitleParts.count - 1 {
+                                Text("·").foregroundStyle(.tertiary)
+                            }
+                        }
                     }
-                    if let account = expense.account {
-                        Text(account.name)
-                            .lineLimit(1)
-                    }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 }
-                .font(.caption)
-                .foregroundStyle(.secondary)
             }
 
             Spacer(minLength: Spacing.xs)
@@ -134,17 +186,33 @@ struct ExpenseContextPreview: View {
                 }
 
                 VStack(alignment: .leading, spacing: 2) {
+                    // Merchant-first headline. Mirrors the compact row's
+                    // hierarchy — see `primaryLabel` for the rationale.
+                    // Fallback chain: merchant → item → category.
                     if let merchant = expense.merchant, !merchant.isEmpty {
                         Text(merchant)
                             .font(.headline)
+                        if let note = expense.note, !note.isEmpty,
+                           note.lowercased() != merchant.lowercased() {
+                            Text(note)
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        } else if let category = expense.category {
+                            Text(category.name)
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        }
+                    } else if let note = expense.note, !note.isEmpty {
+                        Text(note)
+                            .font(.headline)
+                        if let category = expense.category {
+                            Text(category.name)
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        }
                     } else {
                         Text(expense.category?.name ?? "Uncategorized")
                             .font(.headline)
-                    }
-                    if let category = expense.category, expense.merchant != nil {
-                        Text(category.name)
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
                     }
                 }
                 Spacer()
@@ -172,11 +240,30 @@ struct ExpenseContextPreview: View {
                     .foregroundStyle(.secondary)
             }
 
-            if let note = expense.note, !note.isEmpty {
-                Text(note)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(3)
+            // Original input that was parsed into this expense. Surfaced
+            // here so users can verify what the speech recognizer (or
+            // typed text, or Siri) actually delivered — when the saved
+            // amount looks wrong, this tells you whether the audio came
+            // in correctly and the parser misinterpreted, or the audio
+            // itself was missing key information.
+            //
+            // Hidden when rawInput is the same as merchant (typed-only
+            // case where rawInput is just "merchant 250" repeating data
+            // already visible above) to avoid clutter on simple entries.
+            if let raw = expense.rawInput,
+               !raw.isEmpty,
+               raw.lowercased() != expense.merchant?.lowercased() {
+                HStack(spacing: 4) {
+                    Image(systemName: "quote.opening")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                    Text(raw)
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .italic()
+                        .lineLimit(2)
+                }
+                .padding(.top, 2)
             }
         }
         .padding(Spacing.lg)

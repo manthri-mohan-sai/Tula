@@ -233,7 +233,85 @@ enum NotificationManager {
 
         let id = identifier(for: ruleID, dueDate: dueDate)
         let request = UNNotificationRequest(identifier: id, content: content, trigger: trigger)
-        UNUserNotificationCenter.current().add(request) { _ in }
+        UNUserNotificationCenter.current().add(request) { error in
+            if let error {
+                // Surface the failure to the diagnostic log so the user
+                // can see what iOS rejected. Common failure modes:
+                //   • Authorization revoked since launch
+                //   • Trigger date is in the past (caller should have
+                //     filtered, but defensive)
+                //   • Quota exceeded (>64 pending notifications app-wide)
+                NotificationDiagnostics.recordScheduleFailure(
+                    ruleID: ruleID,
+                    dueDate: dueDate,
+                    error: error
+                )
+            } else {
+                NotificationDiagnostics.recordScheduleSuccess(
+                    ruleID: ruleID,
+                    dueDate: dueDate
+                )
+            }
+        }
+    }
+
+    /// Lightweight diagnostic counter so the user can see whether
+    /// scheduling is actually attempting to register notifications.
+    /// Counts successes and failures since app launch; the diagnostics
+    /// Settings section reads these to surface "scheduled N, failed M"
+    /// stats to help isolate "the engine isn't running" from "iOS
+    /// rejected our requests" failure modes.
+    enum NotificationDiagnostics {
+        static var scheduleSuccessCount: Int = 0
+        static var scheduleFailureCount: Int = 0
+        static var lastError: String? = nil
+        static var lastScheduledRuleID: UUID? = nil
+        static var lastScheduledDate: Date? = nil
+
+        /// Counts of action-button taps observed by the app. Persisted
+        /// in-memory only — survives nothing — but useful for "did the
+        /// last tap reach my code" during diagnostic sessions where
+        /// you're trying a notification, tapping a button, then
+        /// returning to Settings to verify the path executed.
+        static var logTapCount: Int = 0
+        static var skipTapCount: Int = 0
+        static var bodyTapCount: Int = 0
+        /// Timestamp of the most recent action tap; surfaced in
+        /// diagnostics as "Last action: Log · 2:14 PM".
+        static var lastActionAt: Date? = nil
+        static var lastActionLabel: String? = nil
+
+        enum Action: String {
+            case log = "Log"
+            case skip = "Skip"
+            case body = "Body"
+        }
+
+        static func recordScheduleSuccess(ruleID: UUID, dueDate: Date) {
+            scheduleSuccessCount += 1
+            lastScheduledRuleID = ruleID
+            lastScheduledDate = dueDate
+        }
+
+        static func recordScheduleFailure(ruleID: UUID, dueDate: Date, error: Error) {
+            scheduleFailureCount += 1
+            lastError = "\(error.localizedDescription) (rule \(ruleID.uuidString.prefix(8)), due \(dueDate.formatted(.dateTime.day().month().hour().minute())))"
+        }
+
+        /// Records that the user tapped an action button on a delivered
+        /// notification. If you tap Log and the diagnostics doesn't
+        /// increment, the action handler never ran — i.e. iOS dropped
+        /// the action route, or the action identifier isn't matching
+        /// what we registered in the category.
+        static func recordActionTapped(_ action: Action, ruleID: UUID) {
+            switch action {
+            case .log:  logTapCount += 1
+            case .skip: skipTapCount += 1
+            case .body: bodyTapCount += 1
+            }
+            lastActionAt = Date.now
+            lastActionLabel = action.rawValue
+        }
     }
 
     /// Cancels all pending confirmation notifications for a given rule.
@@ -250,6 +328,17 @@ enum NotificationManager {
                     .removePendingNotificationRequests(withIdentifiers: idsToCancel)
             }
         }
+    }
+
+    /// Cancels a single pending confirmation notification for a specific
+    /// rule occurrence. Used when the user logs or skips that occurrence
+    /// from inside the app — without this, the queued notification would
+    /// still fire later and ask the user to act on it again, even though
+    /// they've already resolved it.
+    static func cancelConfirmation(ruleID: UUID, dueDate: Date) {
+        let id = identifier(for: ruleID, dueDate: dueDate)
+        UNUserNotificationCenter.current()
+            .removePendingNotificationRequests(withIdentifiers: [id])
     }
 
     /// Cancels every pending confirmation notification across all rules.
@@ -272,4 +361,5 @@ enum NotificationManager {
     private static func identifier(for ruleID: UUID, dueDate: Date) -> String {
         "\(confirmRequestPrefix)\(ruleID.uuidString)-\(Int(dueDate.timeIntervalSince1970))"
     }
+
 }

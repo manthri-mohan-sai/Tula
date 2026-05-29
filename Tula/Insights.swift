@@ -210,6 +210,15 @@ enum InsightEngine {
         Array(insights.sorted { $0.priority > $1.priority }.prefix(5))
     }
 
+    /// Public-facing wrapper around the streak computation. Used by Home
+    /// to render the streak chip in the hero card. Same algorithm as the
+    /// internal insight engine — exposed so the chip and the insight
+    /// stay perfectly in sync (no divergent "5-day streak" vs "6-day
+    /// streak" between two surfaces).
+    static func loggingStreak(expenses: [Expense]) -> Int {
+        computeStreak(expenses: expenses, calendar: .current, now: .now)
+    }
+
     /// Count consecutive days (including today) with at least one expense.
     /// "Today might not yet have a log" handling: streak = streak through
     /// yesterday if today is empty (so the user can see "5-day streak —

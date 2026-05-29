@@ -211,6 +211,10 @@ struct RecurringRuleFormView: View {
     @State private var kind: RecurringKind
     @State private var frequency: RecurringFrequency
     @State private var dayOfMonth: Int
+    /// Weekdays the rule fires on (1=Sun ... 7=Sat). Only used when
+    /// frequency == .weekly. Initialized from the rule's mask (or
+    /// startDate's weekday for new rules / legacy single-day rules).
+    @State private var weekdays: Set<Int>
     @State private var customInterval: Int
     @State private var customUnit: CustomIntervalUnit
     @State private var startDate: Date
@@ -223,6 +227,7 @@ struct RecurringRuleFormView: View {
     @State private var note: String
     @State private var isPaused: Bool
     @State private var confirmationRequired: Bool
+    @State private var hasSpecificTime: Bool
     @State private var hasPauseEnd: Bool
     @State private var pauseUntil: Date
     @State private var showingDeleteConfirm = false
@@ -235,6 +240,14 @@ struct RecurringRuleFormView: View {
             _kind = State(initialValue: r.kind)
             _frequency = State(initialValue: r.frequency)
             _dayOfMonth = State(initialValue: r.dayOfMonth)
+            // For legacy rules with mask == 0, surface the startDate's
+            // weekday as a pre-selected single day — that's what the rule
+            // has been firing on all along. New rules show the same default.
+            let initialWeekdays: Set<Int> = {
+                if !r.weekdaysSet.isEmpty { return r.weekdaysSet }
+                return [Calendar.current.component(.weekday, from: r.startDate)]
+            }()
+            _weekdays = State(initialValue: initialWeekdays)
             _customInterval = State(initialValue: r.customInterval)
             _customUnit = State(initialValue: r.customUnit)
             _startDate = State(initialValue: r.startDate)
@@ -247,6 +260,7 @@ struct RecurringRuleFormView: View {
             _note = State(initialValue: r.note ?? "")
             _isPaused = State(initialValue: r.isPaused)
             _confirmationRequired = State(initialValue: r.confirmationRequired)
+            _hasSpecificTime = State(initialValue: r.hasSpecificTime)
             _hasPauseEnd = State(initialValue: r.pausedUntil != nil)
             _pauseUntil = State(initialValue: r.pausedUntil ?? .now.addingTimeInterval(60 * 60 * 24 * 7))
         } else {
@@ -255,6 +269,12 @@ struct RecurringRuleFormView: View {
             _kind = State(initialValue: .expense)
             _frequency = State(initialValue: .monthly)
             _dayOfMonth = State(initialValue: Calendar.current.component(.day, from: .now))
+            // Default to all 7 days selected — "every day" — for new rules.
+            // Matches the user's mental model when adding a recurring entry:
+            // they're more likely to deselect the days they DON'T want than
+            // to start from one day and add the rest. The footer summarizes
+            // this as "Every day" so it's clear what's happening.
+            _weekdays = State(initialValue: Set(1...7))
             _customInterval = State(initialValue: 1)
             _customUnit = State(initialValue: .month)
             _startDate = State(initialValue: .now)
@@ -267,6 +287,7 @@ struct RecurringRuleFormView: View {
             _note = State(initialValue: "")
             _isPaused = State(initialValue: false)
             _confirmationRequired = State(initialValue: false)
+            _hasSpecificTime = State(initialValue: false)
             _hasPauseEnd = State(initialValue: false)
             _pauseUntil = State(initialValue: .now.addingTimeInterval(60 * 60 * 24 * 7))
         }
@@ -427,14 +448,30 @@ struct RecurringRuleFormView: View {
                 }
             }
 
-            // Time-of-day picker only matters when notifications fire —
-            // for auto-log rules the time is irrelevant (engine just
-            // marks the occurrence as logged on its calendar date).
-            // Bound to `startDate` so the engine's nextOccurrence math
-            // (which anchors time-of-day from startDate) picks it up.
-            if confirmationRequired {
+            // Time-of-day. The user toggles whether this rule has a
+            // specific time. When off, the rule is "general" / all-day —
+            // surfaced on home as a stackable card alongside other
+            // all-day items. When on, the rule fires at the picked time,
+            // shows as the single "nearest scheduled" card on home, and
+            // (if confirmationRequired is also on) drives the notification
+            // delivery time.
+            //
+            // Side-effect: flipping `hasSpecificTime` ON also auto-enables
+            // `confirmationRequired`. Reasoning: a user setting a
+            // specific time is implicitly saying "I want to be reminded
+            // at this time" — auto-logging at the specific time without
+            // a notification is almost never what they meant. They can
+            // turn confirmation back off if they really want silent
+            // auto-log at a specific time.
+            Toggle("Specific time", isOn: $hasSpecificTime)
+                .onChange(of: hasSpecificTime) { _, newValue in
+                    if newValue, !confirmationRequired {
+                        confirmationRequired = true
+                    }
+                }
+            if hasSpecificTime {
                 DatePicker(
-                    "Notify at",
+                    "Time",
                     selection: $startDate,
                     displayedComponents: .hourAndMinute
                 )
@@ -506,7 +543,9 @@ struct RecurringRuleFormView: View {
 
     @ViewBuilder
     private var frequencyVariantRows: some View {
-        if frequency == .monthly {
+        if frequency == .weekly {
+            weekdayPickerRow
+        } else if frequency == .monthly {
             monthlyStepperRow
         } else if frequency == .custom {
             customIntervalRow
@@ -514,6 +553,100 @@ struct RecurringRuleFormView: View {
         } else {
             EmptyView()
         }
+    }
+
+    /// Apple-Reminders-style weekday selector. Seven circular buttons
+    /// labeled S M T W T F S (Sun→Sat). Tap to toggle. Selected days
+    /// fill with brand color; unselected show a subtle neutral background.
+    ///
+    /// Designed so common patterns are achievable with minimum taps:
+    /// - Single day (legacy): pre-selected based on startDate
+    /// - Weekdays / weekends / every day: a couple of taps
+    /// - "Mess meals Mon-Fri": tap S, S to remove from default-all
+    ///
+    /// At least one day must remain selected — if the user tries to
+    /// deselect the last remaining day, we silently keep it (no toast,
+    /// matches Reminders' behavior).
+    private var weekdayPickerRow: some View {
+        VStack(alignment: .leading, spacing: Spacing.xs) {
+            HStack(spacing: 0) {
+                ForEach(1...7, id: \.self) { day in
+                    let isSelected = weekdays.contains(day)
+                    Button {
+                        toggleWeekday(day)
+                    } label: {
+                        Text(weekdayInitial(day))
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(isSelected ? .white : .primary)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 36)
+                            .background(
+                                Circle()
+                                    .fill(isSelected
+                                          ? Color.tulaBrandFallback
+                                          : Color.secondary.opacity(0.12))
+                                    .frame(width: 36, height: 36)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            // Subtle helper line so users see what they picked summarized
+            // in words, without having to mentally read the circles.
+            if !weekdays.isEmpty {
+                Text(weekdaysHumanSummary)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.leading, 4)
+            }
+        }
+        .padding(.vertical, Spacing.xs)
+        .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+    }
+
+    private func weekdayInitial(_ day: Int) -> String {
+        // S M T W T F S — the convention every iOS user already reads.
+        // Two T's and two S's are inherent to this convention; tooltip-on-tap
+        // would over-engineer for the 0.1% who can't infer position.
+        switch day {
+        case 1: return "S"
+        case 2: return "M"
+        case 3: return "T"
+        case 4: return "W"
+        case 5: return "T"
+        case 6: return "F"
+        case 7: return "S"
+        default: return ""
+        }
+    }
+
+    private func toggleWeekday(_ day: Int) {
+        Haptics.tap()
+        if weekdays.contains(day) {
+            // Don't allow zero days — keep at least one selected, silently.
+            guard weekdays.count > 1 else { return }
+            weekdays.remove(day)
+        } else {
+            weekdays.insert(day)
+        }
+    }
+
+    /// Same logic as RecurringRule.weekdaysSummary but readable from the
+    /// form's `weekdays` state directly, before save. Kept in sync with
+    /// the model-side version.
+    private var weekdaysHumanSummary: String {
+        if weekdays == Set(1...7) { return "Every day" }
+        if weekdays == [2, 3, 4, 5, 6] { return "Weekdays" }
+        if weekdays == [1, 7] { return "Weekends" }
+        if weekdays.count == 1, let only = weekdays.first {
+            let fullNames = [1: "Sundays", 2: "Mondays", 3: "Tuesdays",
+                             4: "Wednesdays", 5: "Thursdays",
+                             6: "Fridays", 7: "Saturdays"]
+            return fullNames[only] ?? "Custom"
+        }
+        let names = [1: "Sun", 2: "Mon", 3: "Tue", 4: "Wed",
+                     5: "Thu", 6: "Fri", 7: "Sat"]
+        return weekdays.sorted().compactMap { names[$0] }.joined(separator: ", ")
     }
 
     private var monthlyStepperRow: some View {
@@ -565,9 +698,12 @@ struct RecurringRuleFormView: View {
     private var scheduleFooter: String {
         switch frequency {
         case .weekly:
-            let weekday = startDate.formatted(.dateTime.weekday(.wide))
-            let dateStr = startDate.formatted(.dateTime.day().month())
-            return "Fires every \(weekday) starting \(dateStr)."
+            if weekdays.count == 1, let only = weekdays.first {
+                let weekdayName = Calendar.current.weekdaySymbols[only - 1]
+                let dateStr = startDate.formatted(.dateTime.day().month())
+                return "Fires every \(weekdayName) starting \(dateStr)."
+            }
+            return "Fires on \(weekdaysHumanSummary.lowercased()), every week."
         case .monthly:
             return "Fires on day \(dayOfMonth) of every month. For short months (Feb, Apr) it's clamped to the last day."
         case .yearly:
@@ -633,7 +769,7 @@ struct RecurringRuleFormView: View {
             applyChanges(to: rule)
             context.insert(rule)
         }
-        try? context.save()
+        try? context.save(); WidgetRefresh.refresh(using: context)
         // Re-run the engine so any new confirmation rule starts firing
         // notifications immediately (and any edited rule picks up its
         // new time/amount), instead of waiting for the next app launch.
@@ -653,6 +789,23 @@ struct RecurringRuleFormView: View {
         rule.kind = kind
         rule.frequency = frequency
         rule.dayOfMonth = dayOfMonth
+        // Persist weekday selection only for weekly rules. For other
+        // frequencies, zero the mask so a future flip back to weekly
+        // starts fresh rather than reusing stale state.
+        if frequency == .weekly {
+            // If user picked exactly one day AND that day matches startDate's
+            // weekday, store mask = 0 (legacy single-day mode). This keeps
+            // the data tidy for the common case and avoids a "needless mask"
+            // appearing on rules that don't actually need multi-day logic.
+            let startWeekday = Calendar.current.component(.weekday, from: startDate)
+            if weekdays == [startWeekday] {
+                rule.weekdaysMask = 0
+            } else {
+                rule.weekdaysSet = weekdays
+            }
+        } else {
+            rule.weekdaysMask = 0
+        }
         rule.customInterval = customInterval
         rule.customUnit = customUnit
         rule.startDate = startDate
@@ -664,6 +817,7 @@ struct RecurringRuleFormView: View {
         rule.note = note.isEmpty ? nil : note
         rule.isPaused = isPaused
         rule.confirmationRequired = confirmationRequired
+        rule.hasSpecificTime = hasSpecificTime
         // Persist pausedUntil only if user has both paused and chosen a
         // resume date. Otherwise clear it (covers: not paused, or paused
         // indefinitely, or just toggled off the resume-date option).
@@ -684,7 +838,7 @@ struct RecurringRuleFormView: View {
         // deleted rule — clear them before removal.
         NotificationManager.cancelConfirmations(for: rule.id)
         context.delete(rule)
-        try? context.save()
+        try? context.save(); WidgetRefresh.refresh(using: context)
         Haptics.success()
         dismiss()
     }

@@ -66,14 +66,32 @@ enum Currency {
     /// Format a money amount with full grouping for the given currency.
     /// e.g. format(125000, code: "INR") → "₹1,25,000"
     ///      format(125000, code: "USD") → "$125,000"
+    ///      format(250.50, code: "INR") → "₹250.50"   (auto-shows decimals)
+    ///      format(250.00, code: "INR") → "₹250"      (no trailing .00)
+    ///
+    /// **Decimal behavior**: decimals are auto-shown when the amount has
+    /// a non-zero fractional component. Whole-rupee amounts stay clean
+    /// (no noisy ".00"). Explicit `showDecimals: true` forces decimals
+    /// for fields where alignment matters (e.g. ledger columns). Passing
+    /// `false` is no longer common — kept for backward-compat with
+    /// callers that explicitly want integer display regardless.
     static func format(_ amount: Double, code: String, showDecimals: Bool = false) -> String {
         let f = NumberFormatter()
         f.numberStyle = .currency
         f.currencyCode = code
         f.locale = locale(for: code)
-        f.maximumFractionDigits = showDecimals ? 2 : 0
-        f.minimumFractionDigits = showDecimals ? 2 : 0
-        return f.string(from: NSNumber(value: amount)) ?? "\(symbol(for: code))\(Int(amount))"
+
+        // A floating-point amount carries fractional precision when the
+        // remainder isn't (effectively) zero. We use a small epsilon
+        // because `Double` arithmetic on user-entered "250.50" can yield
+        // 250.4999999... — comparing strictly against zero would miss it.
+        let fractional = amount.truncatingRemainder(dividingBy: 1)
+        let hasFraction = Swift.abs(fractional) > 0.005
+
+        let useDecimals = showDecimals || hasFraction
+        f.maximumFractionDigits = useDecimals ? 2 : 0
+        f.minimumFractionDigits = useDecimals ? 2 : 0
+        return f.string(from: NSNumber(value: amount)) ?? "\(symbol(for: code))\(amount)"
     }
 
     /// Compact format for tight spaces. Uses Indian Lakh/Crore for INR,

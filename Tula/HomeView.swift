@@ -33,10 +33,16 @@ struct HomeView: View {
     @State private var toastMessage: String?
     @State private var toastToken: UUID = UUID()
     @State private var savePulse: Bool = false
+    /// Number of in-flight Foundation Models enrichment calls. When > 0,
+    /// the home view shows a subtle "Smart parsing..." pill so the user
+    /// sees that on-device AI is doing work. Decrements on completion.
+    /// Counter (not bool) handles concurrent multi-entry parses correctly.
+    @State private var smartParseInFlight: Int = 0
     @State private var heroTapPulse: Bool = false
 
     @AppStorage("lastUsedAccountID") private var lastUsedAccountID: String = ""
     @AppStorage("budgetAlertsEnabled") private var budgetAlertsEnabled: Bool = false
+    @AppStorage("smartParsingEnabled") private var smartParsingEnabled: Bool = true
 
     init(onShowStats: @escaping () -> Void = {}) {
         self.onShowStats = onShowStats
@@ -71,33 +77,153 @@ struct HomeView: View {
     }
 
     /// Upcoming recurring rules due in the next 7 days. Each row pairs a
-    /// rule with its computed next-due date. Capped at 3 in the surface
-    /// so the section doesn't dominate Home — the full list lives in
-    /// Settings → Recurring.
+    /// Pairs each non-paused, non-yet-handled recurring rule with its next
+    /// due date. "Not yet handled" means: not already logged today (by the
+    /// auto-detect rules below), not skipped, not auto-logged. The window
+    /// is capped at 7 days from now.
+    ///
+    /// **Already-logged detection** is best-effort matching, not strict
+    /// equality. A rule is considered fulfilled for today when an
+    /// expense exists with same calendar day AND same category AND same
+    /// account AND title/merchant contains the rule's name (case-insensitive).
+    /// User manually logging "lunch at office canteen" with the canteen's
+    /// food category fulfills the "Lunch" recurring rule even though the
+    /// expense was manual. Conservative — any one mismatch (different
+    /// category, different account, or rule name not in merchant string)
+    /// leaves the rule visible so the user isn't accidentally dropped.
+    ///
+    /// Returns ALL matches in the window (no cap here); the consuming view
+    /// applies its own grouping/cap (see `groupedUpcoming`).
     private var upcomingRecurring: [(rule: RecurringRule, date: Date)] {
-        let horizon = Calendar.current.date(byAdding: .day, value: 7, to: .now) ?? .now
+        let calendar = Calendar.current
+        let now = Date.now
+        let horizon = calendar.date(byAdding: .day, value: 7, to: now) ?? now
+
         return allRecurringRules
             .filter { !$0.isPaused }
             .compactMap { rule -> (RecurringRule, Date)? in
                 guard let next = RecurringEngine.nextDueDate(for: rule),
                       next <= horizon else { return nil }
+                // Suppress if user already logged this rule's expense today
+                // (or for the due date — supports rules due tomorrow that
+                // the user pre-paid).
+                if isRuleFulfilled(rule, forDueDate: next, calendar: calendar) {
+                    return nil
+                }
                 return (rule, next)
             }
             .sorted { $0.1 < $1.1 }
-            .prefix(3)
-            .map { $0 }
     }
 
-    /// Computed insights for the Home carousel. Regenerated every render
-    /// from the current data — the engine is pure and fast enough that
-    /// caching adds complexity for no measurable win. Falls back to an
-    /// empty array (which hides the carousel) when no observations land.
+    /// Checks whether the user has already logged an expense that fulfills
+    /// this recurring rule for the given due date. Match criteria (ALL must
+    /// be true):
+    /// - Same calendar day
+    /// - Same category
+    /// - Same account
+    /// - Expense merchant/note contains the rule's name (case-insensitive)
+    ///
+    /// The last criterion is the soft heuristic — matches "Mess Breakfast"
+    /// against rule named "Breakfast", or "Office Lunch" against "Lunch".
+    /// Conservative: better to leave an item visible (annoying nudge) than
+    /// hide a real upcoming (missed expense).
+    private func isRuleFulfilled(_ rule: RecurringRule,
+                                  forDueDate dueDate: Date,
+                                  calendar: Calendar) -> Bool {
+        guard let dayInterval = calendar.dateInterval(of: .day, for: dueDate) else {
+            return false
+        }
+        let ruleName = rule.name.lowercased()
+        let ruleCategoryID = rule.category?.id
+        let ruleAccountID = rule.account?.id
+
+        return allExpenses.contains { expense in
+            // Same day
+            guard expense.date >= dayInterval.start,
+                  expense.date < dayInterval.end else { return false }
+            // Same category
+            guard expense.category?.id == ruleCategoryID else { return false }
+            // Same account
+            guard expense.account?.id == ruleAccountID else { return false }
+            // Rule name appears in merchant or note
+            let merchantMatch = (expense.merchant ?? "")
+                .lowercased().contains(ruleName)
+            let noteMatch = (expense.note ?? "")
+                .lowercased().contains(ruleName)
+            return merchantMatch || noteMatch
+        }
+    }
+
+    /// Grouped upcoming items ready for the home screen.
+    ///
+    /// **Grouping logic** matches user intent:
+    /// - Time-scheduled items (rule.hasSpecificTime == true) are sorted
+    ///   by their actual time; only the NEAREST one is surfaced. The
+    ///   others stay queued — they'll show up after the nearest is
+    ///   logged/skipped (which removes it from `upcomingRecurring`).
+    /// - General items (hasSpecificTime == false) all show, stacked
+    ///   below the scheduled one. There's no inherent ordering — they're
+    ///   sorted by their notion of "due date" but visually grouped.
+    ///
+    /// **Cap**: total at 3 rows so the home screen doesn't get crowded.
+    /// One scheduled (the nearest), up to 2 general. If there are 5
+    /// general all due today, we show 2 and note in the UI that there
+    /// are more (via a "+N more" pill at the bottom).
+    private var groupedUpcoming: GroupedUpcoming {
+        let all = upcomingRecurring
+        let scheduled = all.filter { $0.rule.hasSpecificTime }
+        let general = all.filter { !$0.rule.hasSpecificTime }
+
+        // Nearest scheduled = first after sort by date (the sort already
+        // happened in upcomingRecurring).
+        let nearestScheduled = scheduled.first
+
+        // General items: take up to 2 for display, count rest as overflow.
+        let visibleGeneral = Array(general.prefix(2))
+        let overflowCount = max(0, general.count - visibleGeneral.count)
+
+        return GroupedUpcoming(
+            scheduled: nearestScheduled,
+            general: visibleGeneral,
+            overflowCount: overflowCount
+        )
+    }
+
+    /// Display structure for the home upcoming section. One nearest
+    /// time-scheduled item, plus a stack of general items, plus an
+    /// optional overflow count for the "+N more" affordance.
+    struct GroupedUpcoming {
+        let scheduled: (rule: RecurringRule, date: Date)?
+        let general: [(rule: RecurringRule, date: Date)]
+        let overflowCount: Int
+
+        /// True when there's nothing to render — saves the view layer
+        /// from having to check three fields.
+        var isEmpty: Bool {
+            scheduled == nil && general.isEmpty
+        }
+    }
+
+    /// Computed insights for the Home context callouts. Regenerated every
+    /// render from the current data — the engine is pure and fast enough
+    /// that caching adds complexity for no measurable win.
+    ///
+    /// **Streak filtered out** because the streak chip lives in the hero
+    /// card now (see `loggingStreak`). Showing it twice would be noise.
     private var insights: [Insight] {
         InsightEngine.generate(
             expenses: allExpenses,
             accounts: allAccounts,
             currencyCode: currencyCode
         )
+        .filter { $0.kind != .streak }
+    }
+
+    /// Current consecutive-day logging streak — used by the hero card's
+    /// streak chip. Same algorithm InsightEngine uses internally; the
+    /// public helper keeps the two surfaces in sync.
+    private var loggingStreak: Int {
+        InsightEngine.loggingStreak(expenses: allExpenses)
     }
 
     private var monthOverMonthChange: Double? {
@@ -155,14 +281,42 @@ struct HomeView: View {
                 VStack(alignment: .leading, spacing: Spacing.xl) {
                     heroSection
                     quickLogSection
-                    if let context = activeContext {
+                    if smartParseInFlight > 0 {
+                        smartParsingPill
+                            .transition(.asymmetric(
+                                insertion: .move(edge: .top)
+                                    .combined(with: .opacity),
+                                removal: .opacity
+                            ))
+                    }
+                    // Active contexts. Previously this rendered exactly
+                    // ONE row (first upcoming OR review OR insight),
+                    // which hid the rest of the day's recurring items
+                    // behind the first one — users couldn't see "lunch
+                    // is due AND rent is due tomorrow" simultaneously.
+                    //
+                    // Now we render ALL pending upcoming items (capped
+                    // at 3 to keep the home screen scannable), plus at
+                    // most one review or insight callout below them.
+                    // When the user logs or skips the top item, the
+                    // SwiftData re-query naturally removes it from the
+                    // upcoming list and the next item slides into view.
+                    ForEach(activeContexts, id: \.identifier) { context in
                         contextRow(for: context)
+                            // Animate in/out on lastGeneratedDate change
+                            // so log/skip feels like the card flowed away
+                            // and the next slid up to take its place.
+                            .transition(.asymmetric(
+                                insertion: .move(edge: .top).combined(with: .opacity),
+                                removal: .move(edge: .leading).combined(with: .opacity)
+                            ))
                     }
                     recentSection
                 }
                 .padding(.horizontal, Spacing.xl)
                 .padding(.top, Spacing.xs)
                 .padding(.bottom, Spacing.lg)
+                .animation(AppAnimation.snappy, value: smartParseInFlight)
             }
             .background(Color.tulaBackground)
             // Dismiss keyboard the instant the user starts scrolling — same
@@ -250,6 +404,59 @@ struct HomeView: View {
         }
     }
 
+    // MARK: - Smart parsing pill
+
+    /// In-flight indicator for Foundation Models enrichment. Appears
+    /// only when at least one FM parse is running, sits between the
+    /// Quick Log row and the rest of the home view, fades out the
+    /// moment all parses complete.
+    ///
+    /// **Why it's here.** Users submit "spent 350 on lunch with team",
+    /// the rules parser doesn't categorize it, FM kicks in async. Without
+    /// this pill, the user sees nothing happen for 200-500ms and then
+    /// suddenly the category appears in the list. The pill makes it
+    /// visible: "yes, on-device AI is working on this."
+    private var smartParsingPill: some View {
+        HStack(spacing: 8) {
+            // The official SF Symbol for Apple Intelligence on iOS 26.
+            // Falls back to `sparkles` if running on a pre-26 build —
+            // shouldn't happen given our deployment target, but defensive.
+            Image(systemName: "apple.intelligence")
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(Color.tulaBrandFallback)
+                .symbolEffect(.pulse, options: .repeating)
+
+            Text(smartParseInFlight == 1
+                 ? "Smart parsing…"
+                 : "Smart parsing \(smartParseInFlight) entries…")
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(.primary)
+
+            Spacer()
+
+            // Small spinner for the "something is computing" cue. A
+            // pulsing icon alone reads as decorative; the ProgressView
+            // confirms work is genuinely happening.
+            ProgressView()
+                .controlSize(.small)
+                .tint(.secondary)
+        }
+        .padding(.horizontal, Spacing.md)
+        .padding(.vertical, Spacing.xs + 2)
+        .background(
+            Capsule()
+                .fill(Color.tulaBrandFallback.opacity(0.10))
+        )
+        .overlay(
+            Capsule()
+                .strokeBorder(
+                    Color.tulaBrandFallback.opacity(0.22),
+                    lineWidth: 0.5
+                )
+        )
+        .accessibilityLabel("Apple Intelligence is parsing your entry")
+    }
+
     // MARK: - Hero
 
     /// Hero card with full gradient and the prominent Devanagari watermark
@@ -266,10 +473,32 @@ struct HomeView: View {
                     .allowsHitTesting(false)
 
                 VStack(alignment: .leading, spacing: 6) {
-                    HStack {
+                    HStack(spacing: 6) {
                         Text(Date.now, format: .dateTime.month(.wide).year())
                             .font(.caption.weight(.medium))
                             .foregroundStyle(.secondary)
+                        // Streak chip beside the month label — when the
+                        // user has a logging streak going, a small flame
+                        // glyph with the day count appears here. This used
+                        // to be its own insight callout below the hero,
+                        // but it's better integrated into the hero itself:
+                        // streaks are about *consistency* with the headline
+                        // number, not a separate piece of information.
+                        // Threshold (3 days) matches the insight engine's.
+                        if loggingStreak >= 3 {
+                            HStack(spacing: 3) {
+                                Image(systemName: "flame.fill")
+                                Text("\(loggingStreak)")
+                            }
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(.orange)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(
+                                Capsule().fill(Color.orange.opacity(0.15))
+                            )
+                            .accessibilityLabel("\(loggingStreak) day logging streak")
+                        }
                         Spacer()
                         if let change = monthOverMonthChange {
                             deltaBadge(change)
@@ -419,20 +648,160 @@ struct HomeView: View {
             merchantRules: allMerchantRules,
             defaultAccount: defaultAccount,
             currencyCode: currencyCode,
-            onSubmit: handleQuickLog
+            onSubmit: handleQuickLog,
+            isSmartParsing: smartParseInFlight > 0
         )
     }
 
-    private func handleQuickLog(_ parsedExpenses: [ParsedExpense]) {
+    /// Routes the submission. Typed input takes the fast rule-based path;
+    /// single-expense voice input gets re-parsed by Foundation Models so
+    /// transcription noise (homophones like "waffle" → "rahul", split
+    /// digits "1 20") gets corrected with full context.
+    ///
+    /// **Multi-expense input bypasses FM.** Foundation Models returns a
+    /// single structured result — it has no concept of "this string
+    /// represents two expenses". Routing "350 food and 400 groceries"
+    /// through FM would silently lose one of them. The rule parser is
+    /// purpose-built for splitting on conjunctions and commas, so when
+    /// rules already detected 2+ expenses, we trust that decomposition
+    /// and skip FM entirely.
+    private func handleQuickLog(_ parsedExpenses: [ParsedExpense],
+                                rawInput: String,
+                                isVoice: Bool) {
+        let isMultiExpense = parsedExpenses.count >= 2
+
+        if isVoice, !isMultiExpense {
+            if #available(iOS 26.0, *), SmartExpenseParser.isAvailable {
+                handleVoiceQuickLog(rawInput: rawInput, ruleFallback: parsedExpenses)
+                return
+            }
+        }
+        // Typed input, multi-expense voice, or no-FM device: rule path.
+        saveParsedExpenses(parsedExpenses)
+    }
+
+    /// FM-first voice path. Sends the raw speech transcript to Foundation
+    /// Models with the user's category and account lists as anchors, then
+    /// constructs and saves an Expense from the structured result. Falls
+    /// back to the rule-parsed expenses if FM is unavailable, returns
+    /// garbage, or times out.
+    @available(iOS 26.0, *)
+    private func handleVoiceQuickLog(rawInput: String,
+                                     ruleFallback: [ParsedExpense]) {
+        let usableCategories = allCategories.filter { !$0.isArchived }
+        let usableAccounts = allAccounts.filter { !$0.isArchived }
+        let categoryNames = usableCategories.map { $0.name }
+        let accountNames = usableAccounts.map { $0.name }
+        let categoryByName = Dictionary(uniqueKeysWithValues:
+            usableCategories.map { ($0.name.lowercased(), $0) })
+        let accountByName = Dictionary(uniqueKeysWithValues:
+            usableAccounts.map { ($0.name.lowercased(), $0) })
+
+        // Show the AI pill for the duration of the FM call. Floor ensures
+        // it stays visible long enough to register (FM can be fast on
+        // iPhone 17 — 100-200ms wouldn't otherwise be seen).
+        smartParseInFlight += 1
+        let startedAt = Date()
+        let minPillVisible: TimeInterval = 0.8
+        let timeout: TimeInterval = 6.0
+
+        Task.detached(priority: .userInitiated) {
+            // Race the FM call against a timeout so a hung model doesn't
+            // freeze the save flow indefinitely.
+            let result = await withTaskGroup(of: SmartParseResult?.self) { group in
+                group.addTask {
+                    await SmartExpenseParser.parseVoice(
+                        rawInput,
+                        categoryNames: categoryNames,
+                        accountNames: accountNames
+                    )
+                }
+                group.addTask {
+                    try? await Task.sleep(for: .seconds(timeout))
+                    return nil
+                }
+                let first = await group.next() ?? nil
+                group.cancelAll()
+                return first
+            }
+
+            // Enforce minimum pill visibility.
+            let elapsed = Date().timeIntervalSince(startedAt)
+            if elapsed < minPillVisible {
+                try? await Task.sleep(for: .seconds(minPillVisible - elapsed))
+            }
+
+            await MainActor.run {
+                smartParseInFlight = max(0, smartParseInFlight - 1)
+
+                // Build and save from FM result if it produced a usable
+                // amount + account; otherwise fall back to rule output.
+                if let result, result.amount > 0 {
+                    // Amount sanity check: if FM's amount is significantly
+                    // smaller than what the rule parser extracted from the
+                    // same raw input, FM probably dropped a digit during
+                    // its interpretation. Fall back to rules in that case.
+                    //
+                    // The rule parser handles number-word normalization
+                    // (e.g. "three fifty" → 350) and split-digit collapse
+                    // ("3 50" → 350) before extracting the amount. So if
+                    // rule says 350 and FM says 50, FM is wrong.
+                    let ruleAmount = ruleFallback.first?.amount ?? 0
+                    if ruleAmount > 0, result.amount < ruleAmount / 2 {
+                        saveParsedExpenses(ruleFallback)
+                        return
+                    }
+
+                    let category = result.category
+                        .flatMap { categoryByName[$0.lowercased()] }
+                    let account = result.account
+                        .flatMap { accountByName[$0.lowercased()] }
+                        ?? defaultAccount
+                    guard let account else {
+                        // No account possible — couldn't save. Fall back.
+                        saveParsedExpenses(ruleFallback)
+                        return
+                    }
+
+                    let expense = Expense(
+                        amount: result.amount,
+                        merchant: result.merchant,
+                        note: result.item,
+                        source: .smartParsed,
+                        category: category,
+                        account: account
+                    )
+                    expense.rawInput = rawInput
+                    context.insert(expense)
+                    try? context.save(); WidgetRefresh.refresh(using: context)
+                    lastUsedAccountID = account.id.uuidString
+                    Haptics.success()
+                    triggerSavePulse()
+                    showToast("Expense saved")
+                    evaluateBudgetAlerts()
+                } else {
+                    // FM unavailable / failed / no usable result. Use rule output.
+                    saveParsedExpenses(ruleFallback)
+                }
+            }
+        }
+    }
+
+    /// Original rule-based save path, extracted so both the typed flow
+    /// and the voice fallback share one code path. Saves the parsed
+    /// expenses and kicks off background FM enrichment for any that
+    /// rules couldn't categorize.
+    private func saveParsedExpenses(_ parsedExpenses: [ParsedExpense]) {
         let valid = parsedExpenses.filter { $0.isValid }
         guard !valid.isEmpty else { return }
         var lastAccount: Account?
+        var savedExpenses: [Expense] = []
         for parsed in valid {
             guard let account = parsed.account else { continue }
             let expense = Expense(
                 amount: parsed.amount,
                 merchant: parsed.merchant,
-                note: nil,
+                note: parsed.note,
                 source: .nlp,
                 category: parsed.category,
                 account: account
@@ -440,13 +809,140 @@ struct HomeView: View {
             expense.rawInput = parsed.rawInput
             context.insert(expense)
             lastAccount = account
+            savedExpenses.append(expense)
         }
-        try? context.save()
+        try? context.save(); WidgetRefresh.refresh(using: context)
         if let last = lastAccount { lastUsedAccountID = last.id.uuidString }
         Haptics.success()
         triggerSavePulse()
         showToast(valid.count == 1 ? "Expense saved" : "\(valid.count) expenses saved")
         evaluateBudgetAlerts()
+
+        // ─── Smart enrichment ───────────────────────────────────────
+        // For any expense that rules couldn't categorize, fire Apple
+        // Foundation Models in the background. The expense is already
+        // saved — the user sees instant feedback. When FM returns
+        // (typically 100-500ms later), we update the category in place.
+        //
+        // Gates: only runs on devices where FM is available, when the
+        // user has the feature on (default), and only for inputs that
+        // actually need help (no category yet AND complex enough to
+        // benefit from LLM understanding).
+        enrichWithSmartParser(savedExpenses)
+    }
+
+    /// Fires Foundation Models in the background to fill in categories
+    /// the rule-based parser missed. No-op on unsupported devices, when
+    /// the toggle is off, or when nothing needs enrichment. Updates
+    /// happen silently — no toast, no spinner. The user just sees the
+    /// category appear a beat later.
+    private func enrichWithSmartParser(_ expenses: [Expense]) {
+        if #available(iOS 26.0, *) {
+            guard smartParsingEnabled,
+                  SmartExpenseParser.isAvailable else { return }
+
+            // Only enrich expenses where category is missing AND raw input
+            // looks complex enough to benefit (rules already handled the
+            // simple cases). "Complex enough" is a soft heuristic: more
+            // than two whitespace-separated tokens, or longer than 18 chars.
+            // For "ola 250" we skip — rules clearly saw it and decided.
+            let candidates = expenses.filter { expense in
+                expense.category == nil
+                    && (expense.rawInput?.count ?? 0) > 8
+                    && shouldAskLLM(expense.rawInput ?? "")
+            }
+            guard !candidates.isEmpty else { return }
+
+            let usableCategories = allCategories.filter { !$0.isArchived }
+            let categoryNames = usableCategories.map { $0.name }
+            let categoryMap = Dictionary(uniqueKeysWithValues:
+                usableCategories.map { ($0.name.lowercased(), $0) })
+
+            // Capture the data we need from the SwiftData models on the
+            // main actor BEFORE spawning the detached task. Reading model
+            // properties from off-main can trigger SwiftData warnings;
+            // pairing each id with its raw input lets us do the async
+            // FM work cleanly and apply results back on main.
+            let workItems: [(expense: Expense, rawInput: String)] = candidates
+                .compactMap { exp in
+                    guard let input = exp.rawInput else { return nil }
+                    return (exp, input)
+                }
+
+            // Bump the in-flight counter so the "Smart parsing..." pill
+            // appears. We bump by workItems.count up-front (one for each
+            // expense being enriched) and decrement individually as each
+            // FM call completes — so the pill shows during the entire
+            // batch and disappears the moment the last one resolves.
+            smartParseInFlight += workItems.count
+            // Record the start time so each decrement can enforce a
+            // minimum-visibility window. A bare FM call can complete in
+            // 100-200ms, which is faster than the human eye reliably
+            // registers — without this floor, the pill would flicker
+            // and the user wouldn't know AI ran at all.
+            let pillStartedAt = Date()
+            let minPillVisible: TimeInterval = 1.2
+
+            Task.detached(priority: .userInitiated) {
+                for item in workItems {
+                    let result = await SmartExpenseParser.parse(
+                        item.rawInput,
+                        categoryNames: categoryNames
+                    )
+
+                    await MainActor.run {
+                        if let result {
+                            // Re-find the category by name (FM returns a string).
+                            if let catName = result.category?.lowercased(),
+                               let category = categoryMap[catName] {
+                                item.expense.category = category
+                            }
+                            // Improve merchant if rules left it nil and FM
+                            // identified one (don't overwrite — rules might
+                            // have caught the precise merchant the user typed).
+                            if item.expense.merchant == nil,
+                               let m = result.merchant,
+                               !m.isEmpty {
+                                item.expense.merchant = m
+                            }
+                            try? context.save(); WidgetRefresh.refresh(using: context)
+                        }
+                    }
+
+                    // Enforce minimum pill visibility before decrementing.
+                    // If FM was fast, we wait out the remainder of the
+                    // visibility window; if it was slow, this is a no-op.
+                    let elapsed = Date().timeIntervalSince(pillStartedAt)
+                    let remaining = minPillVisible - elapsed
+                    if remaining > 0 {
+                        try? await Task.sleep(for: .seconds(remaining))
+                    }
+
+                    await MainActor.run {
+                        // Always decrement, whether parse succeeded or
+                        // not — otherwise a failed parse would leave the
+                        // pill stuck visible forever.
+                        smartParseInFlight = max(0, smartParseInFlight - 1)
+                    }
+                }
+            }
+        }
+    }
+
+    /// Soft heuristic for whether an input is "complex" enough to warrant
+    /// LLM invocation. Avoids firing FM for inputs the rules clearly
+    /// understood; saves battery and latency. Returns true when:
+    /// - The text contains 3+ tokens, OR
+    /// - It contains a verb-like word ("spent", "paid", "bought", etc.)
+    private func shouldAskLLM(_ input: String) -> Bool {
+        let lower = input.lowercased()
+        let tokens = lower
+            .split(whereSeparator: { $0.isWhitespace })
+            .count
+        if tokens >= 3 { return true }
+        let verbs = ["spent", "paid", "bought", "got", "ate", "had",
+                     "ordered", "rode", "took", "drank", "purchased"]
+        return verbs.contains { lower.contains($0) }
     }
 
     /// Evaluates whether any budget crossed a notification threshold after
@@ -495,89 +991,242 @@ struct HomeView: View {
     private enum HomeContext {
         case review(count: Int)
         case upcoming(rule: RecurringRule, date: Date)
+        /// "+N more recurring due today" — compact summary line shown
+        /// when the user has more than 2 general recurring items due,
+        /// so we don't clutter the home with every one. Tap to expand
+        /// (drills into the recurring rules sheet).
+        case recurringOverflow(count: Int)
         case insight(Insight)
+
+        /// Stable identity for ForEach. The upcoming case keys on both
+        /// rule ID and date so two occurrences of the same rule (today's
+        /// lunch + tomorrow's lunch) get distinct IDs and animate
+        /// independently when one is logged.
+        var identifier: String {
+            switch self {
+            case .review(let count):
+                return "review-\(count)"
+            case .upcoming(let rule, let date):
+                return "upcoming-\(rule.id.uuidString)-\(Int(date.timeIntervalSince1970))"
+            case .recurringOverflow(let count):
+                return "overflow-\(count)"
+            case .insight(let insight):
+                return "insight-\(insight.id)"
+            }
+        }
     }
 
     /// Returns the single most important context item to show, or nil
     /// when nothing urgent applies. The order here defines the priority:
     /// reviews → upcoming bills → insights → nothing.
-    private var activeContext: HomeContext? {
-        if reviewCount > 0 {
-            return .review(count: reviewCount)
+    /// Ordered list of context callouts to render above the Recent section.
+    ///
+    /// **Ordering** matches user attention: one nearest time-scheduled
+    /// recurring item first (because time-scheduled items have urgency),
+    /// then general (all-day) recurring items stacked below, then at most
+    /// one review-queue callout, then at most one insight.
+    ///
+    /// Already-logged items are filtered out upstream by `upcomingRecurring`
+    /// so they never appear here. When the user logs/skips an item, the
+    /// SwiftData query re-emits and the ForEach animates the removal —
+    /// the next item slides up to take its place.
+    private var activeContexts: [HomeContext] {
+        var contexts: [HomeContext] = []
+        let grouped = groupedUpcoming
+
+        // 1. Nearest time-scheduled item (single).
+        if let scheduled = grouped.scheduled {
+            contexts.append(.upcoming(rule: scheduled.rule, date: scheduled.date))
         }
-        if let next = upcomingRecurring.first {
-            return .upcoming(rule: next.rule, date: next.date)
+        // 2. General items stacked.
+        for item in grouped.general {
+            contexts.append(.upcoming(rule: item.rule, date: item.date))
+        }
+        // 3. Overflow callout — "+N more recurring due today".
+        if grouped.overflowCount > 0 {
+            contexts.append(.recurringOverflow(count: grouped.overflowCount))
+        }
+        // 4. Review and insight stay at the bottom.
+        if reviewCount > 0 {
+            contexts.append(.review(count: reviewCount))
         }
         if let topInsight = insights.first {
-            return .insight(topInsight)
+            contexts.append(.insight(topInsight))
         }
-        return nil
+        return contexts
     }
 
-    /// Renders the active context as a single tappable row. Pattern
-    /// follows iOS Wallet/Health "callout" cells — icon disc on left,
-    /// title + subtitle stacked, chevron on the right. Glass surface
-    /// so it reads as a notice rather than a primary card.
+    /// Legacy single-context accessor. Kept for any call sites that might
+    /// still reference it; the home body itself now uses `activeContexts`
+    /// (plural) to render multiple callouts.
+    private var activeContext: HomeContext? {
+        activeContexts.first
+    }
+
+    /// Renders the active context as a row. Pattern follows iOS Wallet/
+    /// Health "callout" cells — icon disc on left, title + subtitle
+    /// stacked.
+    ///
+    /// **Layout variants** by context type:
+    /// - `.upcoming`: wrapped in `SwipeableContextRow` for native-feeling
+    ///   swipe gestures — swipe right to log (brand amber), swipe left to
+    ///   skip (secondary gray). Same pattern as iOS Mail / Reminders.
+    ///   A long swipe past threshold fires the action immediately; a
+    ///   short swipe just reveals the button under the moving card.
+    ///   Tapping the row body still drills into the recurring sheet.
+    /// - `.review` / `.insight`: a single tap target with chevron. No
+    ///   swipe actions because there isn't a one-click resolution.
+    @ViewBuilder
     private func contextRow(for context: HomeContext) -> some View {
+        switch context {
+        case .upcoming(let rule, let date):
+            SwipeableContextRow(
+                leadingLabel: "Log",
+                leadingIcon: "checkmark.circle.fill",
+                leadingColor: Color.tulaBrandFallback,
+                leadingAction: { logUpcoming(rule: rule, date: date) },
+                trailingLabel: "Skip",
+                trailingIcon: "forward.fill",
+                trailingColor: Color.secondary,
+                trailingAction: { skipUpcoming(rule: rule, date: date) },
+                onTap: {
+                    Haptics.tap()
+                    handleContextTap(context)
+                }
+            ) {
+                contextRowBody(for: context, showHint: true)
+            }
+        case .review, .insight, .recurringOverflow:
+            Button {
+                Haptics.tap()
+                handleContextTap(context)
+            } label: {
+                contextRowBody(for: context, showHint: false)
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    /// Common visual content for any context row — icon + title + subtitle.
+    /// `showHint` adds a faint "swipe" affordance on the trailing edge to
+    /// hint that the row is swipeable (since swipe is non-discoverable by
+    /// default). For non-swipeable contexts, shows a chevron instead.
+    private func contextRowBody(for context: HomeContext, showHint: Bool) -> some View {
         let icon = contextIcon(for: context)
         let color = contextColor(for: context)
         let title = contextTitle(for: context)
         let detail = contextDetail(for: context)
 
-        return Button {
-            Haptics.tap()
-            handleContextTap(context)
-        } label: {
-            HStack(spacing: Spacing.md) {
-                ZStack {
-                    Circle()
-                        .fill(color.opacity(0.15))
-                        .frame(width: 36, height: 36)
-                    Image(systemName: icon)
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(color)
+        return HStack(spacing: Spacing.md) {
+            ZStack {
+                Circle()
+                    .fill(color.opacity(0.15))
+                    .frame(width: 36, height: 36)
+                Image(systemName: icon)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(color)
+            }
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 0)
+
+            // Trailing affordance: chevron for tap-only rows, a subtle
+            // "swipe arrows" hint for swipeable rows. The hint is two
+            // tiny chevrons in opposite directions — universally readable
+            // as "you can swipe this either way" without taking up
+            // significant space.
+            if showHint {
+                HStack(spacing: 1) {
+                    Image(systemName: "chevron.left")
+                    Image(systemName: "chevron.right")
                 }
-
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(title)
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
-                    Text(detail)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-
-                Spacer(minLength: 0)
-
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(.tertiary)
+            } else {
                 Image(systemName: "chevron.right")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.tertiary)
             }
-            .padding(.horizontal, Spacing.md)
-            .padding(.vertical, Spacing.sm + 2)
-            .background(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(Color.tulaCardSurface)
-            )
         }
-        .buttonStyle(.plain)
+        .padding(.horizontal, Spacing.md)
+        .padding(.vertical, Spacing.sm + 2)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color.tulaCardSurface)
+        )
+        .contentShape(Rectangle())
+    }
+
+    /// Right-side action area for non-swipeable contexts (review/insight).
+    /// Kept around for backward reference but currently unused — the new
+    /// `contextRowBody` handles the chevron directly. Will be removed in
+    /// a future cleanup pass once we're sure no callers reference it.
+    @ViewBuilder
+    private func contextTrailingActions(for context: HomeContext) -> some View {
+        switch context {
+        case .upcoming, .review, .insight, .recurringOverflow:
+            // Intentional no-op — actions are now handled inline by
+            // `contextRowBody` (chevron) or `SwipeableContextRow` (swipe).
+            EmptyView()
+        }
+    }
+
+    /// Skip a single upcoming occurrence from the home row. Mirrors the
+    /// notification Skip action — sets the rule's last-handled marker so
+    /// the indicator clears and the next occurrence surfaces. Cancels
+    /// any pending notification for this specific date so it doesn't
+    /// re-prompt the user a few hours later.
+    private func skipUpcoming(rule: RecurringRule, date: Date) {
+        Haptics.tap()
+        withAnimation(AppAnimation.snappy) {
+            RecurringEngine.skipOccurrence(rule: rule, dueDate: date)
+            try? context.save(); WidgetRefresh.refresh(using: context)
+        }
+        NotificationManager.cancelConfirmation(ruleID: rule.id, dueDate: date)
+        showToast("Skipped")
+    }
+
+    /// Log a single upcoming occurrence from the home row. Creates the
+    /// expense immediately using the rule's saved fields, same path as
+    /// the notification "Log it" action. Cancels any pending notification
+    /// for this date so the user isn't asked twice.
+    private func logUpcoming(rule: RecurringRule, date: Date) {
+        Haptics.success()
+        withAnimation(AppAnimation.snappy) {
+            RecurringEngine.createTransaction(rule: rule, date: date, in: context)
+            try? context.save(); WidgetRefresh.refresh(using: context)
+        }
+        NotificationManager.cancelConfirmation(ruleID: rule.id, dueDate: date)
+        triggerSavePulse()
+        showToast("Logged \(rule.name)")
     }
 
     private func contextIcon(for context: HomeContext) -> String {
         switch context {
-        case .review:               return "tag.slash"
+        case .review:                return "tag.slash"
         case .upcoming(let rule, _): return rule.category?.iconKey ?? "arrow.clockwise.circle.fill"
-        case .insight(let i):       return i.icon
+        case .recurringOverflow:     return "ellipsis.circle.fill"
+        case .insight(let i):        return i.icon
         }
     }
 
     private func contextColor(for context: HomeContext) -> Color {
         switch context {
-        case .review:               return Color.tulaBrandFallback
+        case .review:                return Color.tulaBrandFallback
         case .upcoming(let rule, _): return Color(hex: rule.category?.colorHex ?? "#D97706")
-        case .insight(let i):       return i.color
+        case .recurringOverflow:     return .secondary
+        case .insight(let i):        return i.color
         }
     }
 
@@ -587,6 +1236,8 @@ struct HomeView: View {
             return count == 1 ? "1 expense to review" : "\(count) expenses to review"
         case .upcoming(let rule, _):
             return rule.name
+        case .recurringOverflow(let count):
+            return count == 1 ? "1 more recurring due" : "\(count) more recurring due"
         case .insight(let i):
             return i.title
         }
@@ -598,6 +1249,8 @@ struct HomeView: View {
             return "Tap to categorize"
         case .upcoming(_, let date):
             return upcomingRelativeLabel(for: date)
+        case .recurringOverflow:
+            return "Tap to see all"
         case .insight(let i):
             return i.detail
         }
@@ -618,7 +1271,7 @@ struct HomeView: View {
         switch context {
         case .review:
             navPath.append(HomeDestination.reviewQueue)
-        case .upcoming:
+        case .upcoming, .recurringOverflow:
             showingRecurring = true
         case .insight:
             // No destination for insights — they're informational. Tapping
@@ -822,7 +1475,7 @@ struct HomeView: View {
             source: .manual, category: expense.category, account: expense.account
         )
         context.insert(copy)
-        try? context.save()
+        try? context.save(); WidgetRefresh.refresh(using: context)
         Haptics.success()
         showToast("Duplicated")
         triggerSavePulse()
@@ -835,13 +1488,13 @@ struct HomeView: View {
             source: .manual, category: expense.category, account: expense.account
         )
         context.insert(template)
-        try? context.save()
+        try? context.save(); WidgetRefresh.refresh(using: context)
         editingExpense = template
     }
 
     private func delete(_ expense: Expense) {
         context.delete(expense)
-        try? context.save()
+        try? context.save(); WidgetRefresh.refresh(using: context)
         Haptics.warning()
         showToast("Deleted")
     }
@@ -935,7 +1588,160 @@ private struct UpcomingRecurringRow: View {
     }
 }
 
-// MARK: - Keyboard dismissal helper
+// MARK: - Swipeable Context Row
+
+/// Custom swipe-to-act wrapper for the home upcoming context row.
+///
+/// **Why custom?** SwiftUI's `swipeActions(edge:)` only works inside a
+/// `List`. The home view uses a `ScrollView` + `VStack` layout where
+/// that modifier is silently ignored. This view provides equivalent
+/// behavior outside of a List — drag the foreground content left or
+/// right to reveal action backgrounds; release past the threshold to
+/// fire the action.
+///
+/// **Behavior modeled on iOS Mail / Reminders:**
+/// - Swipe RIGHT reveals the leading (primary positive) action.
+/// - Swipe LEFT reveals the trailing (secondary / deferring) action.
+/// - A *long* swipe past `commitThreshold` auto-fires the action.
+/// - A *short* swipe (or release before the threshold) snaps back.
+/// - Past the rubber-band threshold, drag resistance increases so the
+///   user feels they're stretching against something — communicates the
+///   commit boundary tactically.
+/// - Haptic feedback fires once when the drag crosses the threshold,
+///   giving a tactile "this will commit if released" cue.
+private struct SwipeableContextRow<Content: View>: View {
+    let leadingLabel: String
+    let leadingIcon: String
+    let leadingColor: Color
+    let leadingAction: () -> Void
+
+    let trailingLabel: String
+    let trailingIcon: String
+    let trailingColor: Color
+    let trailingAction: () -> Void
+
+    let onTap: () -> Void
+
+    @ViewBuilder let content: () -> Content
+
+    @State private var offset: CGFloat = 0
+    @State private var hapticArmed = true
+
+    /// Drag distance required to commit the action on release. ~25% of a
+    /// typical iPhone width — same feel as Apple Mail's swipe threshold.
+    private let commitThreshold: CGFloat = 90
+    /// Where rubber-band resistance kicks in. Set generously past the
+    /// commit threshold so the user gets clear visual feedback that
+    /// they've passed the trigger point.
+    private let resistanceStart: CGFloat = 130
+
+    var body: some View {
+        ZStack {
+            // Background: action labels on each side. Only the side being
+            // swiped toward is visible (opacity gated by offset sign).
+            HStack(spacing: 0) {
+                actionBackground(
+                    label: leadingLabel,
+                    icon: leadingIcon,
+                    color: leadingColor,
+                    alignment: .leading
+                )
+                .opacity(offset > 1 ? 1 : 0)
+
+                Spacer(minLength: 0)
+
+                actionBackground(
+                    label: trailingLabel,
+                    icon: trailingIcon,
+                    color: trailingColor,
+                    alignment: .trailing
+                )
+                .opacity(offset < -1 ? 1 : 0)
+            }
+
+            // Foreground: the actual content, shifted by drag amount.
+            content()
+                .offset(x: offset)
+                .gesture(swipeGesture)
+                .onTapGesture {
+                    onTap()
+                }
+        }
+    }
+
+    private var swipeGesture: some Gesture {
+        // minimumDistance: 12 prevents tap gesture from being eaten by
+        // tiny drags. Anything below 12pt is treated as a tap.
+        DragGesture(minimumDistance: 12)
+            .onChanged { value in
+                let raw = value.translation.width
+                // Apply rubber-band past resistanceStart so the user
+                // feels increasing pushback — Apple's standard pattern.
+                if abs(raw) > resistanceStart {
+                    let excess = abs(raw) - resistanceStart
+                    let resisted = resistanceStart + excess * 0.3
+                    offset = (raw < 0 ? -1 : 1) * resisted
+                } else {
+                    offset = raw
+                }
+
+                // Haptic feedback exactly once when crossing the commit
+                // threshold. `hapticArmed` flips off after firing and
+                // re-arms only when the user pulls back below threshold.
+                let crossed = abs(raw) > commitThreshold
+                if crossed && hapticArmed {
+                    Haptics.impact()
+                    hapticArmed = false
+                } else if !crossed {
+                    hapticArmed = true
+                }
+            }
+            .onEnded { value in
+                let raw = value.translation.width
+                if raw > commitThreshold {
+                    // Right-swipe past threshold — fire leading action.
+                    withAnimation(.snappy(duration: 0.25)) { offset = 0 }
+                    leadingAction()
+                } else if raw < -commitThreshold {
+                    // Left-swipe past threshold — fire trailing action.
+                    withAnimation(.snappy(duration: 0.25)) { offset = 0 }
+                    trailingAction()
+                } else {
+                    // Short swipe — snap back without firing.
+                    withAnimation(.snappy(duration: 0.25)) { offset = 0 }
+                }
+                hapticArmed = true
+            }
+    }
+
+    private func actionBackground(label: String, icon: String,
+                                   color: Color, alignment: Alignment) -> some View {
+        HStack(spacing: 8) {
+            if alignment == .trailing { Spacer(minLength: 0) }
+
+            Image(systemName: icon)
+                .font(.title3.weight(.semibold))
+                .foregroundStyle(.white)
+            Text(label)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.white)
+
+            if alignment == .leading { Spacer(minLength: 0) }
+        }
+        .padding(.horizontal, Spacing.md + 4)
+        // Width chosen so the background extends well past the commit
+        // threshold — the user sees the colored region before they've
+        // dragged enough to fire the action, so the affordance is clear.
+        .frame(width: 130)
+        .frame(maxHeight: .infinity)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(color)
+        )
+    }
+}
+
+
 
 extension View {
     func hideKeyboard() {
@@ -985,7 +1791,18 @@ private struct QuickLogBar: View {
     let merchantRules: [MerchantRule]
     let defaultAccount: Account?
     let currencyCode: String
-    let onSubmit: ([ParsedExpense]) -> Void
+    /// Submit callback. Carries the rule-parsed expenses, the raw input
+    /// string, and a flag indicating whether the input came from voice
+    /// dictation. The host (HomeView) uses these to decide whether to
+    /// save the rule-parsed result directly (typed input) or send the
+    /// raw transcript through Foundation Models for re-parse (voice
+    /// input, where rules can't reliably handle transcription noise).
+    let onSubmit: ([ParsedExpense], String, Bool) -> Void
+    /// True when Apple Foundation Models is currently enriching a
+    /// recent submission. Drives the radiant amber glow around the
+    /// input capsule so the user sees that on-device AI is engaged.
+    /// Parent passes `smartParseInFlight > 0`.
+    let isSmartParsing: Bool
 
     @State private var input: String = ""
     @FocusState private var focused: Bool
@@ -994,6 +1811,19 @@ private struct QuickLogBar: View {
     /// Tracks whether we just finished a voice session — used to give the
     /// preview card extra prominence and tappable confirm behavior.
     @State private var justFinishedVoice = false
+
+    /// Tracks whether the CURRENT input text originated from voice
+    /// dictation vs typing. Set to true whenever a speech transcript
+    /// update overwrites `input`; reset to false whenever the user
+    /// edits via keyboard. Used at submit time to decide whether to
+    /// route through Foundation Models (voice path, more forgiving of
+    /// transcription noise) or the rule parser (typed path, faster).
+    ///
+    /// More reliable than `justFinishedVoice` for routing decisions —
+    /// that flag depends on the rule parser successfully extracting an
+    /// amount AT the moment the user taps stop, which can be wrong when
+    /// transcription is noisy enough to break rule parsing.
+    @State private var inputCameFromVoice: Bool = false
 
     private var parsed: [ParsedExpense] {
         ExpenseParser.parse(
@@ -1020,7 +1850,31 @@ private struct QuickLogBar: View {
         .animation(AppAnimation.bouncy, value: showPreview)
         .animation(AppAnimation.snappy, value: speech.isRecording)
         .onChange(of: speech.transcript) { _, newValue in
+            // Speech recognizer updated the transcript — adopt it AND
+            // mark the input as voice-sourced so submit can route via FM.
+            // Track separately from the text content itself (which the
+            // user may then edit by hand) to avoid losing the voice
+            // routing decision if a small typo is corrected manually.
             input = newValue
+            if !newValue.isEmpty {
+                inputCameFromVoice = true
+            }
+        }
+        .onChange(of: input) { oldValue, newValue in
+            // If the user changes the text without speech being involved
+            // (e.g. typing in the field), flip back to typed source.
+            // We compare against speech.transcript: if they diverge AND
+            // speech isn't currently producing this update, the user typed.
+            if newValue != speech.transcript && !speech.isRecording {
+                // But: speech.transcript may still hold the prior voice
+                // text after stop. Only switch to typed if the new value
+                // is meaningfully different (not just a small edit of the
+                // voice transcript). Conservative: keep voice flag unless
+                // input becomes empty (clean slate) or markedly different.
+                if newValue.isEmpty {
+                    inputCameFromVoice = false
+                }
+            }
         }
         // Voice deep-link from the Quick Actions widget posts this
         // notification — auto-start the mic so the user goes straight
@@ -1064,19 +1918,95 @@ private struct QuickLogBar: View {
         .padding(.vertical, Spacing.xs + 2)
         .frame(minHeight: 56)
         .background(
-            Capsule().fill(
-                speech.isRecording
-                    ? Color.red.opacity(0.10)
-                    : Color.tulaCardSurface
-            )
+            // Background stays the same regardless of state. The AI signal
+            // (amber halo) is carried by the shadow + stroke; the recording
+            // signal (red) is in the stroke + the recordingMode subview's
+            // own iconography (waveform, red stop button). Doubling up the
+            // red on the background made the capsule feel alarmed; calmer
+            // base + sharper ring reads as "engaged" without "warning".
+            Capsule().fill(Color.tulaCardSurface)
         )
         .overlay(
             Capsule()
                 .strokeBorder(
-                    speech.isRecording ? Color.red.opacity(0.30) : Color.clear,
-                    lineWidth: 1
+                    capsuleStrokeColor,
+                    lineWidth: aiActive ? 1.5 : 1
                 )
         )
+        // Radiant glow signals "on-device AI is engaged" — covers both
+        // states: speech recognition is transcribing your voice (which
+        // IS on-device AI), or Foundation Models is enriching a recent
+        // entry. Visually it's one cohesive signal: "AI is helping you
+        // right now". Honest framing — both stages are AI, both deserve
+        // the same indicator.
+        //
+        // Layered shadows (inner + outer) at brand amber give the capsule
+        // a soft halo. Recording adds a red outer ring on top of the amber
+        // (via the stroke), so red+amber together = "voice mode" and amber
+        // alone = "smart parsing" — same vocabulary, different inflection.
+        .shadow(
+            color: glowColor,
+            radius: aiActive ? 14 : 0,
+            x: 0,
+            y: 0
+        )
+        .shadow(
+            color: glowColor.opacity(0.55),
+            radius: aiActive ? 6 : 0,
+            x: 0,
+            y: 0
+        )
+        .scaleEffect(aiActive ? glowPulse : 1.0)
+        .onAppear {
+            // Drive the breathing pulse with a repeating animation
+            // that ticks the scale and shadow alpha between two values.
+            // .easeInOut with autoreverses makes it feel like a slow
+            // exhale rather than a heartbeat — calm, not anxious.
+            withAnimation(
+                .easeInOut(duration: 1.3).repeatForever(autoreverses: true)
+            ) {
+                glowPulse = 1.012
+            }
+        }
+        .animation(.easeInOut(duration: 0.35), value: aiActive)
+    }
+
+    /// Unified "AI is engaged" state — true when any of:
+    /// - On-device speech recognition is recording
+    /// - Foundation Models is enriching a submitted expense
+    /// - Foundation Models is doing parallel transcript correction during
+    ///   a dictation pause (the user paused to think; we use that idle
+    ///   time to clean up homophones in the segment they just finished)
+    /// All three are forms of on-device AI helping the user; the glow
+    /// treats them as a single visual signal so the user sees one
+    /// coherent "AI is here" indicator rather than three separate cues.
+    private var aiActive: Bool {
+        speech.isRecording || isSmartParsing || speech.isCorrecting
+    }
+
+    /// Pulse scale state for the AI glow. Idles at 1.0; while AI is active,
+    /// gently breathes between 1.0 and 1.012 — barely perceptible motion
+    /// that signals "alive" without distracting from the user's reading.
+    @State private var glowPulse: CGFloat = 1.0
+
+    /// Stroke color layered with the amber glow. Voice recording adds a
+    /// red ring on top of the amber halo, so red+amber together read as
+    /// "voice mode" (still AI, just a stronger signal because the mic is
+    /// hot). Amber alone reads as "smart parsing in progress".
+    private var capsuleStrokeColor: Color {
+        if speech.isRecording { return Color.red.opacity(0.40) }
+        if isSmartParsing { return Color.tulaBrandFallback.opacity(0.55) }
+        return .clear
+    }
+
+    /// Glow color for the shadow ring. Always amber when AI is active —
+    /// the recording state's red lives in the stroke, not the shadow, so
+    /// the halo color stays consistent. Zero when idle so the shadow
+    /// modifier collapses to no-op (no perf cost when nothing is happening).
+    private var glowColor: Color {
+        aiActive
+            ? Color.tulaBrandFallback.opacity(0.65)
+            : .clear
     }
 
     /// Idle / text-entry mode — full-width TextField + a bold trailing action.
@@ -1314,12 +2244,15 @@ private struct QuickLogBar: View {
 
     private func submit() {
         let valid = validParsed
+        let rawInput = input
+        let wasVoice = inputCameFromVoice
         guard !valid.isEmpty else { return }
         if speech.isRecording { speech.stop() }
-        onSubmit(valid)
+        onSubmit(valid, rawInput, wasVoice)
         input = ""
         focused = false
         justFinishedVoice = false
+        inputCameFromVoice = false
     }
 }
 

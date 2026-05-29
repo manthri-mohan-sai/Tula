@@ -12,13 +12,19 @@ struct ExpenseFilter: Equatable, Hashable {
     var categoryIDs: Set<UUID> = []
     var accountIDs: Set<UUID> = []
     var dateRange: DateRange = .anytime
+    /// Case-insensitive merchant substring match. Used by Stats drill-downs
+    /// from the Top Merchants section — tapping a merchant row pushes a
+    /// filter narrowed to expenses whose `merchant` contains this string.
+    /// Empty string disables the filter.
+    var merchantSubstring: String = ""
 
     static let empty = ExpenseFilter()
 
     /// True when at least one dimension is narrowing results — used to
     /// decide whether to show the chip bar / pulse the toolbar icon.
     var hasAnyFilter: Bool {
-        !categoryIDs.isEmpty || !accountIDs.isEmpty || dateRange != .anytime
+        !categoryIDs.isEmpty || !accountIDs.isEmpty
+            || dateRange != .anytime || !merchantSubstring.isEmpty
     }
 
     /// Returns true if the expense passes every active filter.
@@ -36,6 +42,11 @@ struct ExpenseFilter: Equatable, Hashable {
         if dateRange != .anytime {
             let (start, end) = dateRange.interval()
             guard expense.date >= start && expense.date < end else { return false }
+        }
+        if !merchantSubstring.isEmpty {
+            let needle = merchantSubstring.lowercased()
+            guard let m = expense.merchant?.lowercased(),
+                  m.contains(needle) else { return false }
         }
         return true
     }
@@ -397,6 +408,18 @@ struct ActiveFilterChipBar: View {
                     }
                 }
 
+                // Merchant substring filter — shown as a quoted chip so
+                // the user knows this is a fuzzy match, not an exact one.
+                if !filter.merchantSubstring.isEmpty {
+                    chip(
+                        label: "\u{201C}\(filter.merchantSubstring)\u{201D}",
+                        icon: "tag.fill",
+                        color: .secondary
+                    ) {
+                        filter.merchantSubstring = ""
+                    }
+                }
+
                 ForEach(selectedCategories) { cat in
                     chip(
                         label: cat.name,
@@ -438,6 +461,7 @@ struct ActiveFilterChipBar: View {
 
     private var filterChipCount: Int {
         (filter.dateRange != .anytime ? 1 : 0)
+            + (filter.merchantSubstring.isEmpty ? 0 : 1)
             + selectedCategories.count
             + selectedAccounts.count
     }

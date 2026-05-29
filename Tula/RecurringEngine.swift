@@ -103,24 +103,45 @@ enum RecurringEngine {
             ?? "INR"
 
         let now = Date.now
-        // Anchor walks forward from now (not from lastGeneratedDate) —
-        // we only want to schedule FUTURE occurrences. Past missed
-        // ones are gone; iOS can't fire notifications retroactively.
-        var nextDate = nextOccurrence(strictlyAfter: now, rule: rule, calendar: calendar)
+
+        // Anchor: start walking from start-of-today, not from `now`.
+        //
+        // Why this matters: `nextOccurrence(strictlyAfter:)` finds the
+        // first calendar-aware occurrence after the given date. If the
+        // user creates a "Lunch 1pm daily" rule at 3pm, anchoring on
+        // `now` would skip today's 1pm (already past) and queue
+        // tomorrow's 1pm as the first notification. From the user's
+        // perspective: "I set up lunch, nothing happened."
+        //
+        // Starting from start-of-today means nextOccurrence first
+        // surfaces today's 1pm. We then drop any candidate whose
+        // fire-time is already in the past via the `nextDate > now`
+        // filter inside the loop — iOS can't deliver retroactive
+        // notifications. Net effect: today's notification fires IF the
+        // user set up the rule before its scheduled time, and is
+        // silently skipped IF after — but the rule is still correctly
+        // queued for tomorrow onward.
+        let anchor = calendar.startOfDay(for: now)
+        var nextDate = nextOccurrence(strictlyAfter: anchor, rule: rule, calendar: calendar)
 
         var scheduled = 0
         let cap = 14
         while scheduled < cap {
             if let endDate = rule.endDate, nextDate > endDate { break }
 
-            NotificationManager.scheduleConfirmation(
-                ruleID: rule.id,
-                ruleName: rule.name,
-                amount: rule.amount,
-                currencyCode: code,
-                dueDate: nextDate
-            )
-            scheduled += 1
+            // Skip past-due occurrences (today's 1pm at 3pm). iOS would
+            // either drop them or fire them immediately as a stale alert,
+            // both undesirable.
+            if nextDate > now {
+                NotificationManager.scheduleConfirmation(
+                    ruleID: rule.id,
+                    ruleName: rule.name,
+                    amount: rule.amount,
+                    currencyCode: code,
+                    dueDate: nextDate
+                )
+                scheduled += 1
+            }
 
             nextDate = nextOccurrence(
                 strictlyAfter: nextDate,
@@ -139,9 +160,19 @@ enum RecurringEngine {
     ) -> Date {
         switch rule.frequency {
         case .weekly:
-            return nextWeekly(strictlyAfter: date, anchoredTo: rule.startDate, calendar: calendar)
+            return nextWeekly(
+                strictlyAfter: date,
+                anchoredTo: rule.startDate,
+                weekdaysMask: rule.weekdaysMask,
+                calendar: calendar
+            )
         case .monthly:
-            return nextMonthly(strictlyAfter: date, dayOfMonth: rule.dayOfMonth, calendar: calendar)
+            return nextMonthly(
+                strictlyAfter: date,
+                dayOfMonth: rule.dayOfMonth,
+                anchoredTo: rule.startDate,
+                calendar: calendar
+            )
         case .yearly:
             return nextYearly(strictlyAfter: date, anchoredTo: rule.startDate, calendar: calendar)
         case .custom:
@@ -157,23 +188,51 @@ enum RecurringEngine {
 
     // MARK: - Per-frequency next-occurrence logic
 
-    /// Weekly: anchored to startDate's weekday + time of day. Always adds 7 days.
+    /// Weekly: anchored to startDate's time of day. Fires on every weekday
+    /// whose bit is set in `weekdaysMask`. If `weekdaysMask == 0`, falls
+    /// back to firing on startDate's weekday only (legacy single-day mode).
     private static func nextWeekly(
         strictlyAfter date: Date,
         anchoredTo anchor: Date,
+        weekdaysMask: Int,
         calendar: Calendar
     ) -> Date {
-        // If never fired yet, use startDate if it's in the future,
-        // else compute the next occurrence based on the day-of-week.
-        let weekday = calendar.component(.weekday, from: anchor)
         let hour = calendar.component(.hour, from: anchor)
         let minute = calendar.component(.minute, from: anchor)
 
-        // Move forward 1 day at a time looking for the right weekday after `date`.
+        // Build the set of allowed weekdays. Mask 0 means "use anchor's
+        // weekday only" — preserves legacy behavior. Otherwise expand
+        // the bitmask into a set (bit 0 = Sunday = weekday 1, etc).
+        let allowedWeekdays: Set<Int>
+        if weekdaysMask == 0 {
+            allowedWeekdays = [calendar.component(.weekday, from: anchor)]
+        } else {
+            var set: Set<Int> = []
+            for i in 0..<7 where (weekdaysMask & (1 << i)) != 0 {
+                set.insert(i + 1)
+            }
+            // Safety: if mask was somehow only bits 7+ (shouldn't happen),
+            // fall back to anchor's weekday rather than infinite-looping.
+            if set.isEmpty {
+                allowedWeekdays = [calendar.component(.weekday, from: anchor)]
+            } else {
+                allowedWeekdays = set
+            }
+        }
+
+        // Walk forward day-by-day looking for an allowed weekday. Check
+        // today FIRST (then tomorrow, then day-after, etc) — previously
+        // this loop incremented BEFORE checking, which silently skipped
+        // today's slot when called with `date = startOfToday`. Combined
+        // with the scheduler anchoring on start-of-today, that made every
+        // rule with a specific time queue from tomorrow onward, never
+        // today. The `withTime > date` clause inside still filters out
+        // candidates whose time-of-day has already passed when `date`
+        // includes a non-zero time component, so we don't accidentally
+        // schedule past-due notifications.
         var candidate = date
-        for _ in 0..<8 {  // at most 7 iterations
-            candidate = calendar.date(byAdding: .day, value: 1, to: candidate) ?? candidate
-            if calendar.component(.weekday, from: candidate) == weekday {
+        for _ in 0..<8 {
+            if allowedWeekdays.contains(calendar.component(.weekday, from: candidate)) {
                 var components = calendar.dateComponents([.year, .month, .day], from: candidate)
                 components.hour = hour
                 components.minute = minute
@@ -182,20 +241,29 @@ enum RecurringEngine {
                     return withTime
                 }
             }
+            candidate = calendar.date(byAdding: .day, value: 1, to: candidate) ?? candidate
         }
         return calendar.date(byAdding: .weekOfYear, value: 1, to: date) ?? date
     }
 
-    /// Monthly: fires on `dayOfMonth` (clamped for Feb / 30-day months).
+    /// Monthly: fires on `dayOfMonth` (clamped for Feb / 30-day months)
+    /// at the time-of-day of `anchor`. Previously hard-coded to 9am
+    /// regardless of the rule's specified time — meaning a "1st of the
+    /// month at 6pm rent reminder" would fire at 9am, ignoring user
+    /// intent. Now respects the anchor's hour/minute.
     private static func nextMonthly(
         strictlyAfter date: Date,
         dayOfMonth: Int,
+        anchoredTo anchor: Date,
         calendar: Calendar
     ) -> Date {
+        let hour = calendar.component(.hour, from: anchor)
+        let minute = calendar.component(.minute, from: anchor)
+
         // Try this month at dayOfMonth (clamped to month length).
         var components = calendar.dateComponents([.year, .month], from: date)
-        components.hour = 9
-        components.minute = 0
+        components.hour = hour
+        components.minute = minute
         components.second = 0
 
         if let monthStart = calendar.date(from: components),
@@ -210,8 +278,8 @@ enum RecurringEngine {
         // Otherwise, next month at dayOfMonth (clamped).
         let nextMonth = calendar.date(byAdding: .month, value: 1, to: date) ?? date
         var nextComponents = calendar.dateComponents([.year, .month], from: nextMonth)
-        nextComponents.hour = 9
-        nextComponents.minute = 0
+        nextComponents.hour = hour
+        nextComponents.minute = minute
         nextComponents.second = 0
         if let nextMonthStart = calendar.date(from: nextComponents),
            let range = calendar.range(of: .day, in: .month, for: nextMonthStart) {
@@ -324,13 +392,58 @@ enum RecurringEngine {
 
     /// Computes the next upcoming due date for a rule. Used by the UI to
     /// display "Next: 5 Jun".
+    /// Returns the next due date strictly in the future relative to `now`.
+    /// For the home screen this means: today's 1pm lunch won't appear as
+    /// "upcoming" at 8pm — we step forward to tomorrow's 1pm instead.
+    ///
+    /// **Why the loop**: `nextOccurrence` returns the next slot after
+    /// `lastGeneratedDate ?? startDate`, which may be in the past if the
+    /// rule fires daily and today's slot already passed. We need to walk
+    /// forward through occurrences until we find one that hasn't fired
+    /// yet. Capped at 366 iterations (one year of daily slots) as a safety
+    /// guard — a misconfigured rule shouldn't be able to spin forever.
     static func nextDueDate(for rule: RecurringRule) -> Date? {
         if rule.isPaused { return nil }
         if let endDate = rule.endDate, endDate < .now { return nil }
         let calendar = Calendar.current
-        let from = rule.lastGeneratedDate ?? rule.startDate
-        let next = nextOccurrence(strictlyAfter: from, rule: rule, calendar: calendar)
-        if let endDate = rule.endDate, next > endDate { return nil }
-        return next
+        let now = Date.now
+        var from = rule.lastGeneratedDate ?? rule.startDate
+        var iterations = 0
+        while iterations < 366 {
+            let next = nextOccurrence(strictlyAfter: from, rule: rule, calendar: calendar)
+            if let endDate = rule.endDate, next > endDate { return nil }
+            // Future occurrence found — return it.
+            if next > now { return next }
+            // Past-due — advance and try again. For daily rules this
+            // converges in one or two iterations; for weekly the worst
+            // case is 7 (today's slot already passed, next week's is
+            // what we want); for monthly worst case is ~31.
+            from = next
+            iterations += 1
+        }
+        return nil
+    }
+
+    /// Mark a specific occurrence of a rule as "handled" without creating
+    /// an expense. Used when the user taps Skip on a confirmation
+    /// notification or the Skip button in the home upcoming row.
+    ///
+    /// **Semantics.** `lastGeneratedDate` is the field that the engine
+    /// uses as the boundary between "already processed" and "still to do."
+    /// `nextDueDate` returns the first occurrence strictly after this
+    /// field. So bumping it to the skipped date makes the engine treat
+    /// the skipped occurrence as resolved — the home screen indicator
+    /// disappears, and the next occurrence (tomorrow / next week / etc.)
+    /// surfaces in its place.
+    ///
+    /// The field name says "generated" for backward-compat; the meaning is
+    /// closer to "last handled" once skip is taken into account. No new
+    /// data column was added — skip uses the same boundary as log.
+    static func skipOccurrence(rule: RecurringRule, dueDate: Date) {
+        // Only advance the marker; don't go backward. Multiple skip taps
+        // for the same date should be idempotent, and we should never
+        // backtrack a previously-logged date.
+        if let last = rule.lastGeneratedDate, last >= dueDate { return }
+        rule.lastGeneratedDate = dueDate
     }
 }

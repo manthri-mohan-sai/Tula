@@ -65,8 +65,14 @@ struct TulaApp: App {
                             SeedData.installIfNeeded(into: context)
                             seedDataInstalled = true
                         }
+                        // Idempotent: adds any default rules that don't
+                        // exist yet. For new users this is a no-op since
+                        // installIfNeeded just ran. For existing users it
+                        // backfills hundreds of new patterns shipped in
+                        // updates. Cheap — one fetch + a set diff.
+                        SeedData.installMissingDefaultMerchantRules(into: context)
                         RecurringEngine.generateMissing(in: context)
-                        refreshWidgetSnapshot(using: context)
+                        WidgetRefresh.refresh(using: context)
                     }
                     .sheet(isPresented: Binding(
                         get: { !onboardingComplete },
@@ -94,22 +100,35 @@ struct TulaApp: App {
         .modelContainer(sharedContainer)
         .onChange(of: scenePhase) { _, newPhase in
             // Refresh the widget snapshot whenever the app becomes active.
-            // Cheaper than observing every save — the widget only needs
-            // refresh on transitions the user is likely to see (post-edit
-            // backgrounding, then re-foregrounding to glance at it).
+            // The save-site calls (WidgetRefresh.refresh after each expense
+            // save) handle in-session freshness; this catches the case
+            // where the user opens the app fresh after a long absence.
             if newPhase == .active {
                 let context = ModelContext(sharedContainer)
-                refreshWidgetSnapshot(using: context)
+                WidgetRefresh.refresh(using: context)
             }
         }
     }
+}
 
-    // MARK: - Widget Snapshot
+// MARK: - Widget Snapshot Refresh
+
+/// Centralized widget-snapshot refresh logic. Called on app foreground,
+/// after every expense/transfer save, and as part of recurring-rule
+/// state changes. Was previously a private instance method on `TulaApp`
+/// that only ran on foreground — now any save site can trigger it.
+///
+/// **Why a separate type?** Save sites need a single line they can drop
+/// in (`WidgetRefresh.refresh(using: context)`) without depending on the
+/// app struct or environment. Static method on an enum keeps it stateless
+/// and importable from anywhere.
+enum WidgetRefresh {
 
     /// Rebuilds the widget snapshot from current data and writes it to the
-    /// App Group. Cheap enough to call on every foreground; ~milliseconds
-    /// for typical expense counts. Triggers a widget reload at the end.
-    private func refreshWidgetSnapshot(using context: ModelContext) {
+    /// App Group. Cheap enough to call after every save — ~milliseconds
+    /// for typical expense counts. Triggers a `WidgetCenter` reload at
+    /// the end so iOS pulls a fresh timeline immediately.
+    static func refresh(using context: ModelContext) {
         let calendar = Calendar.current
         let now = Date.now
 
@@ -126,20 +145,13 @@ struct TulaApp: App {
             .filter { $0.date >= dayStart }
             .reduce(0) { $0 + $1.amount }
 
-        // Active budgets — only monthly ones for the snapshot. Other periods
-        // exist but the widget surface is monthly-focused.
+        // Active budgets — only monthly ones for the snapshot.
         let budgetFetch = FetchDescriptor<Budget>(
             predicate: #Predicate { $0.isActive == true }
         )
         let allBudgets = (try? context.fetch(budgetFetch)) ?? []
         let monthlyBudgets = allBudgets.filter { $0.period == .monthly }
 
-        // Aggregate cap is informative even when individual budgets are
-        // category-scoped: it's "what I've committed to spending this month".
-        let totalCap = monthlyBudgets.reduce(0) { $0 + $1.amount }
-
-        // Top 4 monthly budgets by % used (most urgent first), so the
-        // widget surfaces what the user most needs to see.
         let entries: [WidgetSnapshot.Entry] = monthlyBudgets
             .map { b -> WidgetSnapshot.Entry in
                 let spent = b.spent(in: monthExpenses)
@@ -157,29 +169,24 @@ struct TulaApp: App {
             .prefix(4)
             .map { $0 }
 
-        // 7-day sparkline data — daily totals, oldest-first. For days
-        // that fall outside this month's fetched expenses (early in a
-        // new month), the corresponding entries are just zero, which
-        // is correct: no spend recorded yet.
+        // Total cap across all monthly budgets — what the user committed to.
+        let totalCap = monthlyBudgets.reduce(0) { $0 + $1.amount }
+
+        // 7-day sparkline (oldest-first).
         var dailyTotals: [Double] = Array(repeating: 0, count: 7)
-        for dayOffset in 0..<7 {
-            guard let dayDate = calendar.date(byAdding: .day, value: -dayOffset, to: now),
-                  let dayInterval = calendar.dateInterval(of: .day, for: dayDate) else {
-                continue
-            }
+        for daysAgo in 0..<7 {
+            guard let start = calendar.date(byAdding: .day, value: -daysAgo, to: dayStart),
+                  let end = calendar.date(byAdding: .day, value: 1, to: start) else { continue }
             let total = monthExpenses
-                .filter { $0.date >= dayInterval.start && $0.date < dayInterval.end }
+                .filter { $0.date >= start && $0.date < end }
                 .reduce(0) { $0 + $1.amount }
-            // Reverse the index: index 0 = oldest (6 days ago),
-            // index 6 = today. Sparkline reads naturally left-to-right.
-            dailyTotals[6 - dayOffset] = total
+            dailyTotals[6 - daysAgo] = total
         }
 
-        // Upcoming recurrings — surface what's coming due in the next
-        // little while. Excludes paused rules. Top 3 by closest due
-        // date. RecurringEngine.nextDueDate handles the per-cadence
-        // math (daily/weekly/monthly + start-date math).
         let upcomingRecurrings = buildUpcomingRecurrings(in: context)
+
+        let primaryCurrencyCode = UserDefaults.standard
+            .string(forKey: "primaryCurrencyCode") ?? "INR"
 
         let snapshot = WidgetSnapshot(
             currencyCode: primaryCurrencyCode,
@@ -197,17 +204,12 @@ struct TulaApp: App {
     }
 
     /// Next 3 recurring expenses due, sorted by due date ascending.
-    /// Paused rules are excluded. Used by the medium Upcoming widget
-    /// which surfaces *what's coming* — more actionable than past
-    /// expenses on a home screen.
-    private func buildUpcomingRecurrings(in context: ModelContext) -> [WidgetSnapshot.UpcomingRecurring] {
+    private static func buildUpcomingRecurrings(in context: ModelContext) -> [WidgetSnapshot.UpcomingRecurring] {
         let rulesFetch = FetchDescriptor<RecurringRule>(
             predicate: #Predicate { $0.isPaused == false }
         )
         let rules = (try? context.fetch(rulesFetch)) ?? []
         let upcoming = rules.compactMap { rule -> WidgetSnapshot.UpcomingRecurring? in
-            // Only include expense-type rules (not transfers — those
-            // don't have a "due" semantic that fits this widget).
             guard rule.kind == .expense else { return nil }
             guard let due = RecurringEngine.nextDueDate(for: rule) else { return nil }
             return WidgetSnapshot.UpcomingRecurring(

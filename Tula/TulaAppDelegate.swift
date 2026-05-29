@@ -1,11 +1,3 @@
-//
-//  TulaAppDelegate.swift
-//  Tula
-//
-//  Created by Mohan Manthri on 28/05/26.
-//
-
-
 import UIKit
 import UserNotifications
 import SwiftData
@@ -58,17 +50,16 @@ final class TulaAppDelegate: NSObject, UIApplicationDelegate, UNUserNotification
 
         switch response.actionIdentifier {
         case NotificationManager.confirmLogActionID:
+            NotificationManager.NotificationDiagnostics.recordActionTapped(.log, ruleID: ruleID)
             await RecurringConfirmationHandler.logOccurrence(ruleID: ruleID, dueDate: dueDate)
         case NotificationManager.confirmSkipActionID:
-            // Skip is a no-op — we simply don't create the expense. The
-            // notification is already dismissed by iOS at this point.
-            // Nothing to persist for "skip"; the rule's next occurrence
-            // is independent (we scheduled it separately).
-            break
+            NotificationManager.NotificationDiagnostics.recordActionTapped(.skip, ruleID: ruleID)
+            await RecurringConfirmationHandler.skipOccurrence(ruleID: ruleID, dueDate: dueDate)
         case UNNotificationDefaultActionIdentifier:
             // Tapping the notification body (no action button) — also
             // a no-op. We could route to RecurringRulesView later if
             // wanted, but the simpler "two-button-only" UX is clearer.
+            NotificationManager.NotificationDiagnostics.recordActionTapped(.body, ruleID: ruleID)
             break
         default:
             break
@@ -102,6 +93,29 @@ enum RecurringConfirmationHandler {
         guard let rule = (try? context.fetch(descriptor))?.first else { return }
 
         RecurringEngine.createTransaction(rule: rule, date: dueDate, in: context)
-        try? context.save()
+        try? context.save(); WidgetRefresh.refresh(using: context)
+    }
+
+    /// Marks an occurrence as skipped without creating an expense.
+    /// Called from the notification's Skip action button. Uses a fresh
+    /// container since the response can arrive when the app isn't
+    /// running. Result is persisted so the next launch's home view
+    /// correctly hides the skipped occurrence.
+    static func skipOccurrence(ruleID: UUID, dueDate: Date) async {
+        let schema = Schema([
+            Account.self, Category.self, Expense.self, Transfer.self,
+            RecurringRule.self, MerchantRule.self, Budget.self,
+        ])
+        let config = ModelConfiguration("Tula", schema: schema)
+        guard let container = try? ModelContainer(for: schema, configurations: [config]) else { return }
+
+        let context = ModelContext(container)
+        let descriptor = FetchDescriptor<RecurringRule>(
+            predicate: #Predicate { $0.id == ruleID }
+        )
+        guard let rule = (try? context.fetch(descriptor))?.first else { return }
+
+        RecurringEngine.skipOccurrence(rule: rule, dueDate: dueDate)
+        try? context.save(); WidgetRefresh.refresh(using: context)
     }
 }

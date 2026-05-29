@@ -25,6 +25,18 @@ extension Color {
         dark:  Color(red: 0.96, green: 0.62, blue: 0.24)   // #F59E0B
     )
 
+    /// Fullscreen amber for the launch animation. Lower luminosity than
+    /// the brand accent — the accent is calibrated for small interactive
+    /// elements where brightness signals "tap me", but a fullscreen wash
+    /// at that intensity blasts the eyes, especially in dark environments
+    /// where the user just launched the app. Light mode keeps the bright
+    /// saffron (looks vibrant on a bright phone); dark mode drops to a
+    /// deeper burnt-amber that feels warm without being aggressive.
+    static let tulaLaunchBackground = Color(
+        light: Color(red: 0.85, green: 0.46, blue: 0.10),  // same as accent — bright is fine on bright screens
+        dark:  Color(red: 0.45, green: 0.22, blue: 0.05)   // #732F0D — deep burnt amber
+    )
+
     /// Adaptive color that swaps between light and dark mode variants.
     /// Used by `tulaBrandFallback` above and available for any future
     /// themed color that needs the same treatment.

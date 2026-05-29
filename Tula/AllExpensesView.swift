@@ -248,7 +248,7 @@ struct AllExpensesView: View {
                         Spacer()
                         Text(Currency.format(section.total, code: currencyCode))
                             .font(.caption.weight(.semibold))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(.tertiary)
                             .monospacedDigit()
                     }
                 }
@@ -272,13 +272,13 @@ struct AllExpensesView: View {
             account: expense.account
         )
         context.insert(copy)
-        try? context.save()
+        try? context.save(); WidgetRefresh.refresh(using: context)
         Haptics.success()
     }
 
     private func delete(_ expense: Expense) {
         context.delete(expense)
-        try? context.save()
+        try? context.save(); WidgetRefresh.refresh(using: context)
         Haptics.warning()
     }
 

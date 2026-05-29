@@ -240,6 +240,12 @@ struct StatsView: View {
             }
             .background(Color(uiColor: .systemGroupedBackground))
             .navigationTitle("Stats")
+            // Stats is a data-dense screen — the large-title bar (iOS 26
+            // makes this ~100pt tall) eats real estate the period picker
+            // and hero card should own. Inline keeps "Stats" visible as
+            // a header chip at the top while the content gets the prime
+            // visual space.
+            .navigationBarTitleDisplayMode(.inline)
             .navigationDestination(for: ExpenseFilter.self) { filter in
                 AllExpensesView(presetFilter: filter)
             }
@@ -431,7 +437,7 @@ struct StatsView: View {
                 detail: isCurrentPeriod ? "so far" : "average",
                 icon: "calendar",
                 color: .blue,
-                drillDown: nil
+                drillDown: periodRangeFilter
             )
             insightCardButton(
                 label: "Transactions",
@@ -447,21 +453,27 @@ struct StatsView: View {
     /// Tappable wrapper around `insightCard`. When `drillDown` is non-nil,
     /// the whole card becomes a Button that pushes AllExpensesView via
     /// `navPath`. When nil, the card renders as a plain (non-interactive)
-    /// surface — used for purely informational cards like "Per Day".
+    /// surface — visually distinct via reduced opacity on the trailing
+    /// chevron (absent for non-interactive, present for interactive).
     @ViewBuilder
     private func insightCardButton(label: String, value: String, detail: String,
                                      icon: String, color: Color,
                                      drillDown: ExpenseFilter?) -> some View {
+        let isInteractive = drillDown != nil
         if let filter = drillDown {
             Button {
                 Haptics.tap()
                 navPath.append(filter)
             } label: {
-                insightCard(label: label, value: value, detail: detail, icon: icon, color: color)
+                insightCard(label: label, value: value, detail: detail,
+                            icon: icon, color: color,
+                            isInteractive: isInteractive)
             }
             .buttonStyle(InsightCardButtonStyle())
         } else {
-            insightCard(label: label, value: value, detail: detail, icon: icon, color: color)
+            insightCard(label: label, value: value, detail: detail,
+                        icon: icon, color: color,
+                        isInteractive: isInteractive)
         }
     }
 
@@ -493,7 +505,9 @@ struct StatsView: View {
         return f
     }
 
-    private func insightCard(label: String, value: String, detail: String, icon: String, color: Color) -> some View {
+    private func insightCard(label: String, value: String, detail: String,
+                             icon: String, color: Color,
+                             isInteractive: Bool = false) -> some View {
         VStack(alignment: .leading, spacing: Spacing.xs) {
             HStack {
                 Text(label)
@@ -516,12 +530,24 @@ struct StatsView: View {
                 .contentTransition(.numericText())
                 .animation(.snappy(duration: 0.35), value: value)
 
-            Text(detail)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .contentTransition(.numericText())
-                .animation(.snappy(duration: 0.35), value: detail)
+            HStack(spacing: 4) {
+                Text(detail)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .contentTransition(.numericText())
+                    .animation(.snappy(duration: 0.35), value: detail)
+                Spacer()
+                // Tappable cue: small chevron in the detail row. Shows
+                // only on interactive cards. .tertiary keeps it quiet —
+                // it should signal "yes you can tap" without competing
+                // with the value or category color above.
+                if isInteractive {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                }
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(Spacing.md)
@@ -833,7 +859,15 @@ struct StatsView: View {
                     Divider()
 
                     ForEach(Array(categoryBreakdown.enumerated()), id: \.element.category.id) { index, item in
-                        categoryRow(item.category, amount: item.amount)
+                        Button {
+                            Haptics.tap()
+                            var f = periodRangeFilter
+                            f.categoryIDs = [item.category.id]
+                            navPath.append(f)
+                        } label: {
+                            categoryRow(item.category, amount: item.amount)
+                        }
+                        .buttonStyle(InsightRowButtonStyle())
                         if index != categoryBreakdown.count - 1 {
                             Divider().padding(.leading, 60)
                         }
@@ -966,6 +1000,10 @@ struct StatsView: View {
                     Text(Currency.format(amount, code: currencyCode))
                         .font(.subheadline.weight(.semibold))
                         .monospacedDigit()
+
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.tertiary)
                 }
                 .padding(.horizontal, Spacing.md)
             }
@@ -982,7 +1020,16 @@ struct StatsView: View {
             Card(padding: 0, cornerRadius: CornerRadius.medium) {
                 VStack(spacing: 0) {
                     ForEach(Array(topMerchants.enumerated()), id: \.offset) { index, item in
-                        merchantRow(rank: index + 1, name: item.name, count: item.count, amount: item.amount)
+                        Button {
+                            Haptics.tap()
+                            var f = periodRangeFilter
+                            f.merchantSubstring = item.name
+                            navPath.append(f)
+                        } label: {
+                            merchantRow(rank: index + 1, name: item.name,
+                                        count: item.count, amount: item.amount)
+                        }
+                        .buttonStyle(InsightRowButtonStyle())
                         if index != topMerchants.count - 1 {
                             Divider().padding(.leading, 52)
                         }
@@ -1014,6 +1061,10 @@ struct StatsView: View {
             Text(Currency.format(amount, code: currencyCode))
                 .font(.subheadline.weight(.semibold))
                 .monospacedDigit()
+
+            Image(systemName: "chevron.right")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.tertiary)
         }
         .padding(.horizontal, Spacing.md)
         .padding(.vertical, Spacing.sm + 2)
@@ -1055,6 +1106,22 @@ private struct InsightCardButtonStyle: ButtonStyle {
         configuration.label
             .scaleEffect(configuration.isPressed ? 0.98 : 1.0)
             .opacity(configuration.isPressed ? 0.95 : 1.0)
+            .animation(.snappy(duration: 0.18), value: configuration.isPressed)
+    }
+}
+
+/// Press style for full-width tappable rows inside cards (category +
+/// merchant rows). Uses an opacity dim on press rather than a scale —
+/// rows are wider than tiles and a scale-down looks awkward at row width.
+/// The opacity dim mimics Apple's stock list-row tap response.
+private struct InsightRowButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .background(
+                configuration.isPressed
+                    ? Color.primary.opacity(0.05)
+                    : Color.clear
+            )
             .animation(.snappy(duration: 0.18), value: configuration.isPressed)
     }
 }

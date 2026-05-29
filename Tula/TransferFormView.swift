@@ -260,7 +260,7 @@ struct TransferFormView: View {
             note: note.isEmpty ? nil : note
         )
         context.insert(transfer)
-        try? context.save()
+        try? context.save(); WidgetRefresh.refresh(using: context)
         Haptics.success()
         dismiss()
     }

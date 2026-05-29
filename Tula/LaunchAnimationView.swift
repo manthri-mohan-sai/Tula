@@ -89,7 +89,7 @@ struct LaunchAnimationView: View {
                 // entire view in TulaApp's parent ZStack — i.e., the
                 // home view. So as portalRadius grows, more of the
                 // home view is revealed through the expanding circle.
-                Color.tulaBrandFallback
+                Color.tulaLaunchBackground
                     .ignoresSafeArea()
                     .overlay {
                         Circle()
@@ -143,7 +143,6 @@ struct LaunchAnimationView: View {
                     Text("तुला")
                         .font(.system(size: 18, weight: .medium))
                         .foregroundStyle(.white.opacity(0.92))
-                        .padding(.bottom, 5)
                     Text("Balance your spend")
                         .font(.system(size: 11, weight: .regular))
                         .tracking(2)

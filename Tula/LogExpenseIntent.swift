@@ -56,6 +56,33 @@ struct LogExpenseIntent: AppIntent {
 
         let defaultAccount = resolveDefaultAccount(from: accounts)
 
+        // FM-first path. Siri input is essentially voice input — same
+        // transcription noise, same homophone risks, same split-digit
+        // quirks ("two fifty" / "1 20"). When Foundation Models is
+        // available, route through it first; rules become the fallback
+        // for older devices or when FM can't produce a usable result.
+        //
+        // Multi-expense input (commas, multiple amounts) intentionally
+        // skips FM — the rule parser is purpose-built for splitting,
+        // while FM returns a single structured result. Detecting this
+        // upstream means "350 food and 400 groceries" still creates two
+        // expenses (one bug we don't want to regress).
+        if #available(iOS 26.0, *),
+           SmartExpenseParser.isAvailable,
+           !isLikelyMultiExpense(expenseDescription),
+           let savedDialog = await trySmartParseForSiri(
+               input: expenseDescription,
+               accounts: accounts,
+               categories: categories,
+               defaultAccount: defaultAccount,
+               context: context
+           )
+        {
+            return .result(dialog: savedDialog)
+        }
+
+        // Rule-based fallback: same logic as before for typed-style input,
+        // multi-expense input, or devices without FM.
         let parsed = ExpenseParser.parse(
             input: expenseDescription,
             accounts: accounts,
@@ -79,7 +106,7 @@ struct LogExpenseIntent: AppIntent {
             let expense = Expense(
                 amount: p.amount,
                 merchant: p.merchant,
-                note: nil,
+                note: p.note,
                 source: .siri,
                 category: p.category,
                 account: account
@@ -91,7 +118,7 @@ struct LogExpenseIntent: AppIntent {
             lastAccountID = account.id
         }
 
-        try? context.save()
+        try? context.save(); WidgetRefresh.refresh(using: context)
 
         // Remember the last used account so subsequent Quick Log defaults work.
         if let id = lastAccountID {
@@ -109,6 +136,116 @@ struct LogExpenseIntent: AppIntent {
             }
         } else {
             return .result(dialog: IntentDialog("Logged \(valid.count) expenses totaling \(totalFormatted)."))
+        }
+    }
+
+    /// Heuristic for detecting multi-expense input. Triggers when the
+    /// string contains a conjunction word ("and", "plus", "then", "also")
+    /// surrounded by spaces AND has 2+ digit groups. Pure-comma cases
+    /// also trigger (`"350 swiggy, 200 uber"`). Conservative — if in
+    /// doubt, returns false (single-expense path via FM is fine for
+    /// most edge cases).
+    private func isLikelyMultiExpense(_ input: String) -> Bool {
+        let digitCount = input.matches(of: #/\d+/#).count
+        guard digitCount >= 2 else { return false }
+        let lower = input.lowercased()
+        if lower.contains(",") || lower.contains(";") { return true }
+        let conjunctions = [" and ", " plus ", " then ", " also "]
+        return conjunctions.contains { lower.contains($0) }
+    }
+
+    /// Smart-parses a Siri-supplied expense description through Foundation
+    /// Models and saves the resulting expense if usable. Returns the
+    /// confirmation dialog on success, or nil to signal the caller should
+    /// fall back to the rule parser.
+    ///
+    /// **Safety net:** races the FM call against a 4-second timeout because
+    /// Siri itself has an intent-execution time budget (~10s). If FM is
+    /// slow, we want to fall through to rules well before Siri kills the
+    /// intent — a fast worse answer beats a no-answer timeout.
+    @available(iOS 26.0, *)
+    @MainActor
+    private func trySmartParseForSiri(
+        input: String,
+        accounts: [Account],
+        categories: [Category],
+        defaultAccount: Account?,
+        context: ModelContext
+    ) async -> IntentDialog? {
+        let usableCategories = categories.filter { !$0.isArchived }
+        let usableAccounts = accounts.filter { !$0.isArchived }
+        let categoryNames = usableCategories.map { $0.name }
+        let accountNames = usableAccounts.map { $0.name }
+        let categoryByName = Dictionary(uniqueKeysWithValues:
+            usableCategories.map { ($0.name.lowercased(), $0) })
+        let accountByName = Dictionary(uniqueKeysWithValues:
+            usableAccounts.map { ($0.name.lowercased(), $0) })
+
+        // Race FM against a 4s timeout. Siri's overall intent budget is
+        // ~10s; reserving ~6s for save + dialog rendering leaves headroom.
+        let result = await withTaskGroup(of: SmartParseResult?.self) { group in
+            group.addTask {
+                await SmartExpenseParser.parseVoice(
+                    input,
+                    categoryNames: categoryNames,
+                    accountNames: accountNames
+                )
+            }
+            group.addTask {
+                try? await Task.sleep(for: .seconds(4))
+                return nil
+            }
+            let first = await group.next() ?? nil
+            group.cancelAll()
+            return first
+        }
+
+        guard let result, result.amount > 0 else { return nil }
+
+        // Amount sanity check — same as in-app voice path. If FM's amount
+        // is significantly smaller than what the rule parser would have
+        // extracted, FM dropped a digit during interpretation. Returning
+        // nil here causes the caller to fall back to the rule parser.
+        let merchantRules = (try? context.fetch(FetchDescriptor<MerchantRule>())) ?? []
+        let ruleParsed = ExpenseParser.parse(
+            input: input,
+            accounts: accounts,
+            categories: categories,
+            merchantRules: merchantRules,
+            defaultAccount: defaultAccount
+        )
+        let ruleAmount = ruleParsed.first?.amount ?? 0
+        if ruleAmount > 0, result.amount < ruleAmount / 2 {
+            return nil
+        }
+
+        let category = result.category.flatMap { categoryByName[$0.lowercased()] }
+        let account = result.account.flatMap { accountByName[$0.lowercased()] }
+            ?? defaultAccount
+        guard let account else { return nil }
+
+        let expense = Expense(
+            amount: result.amount,
+            merchant: result.merchant,
+            note: result.item,
+            source: .smartParsed,
+            category: category,
+            account: account
+        )
+        expense.rawInput = input
+        context.insert(expense)
+        try? context.save(); WidgetRefresh.refresh(using: context)
+
+        UserDefaults.standard.set(account.id.uuidString, forKey: "lastUsedAccountID")
+
+        // Build the dialog using the same phrasing as the rule-based path
+        // so Siri's response feels consistent regardless of which parser ran.
+        let totalFormatted = Currency.format(result.amount, code: account.currencyCode)
+        let descriptor = [category?.name, result.merchant].compactMap { $0 }.first ?? ""
+        if descriptor.isEmpty {
+            return IntentDialog("Logged \(totalFormatted).")
+        } else {
+            return IntentDialog("Logged \(totalFormatted) for \(descriptor).")
         }
     }
 }

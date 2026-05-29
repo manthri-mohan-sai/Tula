@@ -5,6 +5,11 @@ struct ParsedExpense: Identifiable {
     var id = UUID()
     var amount: Double = 0
     var merchant: String?
+    /// Optional context preserved from the input — e.g. the item being
+    /// purchased when the input separates item from merchant ("on waffle
+    /// at waffle hub" → merchant "Waffle Hub", note "Waffle"). Stored on
+    /// the saved Expense's note field. Empty when no separation exists.
+    var note: String?
     var account: Account?
     var category: Category?
     var rawInput: String = ""
@@ -15,6 +20,14 @@ struct ParsedExpense: Identifiable {
         if let category { parts.append(category.name) }
         if let merchant, merchant.lowercased() != category?.name.lowercased() {
             parts.append(merchant)
+        }
+        // Show item note when present (e.g. "Waffle" alongside "Waffle Hub")
+        // so the preview reflects the full structure the parser extracted.
+        // Skip if it duplicates the merchant — e.g. "samosa" with merchant
+        // "Samosa" — to avoid showing the same word twice.
+        if let note, !note.isEmpty,
+           note.lowercased() != merchant?.lowercased() {
+            parts.append(note)
         }
         if let account { parts.append(account.name) }
         return parts.joined(separator: " · ")
@@ -50,7 +63,32 @@ enum ExpenseParser {
     ]
 
     private static let currencyMarkers = [
-        "₹", "rs.", "rs", "inr", "$", "usd", "€", "eur", "£", "gbp", "¥", "jpy"
+        "₹", "rs.", "rs", "inr", "$", "usd", "€", "eur", "£", "gbp", "¥", "jpy",
+        // Spoken-form variants — voice dictation transcribes "rupees" not "₹",
+        // and an unstripped "rupees" pollutes merchant extraction. Place
+        // longer forms first so substring replacement doesn't leave fragments
+        // ("rupees" stripped before "rupee" so we don't end up with " s").
+        "rupees", "rupee", "dollars", "dollar", "euros", "euro",
+        "pounds", "pound", "yen"
+    ]
+
+    /// Number-word → integer mappings. Used by `normalizeNumberWords` to
+    /// convert phrases like "one hundred twenty" or "two fifty" into plain
+    /// digits BEFORE the amount regex runs. Covers the common voice patterns;
+    /// "one fifty" and "two twenty" are real expressions people use even
+    /// without the word "hundred" (Indian-English usage especially —
+    /// "give me one twenty rupees" = 120).
+    private static let numberWords: [String: Int] = [
+        "zero": 0, "one": 1, "two": 2, "three": 3, "four": 4,
+        "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9,
+        "ten": 10, "eleven": 11, "twelve": 12, "thirteen": 13,
+        "fourteen": 14, "fifteen": 15, "sixteen": 16, "seventeen": 17,
+        "eighteen": 18, "nineteen": 19,
+        "twenty": 20, "thirty": 30, "forty": 40, "fifty": 50,
+        "sixty": 60, "seventy": 70, "eighty": 80, "ninety": 90,
+        "hundred": 100, "thousand": 1000,
+        "lakh": 100_000, "lakhs": 100_000,
+        "crore": 10_000_000, "crores": 10_000_000
     ]
 
     /// Public entry point. Always returns an array — one element for single-
@@ -135,7 +173,15 @@ enum ExpenseParser {
             remaining = remaining.replacingOccurrences(of: marker, with: " ")
         }
 
-        // 1b. Collapse Indian/comma-grouped numbers ("1,000", "1,25,000")
+        // 1b. Convert spoken number words to digits.
+        // "one hundred twenty" → "120", "two fifty" → "250", "five lakh" →
+        // "500000". Apple's dictation usually produces digits, but it can
+        // emit literal words when speech is fragmented, contains pauses,
+        // or for non-American English varieties. This bridges that gap so
+        // downstream amount extraction sees plain numbers regardless.
+        remaining = normalizeNumberWords(in: remaining)
+
+        // 1c. Collapse Indian/comma-grouped numbers ("1,000", "1,25,000")
         // into plain digits so the amount regex captures the full value.
         // Apple's en-IN dictation routinely produces comma-grouped output
         // — without this we'd get "1" instead of "1000".
@@ -148,6 +194,25 @@ enum ExpenseParser {
         // (Indian lakh grouping) where the first pass leaves "1,25000".
         remaining = remaining.replacingOccurrences(
             of: #"(\d),(\d)"#,
+            with: "$1$2",
+            options: .regularExpression
+        )
+
+        // 1d. Collapse split digits from voice dictation.
+        // iOS sometimes transcribes "120" as "1 20" — particularly when
+        // the speaker pauses mid-number. Without recovery, the amount
+        // regex grabs the first digit run ("1") and the expense saves
+        // with amount=1, the rest stuck in the merchant text.
+        //
+        // Pattern: a 1-3-digit group followed by a 2-3-digit group with
+        // only whitespace between them. We collapse only when:
+        //   - The first group is 1-3 digits (so we don't accidentally
+        //     merge two genuine numbers like "100 200" into "100200")
+        //   - The second group is 2-3 digits (skips "1 5" which is
+        //     usually two separate quantities, not a number)
+        //   - The result starts with 1-9 (no leading zero artifacts)
+        remaining = remaining.replacingOccurrences(
+            of: #"(?<![\d])([1-9]\d{0,2})\s+(\d{2,3})\b"#,
             with: "$1$2",
             options: .regularExpression
         )
@@ -217,27 +282,113 @@ enum ExpenseParser {
             if matched { break }
         }
 
-        // 5. Clean and tokenize remaining text for merchant extraction.
-        let tokens = remaining
-            .replacingOccurrences(of: #"[^a-zA-Z0-9 ]"#,
-                                   with: " ",
-                                   options: .regularExpression)
-            .components(separatedBy: .whitespaces)
-            .filter { !$0.isEmpty && !fillerWords.contains($0) }
+        // 5. Merchant extraction. Two strategies in priority order:
+        //
+        //   a) **Place-marker strategy.** English uses prepositions to
+        //      separate items from places: "on X" / "for X" marks an item;
+        //      "at Y" / "from Y" marks a merchant. If the input contains
+        //      "at <words>" or "from <words>", treat those words as the
+        //      merchant (stopping at the next item-marker preposition or
+        //      end of input). The leftover words become the item context,
+        //      which feeds category detection and gets preserved as a note.
+        //
+        //      Example: "spent 100 on waffle at waffle hub"
+        //        → merchant = "Waffle Hub", note = "Waffle"
+        //      Without this: "on waffle at waffle hub" would tokenize into
+        //      "Waffle Waffle Hub" — clearly wrong.
+        //
+        //   b) **Fallback: residual tokens.** When no place marker is
+        //      present, treat all non-filler tokens as the merchant
+        //      (original behavior). "swiggy 250" → "Swiggy", "samosa 30"
+        //      → "Samosa", etc.
+        let placeMarkers: Set<String> = ["at", "from"]
+        let itemMarkers: Set<String> = ["on", "for", "using", "via", "with", "to"]
 
-        if !tokens.isEmpty {
-            result.merchant = tokens.joined(separator: " ").capitalized
+        var explicitMerchant: String? = nil
+        var itemContext: String = ""
+
+        let words = remaining
+            .components(separatedBy: .whitespaces)
+            .filter { !$0.isEmpty }
+
+        if let markerIdx = words.firstIndex(where: {
+            placeMarkers.contains($0.lowercased())
+        }) {
+            // Collect place words after the marker, stopping at the next
+            // item-marker preposition (handles "at the cafe on weekends"
+            // → place = "the cafe", not "the cafe on weekends").
+            var placeWords: [String] = []
+            var cursor = markerIdx + 1
+            while cursor < words.count {
+                let w = words[cursor].lowercased()
+                if itemMarkers.contains(w) { break }
+                placeWords.append(words[cursor])
+                cursor += 1
+            }
+
+            if !placeWords.isEmpty {
+                // Strip leading fillers from the place phrase ("the cafe"
+                // becomes "Cafe"; "the corner stall" becomes "Corner Stall").
+                let filteredPlace = placeWords.filter {
+                    !fillerWords.contains($0.lowercased())
+                }
+                if !filteredPlace.isEmpty {
+                    explicitMerchant = filteredPlace
+                        .joined(separator: " ")
+                        .capitalized
+                }
+
+                // Item context = words BEFORE the marker, fillers removed.
+                // E.g. "spent 100 on waffle at waffle hub" → "waffle".
+                let beforeMarker = Array(words[..<markerIdx])
+                itemContext = beforeMarker
+                    .filter { !fillerWords.contains($0.lowercased()) }
+                    .joined(separator: " ")
+            }
         }
 
-        // 6. If category wasn't found by name, try matching the merchant
-        // against MerchantRules ("swiggy" → Food).
-        if result.category == nil, let merchantLower = result.merchant?.lowercased() {
-            let userRules = merchantRules.filter { $0.isUserDefined }
-            let defaultRules = merchantRules.filter { !$0.isUserDefined }
-            for rule in userRules + defaultRules {
-                if merchantLower.contains(rule.pattern) {
-                    result.category = rule.category
-                    break
+        if let explicit = explicitMerchant {
+            result.merchant = explicit
+            // Preserve item context as the expense note — captures the
+            // user's full intent (what they bought, not just where).
+            if !itemContext.isEmpty {
+                result.note = itemContext.capitalized
+            }
+        } else {
+            // Fallback path — no place marker found. Clean the residual
+            // text and use all non-filler tokens as the merchant.
+            let tokens = remaining
+                .replacingOccurrences(of: #"[^a-zA-Z0-9 ]"#,
+                                       with: " ",
+                                       options: .regularExpression)
+                .components(separatedBy: .whitespaces)
+                .filter { !$0.isEmpty && !fillerWords.contains($0) }
+
+            if !tokens.isEmpty {
+                result.merchant = tokens.joined(separator: " ").capitalized
+            }
+        }
+
+        // 6. If category wasn't found by name, try matching against
+        // merchant + item context combined. Item context is critical
+        // here — for "biryani at corner stall", the merchant "Corner
+        // Stall" doesn't match any food rule, but "biryani" does.
+        // Combining the two before lookup lets the parser catch the
+        // category via the item even when the merchant is novel.
+        if result.category == nil {
+            var searchText = result.merchant?.lowercased() ?? ""
+            if !itemContext.isEmpty {
+                searchText = searchText.isEmpty
+                    ? itemContext.lowercased()
+                    : searchText + " " + itemContext.lowercased()
+            }
+            if !searchText.isEmpty {
+                let userRules = merchantRules.filter { $0.isUserDefined }
+                let defaultRules = merchantRules.filter { !$0.isUserDefined }
+                let allRules = userRules + defaultRules
+                if let match = FuzzyMatcher.matchCategory(for: searchText,
+                                                          in: allRules) {
+                    result.category = match
                 }
             }
         }
@@ -347,5 +498,103 @@ enum ExpenseParser {
 
         if let best { return (best.account, best.tokens) }
         return nil
+    }
+
+    // MARK: - Number-Word Normalization
+
+    /// Convert spoken number-word phrases in the input to plain digits.
+    /// Handles English number names from "zero" through "nine ninety-nine
+    /// crore" by walking the text token-by-token and folding runs of
+    /// number words into a single computed value, then substituting that
+    /// value back as digits.
+    ///
+    /// **Conservative single-word rule:** a single small number word
+    /// ("one", "two", ..., "nine") alone is NOT converted — those are
+    /// often determiners ("one waffle", "two tickets"). They're only
+    /// converted when part of a multi-word phrase ("one hundred", "two
+    /// fifty") where the numeric intent is unambiguous. Tens and above
+    /// ("twenty", "fifty", "hundred") are always converted — those are
+    /// unambiguously numeric in expense context.
+    ///
+    /// **Examples:**
+    /// - "one hundred twenty rupees" → "120 rupees"
+    /// - "two fifty"                  → "250" (Indian English shorthand)
+    /// - "five lakh"                  → "500000"
+    /// - "three thousand five hundred" → "3500"
+    /// - "twenty rupees"              → "20 rupees"
+    /// - "one waffle"                 → "one waffle" (unchanged: ambiguous)
+    /// - "spent one"                  → "spent 1" (only if it's actually
+    ///   meant as a number — see safe fallback below)
+    ///
+    /// **Caveat:** "two and a half" becomes "2 and a half". Fractions
+    /// aren't supported. Acceptable since expense amounts are almost
+    /// always integers in this app.
+    static func normalizeNumberWords(in text: String) -> String {
+        let tokens = text.components(separatedBy: .whitespaces)
+        var output: [String] = []
+
+        // Tokens we're collecting in the current run. Holding them until
+        // we know whether the run has more than one number word (commit)
+        // or just a lone small number (revert as ambiguous).
+        var runRawTokens: [String] = []
+        var accumulator = 0          // running sub-total (e.g. "twenty five" → 25)
+        var grandTotal = 0           // result of completed multiplier phrases
+        var numberWordCount = 0      // how many number tokens in this run
+        var hasUnambiguousNumber = false  // saw a ten-or-above / multiplier
+
+        func isSmallSingleWord(_ value: Int) -> Bool {
+            value >= 1 && value <= 9
+        }
+
+        // Flush the current run. If it has 2+ number words OR contains an
+        // unambiguous number (≥10 or a multiplier), emit the computed
+        // digit. Otherwise revert to the raw tokens to preserve user
+        // intent on ambiguous cases like "one waffle".
+        func flush() {
+            if numberWordCount >= 2 || hasUnambiguousNumber {
+                let total = grandTotal + accumulator
+                output.append(String(total))
+            } else {
+                output.append(contentsOf: runRawTokens)
+            }
+            runRawTokens = []
+            accumulator = 0
+            grandTotal = 0
+            numberWordCount = 0
+            hasUnambiguousNumber = false
+        }
+
+        for raw in tokens {
+            let token = raw.trimmingCharacters(in: .punctuationCharacters).lowercased()
+            if token.isEmpty {
+                output.append(raw)
+                continue
+            }
+
+            if let value = numberWords[token] {
+                runRawTokens.append(raw)
+                numberWordCount += 1
+                if !isSmallSingleWord(value) {
+                    hasUnambiguousNumber = true
+                }
+                if value == 100 || value == 1000 || value == 100_000 || value == 10_000_000 {
+                    let multiplicand = accumulator == 0 ? 1 : accumulator
+                    grandTotal += multiplicand * value
+                    accumulator = 0
+                } else {
+                    accumulator += value
+                }
+            } else if token == "and" && numberWordCount > 0 {
+                // "two hundred and fifty" — keep "and" in raw tokens
+                // (for revert path) but don't count it.
+                runRawTokens.append(raw)
+            } else {
+                flush()
+                output.append(raw)
+            }
+        }
+        flush()
+
+        return output.joined(separator: " ")
     }
 }
