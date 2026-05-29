@@ -180,6 +180,7 @@ enum ExpenseSource: String, Codable {
     case siri         // Via Siri shortcut
     case widget       // Quick-add from widget
     case recurring    // Auto-created by a RecurringRule
+    case share        // Created via Share Extension (photo shared from another app)
 }
 
 // MARK: - Transfer

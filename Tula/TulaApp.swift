@@ -106,8 +106,54 @@ struct TulaApp: App {
             if newPhase == .active {
                 let context = ModelContext(sharedContainer)
                 WidgetRefresh.refresh(using: context)
+                // Import any expenses shared via the Share Extension
+                SharedExpenseImporter.importPending(into: context)
             }
         }
+    }
+}
+
+// MARK: - Shared Expense Importer
+
+/// Imports pending expenses created by the Share Extension into SwiftData.
+enum SharedExpenseImporter {
+
+    /// Check for pending expenses from the Share Extension and import them.
+    static func importPending(into context: ModelContext) {
+        let manager = PendingExpenseManager()
+        let pending = manager.loadPendingExpenses()
+        guard !pending.isEmpty else { return }
+
+        for item in pending {
+            let expense = Expense(
+                amount: item.amount,
+                date: item.date,
+                merchant: item.merchant,
+                note: item.note,
+                source: .share
+            )
+
+            // Attach receipt image if available
+            if let filename = item.receiptImageFilename,
+               let imageData = manager.loadReceiptImage(filename: filename) {
+                expense.receiptImageData = imageData
+                manager.deleteReceiptImage(filename: filename)
+            }
+
+            // Try to match category by name
+            if let categoryName = item.category {
+                let descriptor = FetchDescriptor<Category>()
+                if let categories = try? context.fetch(descriptor) {
+                    expense.category = categories.first { $0.name.lowercased() == categoryName.lowercased() }
+                }
+            }
+
+            context.insert(expense)
+        }
+
+        try? context.save()
+        manager.clearAll()
+        WidgetRefresh.refresh(using: context)
     }
 }
 
