@@ -130,6 +130,9 @@ enum SharedExpenseImporter {
 
         guard !pending.isEmpty else { return }
 
+        // Fetch categories once for matching
+        let allCategories = (try? context.fetch(FetchDescriptor<Category>())) ?? []
+
         for item in pending {
             print("[SharedExpenseImporter] Importing: \(item.merchant ?? "unknown") — ₹\(item.amount)")
 
@@ -145,15 +148,11 @@ enum SharedExpenseImporter {
             if let filename = item.receiptImageFilename,
                let imageData = manager.loadReceiptImage(filename: filename) {
                 expense.receiptImageData = imageData
-                manager.deleteReceiptImage(filename: filename)
             }
 
-            // Try to match category by name
+            // Match category by name
             if let categoryName = item.category {
-                let descriptor = FetchDescriptor<Category>()
-                if let categories = try? context.fetch(descriptor) {
-                    expense.category = categories.first { $0.name.lowercased() == categoryName.lowercased() }
-                }
+                expense.category = allCategories.first { $0.name.lowercased() == categoryName.lowercased() }
             }
 
             context.insert(expense)
@@ -162,11 +161,12 @@ enum SharedExpenseImporter {
         do {
             try context.save()
             print("[SharedExpenseImporter] ✓ Saved \(pending.count) expense(s) to SwiftData")
+            // Only clear AFTER successful save
+            manager.clearAll()
+            WidgetRefresh.refresh(using: context)
         } catch {
-            print("[SharedExpenseImporter] ✗ Save failed: \(error)")
+            print("[SharedExpenseImporter] ✗ Save failed: \(error) — keeping pending for retry")
         }
-        manager.clearAll()
-        WidgetRefresh.refresh(using: context)
     }
 }
 
