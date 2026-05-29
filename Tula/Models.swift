@@ -140,6 +140,20 @@ final class Expense {
 
     var source: ExpenseSource = ExpenseSource.manual
 
+    /// Optional receipt photo attached to this expense. JPEG-compressed
+    /// to ~200KB before storage (1600px max dimension, quality 0.7) —
+    /// see `ReceiptStorage.compress(_:)`. Nil for the majority of
+    /// expenses (typed entries don't have receipts).
+    ///
+    /// **`.externalStorage` attribute** tells SwiftData to keep this
+    /// blob outside the main SQLite store. Fetches of Expense don't load
+    /// the image into memory; only when explicitly accessed. This is
+    /// SwiftData's "have your cake and eat it" answer to the "store
+    /// big blobs alongside small models" problem — backups + CloudKit
+    /// sync capture it automatically, but everyday fetches stay fast.
+    @Attribute(.externalStorage)
+    var receiptImageData: Data? = nil
+
     var category: Category?
     var account: Account?
 

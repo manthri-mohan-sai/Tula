@@ -111,6 +111,149 @@ enum SmartExpenseParser {
                     accountNames: accountNames, isVoice: true)
     }
 
+    /// **Receipt parsing pass** — runs Foundation Models on the raw OCR'd
+    /// text from a receipt photo. Different signature from `parseVoice`
+    /// because receipts have richer structure (line items + a transaction
+    /// date) that voice transcripts lack.
+    ///
+    /// **When to use this**: after `ReceiptStorage.parse` has done its
+    /// regex pass. Pass the `rawText` from that result here. FM will
+    /// produce a structured `ReceiptSmartParseResult` that the caller
+    /// can merge with the regex result — preferring FM where it provides
+    /// stronger signal (date, multi-item lists, ambiguous merchants),
+    /// keeping regex where it's confident (clear totals, dishes called
+    /// out individually).
+    ///
+    /// **Failure modes**: nil return covers FM unavailable, FM timeout,
+    /// or empty input. Caller falls back to regex-only result.
+    static func parseReceipt(_ rawText: String,
+                              categoryNames: [String]) async -> ReceiptSmartParseResult? {
+        #if canImport(FoundationModels)
+        guard isAvailable else { return nil }
+        let trimmed = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        guard !categoryNames.isEmpty else { return nil }
+
+        let categoryList = categoryNames.joined(separator: ", ")
+        let instructions = """
+        You parse retail and restaurant receipts that have been read by \
+        OCR. The input is the raw text output — line breaks may not align \
+        with the original layout, characters may be misread, and totals \
+        may appear multiple times. Be skeptical and use cross-checks.
+
+        Extract:
+        - amount: the GRAND TOTAL — the final amount the customer was \
+          billed for. NOT the cash tendered, NOT the change given, NOT \
+          a sum of subtotal + grand total. The grand total is ONE value \
+          on the receipt, not multiple values to add together.
+          Specifically:
+            * If "Grand Total", "Net Amount", "Bill Amount", "Total \
+              Amount", "Amount Payable", or "Payable" appears with a \
+              value, USE THAT EXACT VALUE. Do not look further.
+            * **The same total value often appears multiple times on \
+              one receipt** — once as a subtotal and once as a grand \
+              total. THIS IS THE SAME BILL. If you see "Subtotal 140" \
+              and "Grand Total 140" both present, the amount is 140, \
+              NOT 280. Never sum a subtotal with a grand total.
+            * **Restaurant bills with Price/Total columns**: line items \
+              have a per-unit price AND a line total (price × quantity). \
+              These are NOT bill totals — they're column values for \
+              individual rows. Only the bottommost summary value is \
+              the grand total.
+            * Lines labeled "Cash", "Tendered", "Paid", "Received", \
+              "Change", "Balance Due", "Return" are NOT the grand total \
+              — ignore them when picking amount.
+            * Do NOT sum line items to derive the total. Do NOT sum \
+              subtotal + tax to derive the total. Use the explicit \
+              total line that appears on the receipt.
+            * **Sanity check**: the amount you return should appear \
+              somewhere as a single number on the receipt. If you're \
+              about to return a number that isn't printed verbatim on \
+              the receipt, you're doing arithmetic — STOP and pick the \
+              largest value next to a "Grand Total" or "Total" marker \
+              that IS printed.
+          Return as a number, no currency symbol.
+        - merchant: the business name. Usually at the top of the receipt, \
+          in larger text. NEVER a dish, item, or category — always a \
+          place name (restaurant, store, brand). Title-cased. NEVER \
+          single common English words like "Return", "Command", "Option", \
+          "Shift", "Cash Bill", "Tax Invoice" — those are not merchant \
+          names, those are noise from the photo background or document \
+          type labels.
+        - date: the transaction date if present, in YYYY-MM-DD format. \
+          Receipts often show "Date: 15/03/2025" or "15-Mar-2025" — \
+          normalize all formats to YYYY-MM-DD. Leave nil if not present.
+        - items: a list of purchased items with their prices. Each entry \
+          is {name, price}. The price should be the LINE TOTAL (price × \
+          quantity) when both appear, or just the per-unit price if no \
+          quantity column. EXCLUDE tax lines, subtotals, totals, \
+          discounts, change-due, and payment-method lines. Item names \
+          should be title-cased and human-readable.
+        - category: the single best-fitting category from this exact list: \
+          \(categoryList). Pick based on the merchant type AND the items \
+          purchased. Food places → Food. Pharmacies → Health. Grocery \
+          stores → Groceries. Don't invent categories.
+
+        WORKED EXAMPLE OF AMOUNT EXTRACTION:
+        Given this OCR text:
+            MASALA PURI
+            40.00
+            50.00
+            PAPDI CHAT
+            SAMOSA CHAT
+            50.00
+            40.00
+            50.00
+            50.00
+            140.00
+            140.00
+            Subtotal :
+            Grand Total:
+            Payment: UPI
+        The correct extracted amount is 140. NOT 280. The 140.00 appears \
+        TWICE because the receipt prints subtotal AND grand total — \
+        both equal 140 because there is no tax. The answer is 140, not \
+        the sum. Items: Masala Puri 40, Papdi Chat 50, Samosa Chat 50. \
+        These items sum to 140, confirming 140 is correct.
+
+        OCR ERROR GUIDANCE:
+        - "1" can be misread as "I", "l", or "|" — interpret these as 1 \
+          in numeric contexts.
+        - "0" can be misread as "O" or "D".
+        - "5" can be misread as "S".
+        - A leading "1" may be dropped (140 → 40). When the "Total" line \
+          shows a small number that's roughly half of one of the other \
+          candidates, the OCR likely dropped a digit — prefer the larger \
+          candidate. BUT never go larger than the "Total"/"Payable" \
+          marker if it's clearly present.
+
+        DO NOT:
+        - Confuse "Cash" / "Tendered" / "Change" with the grand total.
+        - Sum subtotal + grand total (or any two totals) to derive an amount.
+        - Sum tax + subtotal to derive a "total" — use the explicit total \
+          line if present.
+        - Return any number that isn't printed verbatim on the receipt as \
+          the amount.
+        - Invent items or merchant names not present in the text.
+        - Return tax lines, subtotals, or total markers as items.
+        - Change the order of items from how they appear on the receipt.
+        - Return a date format other than YYYY-MM-DD.
+        """
+
+        do {
+            let session = LanguageModelSession(model: SystemLanguageModel.default,
+                                                instructions: instructions)
+            let response = try await session.respond(to: trimmed,
+                                                      generating: ReceiptSmartParseResult.self)
+            return response.content
+        } catch {
+            return nil
+        }
+        #else
+        return nil
+        #endif
+    }
+
     /// **Lightweight transcript-cleanup pass** for parallel correction
     /// during dictation pauses. Unlike `parseVoice` (which returns a full
     /// structured ParsedExpense), this just returns the corrected string —
@@ -427,6 +570,45 @@ struct CorrectedTranscript: Codable, Sendable {
     @Guide(description: "The corrected transcript text. Plain prose, no quotes, no commentary. If the input is already correct, return it unchanged.")
     let text: String
 }
+
+/// Receipt-specific structured output. Distinct schema from
+/// `SmartParseResult` because receipts have richer structure:
+///
+///   - `items`: line items as a typed array, not a single string
+///   - `date`: the transaction date stamped on the receipt
+///
+/// Account is absent (receipts don't tell you which card was used —
+/// the user picks that in the form). Item is absent (receipts have
+/// MULTIPLE items, surfaced via the `items` array instead).
+@available(iOS 26.0, *)
+@Generable
+struct ReceiptSmartParseResult: Codable, Sendable {
+    @Guide(description: "Grand total / final amount paid, as a number with no currency symbol. Always the LARGEST total — if line-item subtotals and a grand total both appear, return the grand total. Cross-check by summing items: the sum should approximately equal this value. Watch for OCR errors where a leading '1' has been dropped (140 misread as 40).")
+    let amount: Double
+
+    @Guide(description: "Business name. Usually printed at the top of the receipt. Title-cased. Always a place name (restaurant, store, app, brand) — never a product or dish.")
+    let merchant: String?
+
+    @Guide(description: "Transaction date in YYYY-MM-DD format. Receipts may print dates as 15/03/2025, 15-Mar-2025, March 15 2025, etc — normalize all to YYYY-MM-DD. Nil when no date is present on the receipt.")
+    let date: String?
+
+    @Guide(description: "Best-fitting category name from the categories listed in the instructions. Choose based on merchant type and items.")
+    let category: String?
+
+    @Guide(description: "Line items purchased, in the order they appear on the receipt. EXCLUDE tax lines, subtotals, discounts, change due, and total/grand-total lines. Item names should be title-cased and human-readable.")
+    let items: [ReceiptLineItem]
+}
+
+/// Single line item from a receipt — the thing bought and what it cost.
+@available(iOS 26.0, *)
+@Generable
+struct ReceiptLineItem: Codable, Sendable {
+    @Guide(description: "Item name, title-cased. E.g. 'Masala Dosa', 'Coca Cola 500ml', 'Paracetamol Tablet'.")
+    let name: String
+
+    @Guide(description: "Price for this item as a number with no currency symbol.")
+    let price: Double
+}
 #else
 // Stub so call sites compile on older SDKs where the framework isn't present.
 struct SmartParseResult: Codable, Sendable {
@@ -439,5 +621,18 @@ struct SmartParseResult: Codable, Sendable {
 
 struct CorrectedTranscript: Codable, Sendable {
     let text: String
+}
+
+struct ReceiptSmartParseResult: Codable, Sendable {
+    let amount: Double
+    let merchant: String?
+    let date: String?
+    let category: String?
+    let items: [ReceiptLineItem]
+}
+
+struct ReceiptLineItem: Codable, Sendable {
+    let name: String
+    let price: Double
 }
 #endif

@@ -93,6 +93,17 @@ struct ExpenseRow: View {
                             .foregroundStyle(Color.tulaBrandFallback)
                             .accessibilityLabel("Parsed by Apple Intelligence")
                     }
+                    if expense.receiptImageData != nil {
+                        // Tiny paperclip indicator — signals "this expense
+                        // has a receipt attached" so users can spot which
+                        // entries are backed by photographic evidence vs
+                        // typed memory. Same caption2 weight as the other
+                        // metadata badges; doesn't compete for attention.
+                        Image(systemName: "paperclip")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .accessibilityLabel("Receipt attached")
+                    }
                     if needsReview {
                         Text("Review")
                             .font(.caption2.weight(.semibold))
