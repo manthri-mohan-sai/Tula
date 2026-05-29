@@ -779,9 +779,9 @@ struct AddExpenseView: View {
             let regexResult = await ReceiptStorage.parse(image)
 
             // Pass 2: AI extraction on the raw OCR text — uses FM if
-            // available (iPhone 15 Pro+), otherwise Qwen on-device model
-            // (iPhone 12+), otherwise nil (regex result used alone).
-            // Race-limited to 10s so a stalled model doesn't block UI.
+            // available (iPhone 15 Pro+), otherwise Azure AI (cloud),
+            // otherwise nil (regex result used alone).
+            // FM is fast (~2s), Azure is ~3-5s.
             let smartResult: ReceiptSmartParseResult? = await withTaskGroup(of: ReceiptSmartParseResult?.self) { group in
                 group.addTask {
                     return await ExpenseAIService.shared.extractFromReceipt(
@@ -790,7 +790,7 @@ struct AddExpenseView: View {
                     )
                 }
                 group.addTask {
-                    try? await Task.sleep(for: .seconds(10))
+                    try? await Task.sleep(for: .seconds(15))
                     return nil
                 }
                 let first = await group.next() ?? nil

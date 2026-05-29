@@ -27,6 +27,7 @@ struct SettingsView: View {
     /// Foundation Models actually returned (or an error reason).
     @State private var smartTestResult: String? = nil
     @State private var smartTestInFlight: Bool = false
+    @State private var azureAPIKeyInput: String = ""
 
     @State private var showingAccounts = false
     @State private var showingCategories = false
@@ -243,15 +244,34 @@ struct SettingsView: View {
                 .disabled(true)
             }
 
-            // On-device Qwen model status
+            // Azure AI configuration
             HStack {
-                settingsLabel("On-device model",
-                              icon: "cpu",
-                              color: QwenExtractor.shared.isAvailable ? .green : .secondary)
+                settingsLabel("Azure AI",
+                              icon: "cloud.fill",
+                              color: AzureAIExtractor.shared.isAvailable ? .green : .secondary)
                 Spacer()
-                Text(QwenExtractor.shared.isAvailable ? "Ready" : "Not bundled")
+                Text(AzureAIExtractor.shared.isAvailable ? "Connected" : "No API key")
                     .font(.subheadline)
-                    .foregroundStyle(QwenExtractor.shared.isAvailable ? .green : .secondary)
+                    .foregroundStyle(AzureAIExtractor.shared.isAvailable ? .green : .secondary)
+            }
+
+            // API key entry
+            if !AzureAIExtractor.shared.isAvailable {
+                SecureField("Azure OpenAI API Key", text: $azureAPIKeyInput)
+                    .textContentType(.password)
+                    .onSubmit {
+                        let trimmed = azureAPIKeyInput.trimmingCharacters(in: .whitespacesAndNewlines)
+                        guard !trimmed.isEmpty else { return }
+                        AzureAIExtractor.shared.saveAPIKey(trimmed)
+                        azureAPIKeyInput = ""
+                    }
+            } else {
+                Button(role: .destructive) {
+                    AzureAIExtractor.shared.deleteAPIKey()
+                } label: {
+                    Label("Remove API Key", systemImage: "trash")
+                        .font(.subheadline)
+                }
             }
 
             // Active backend indicator
@@ -325,8 +345,8 @@ struct SettingsView: View {
     private var smartParsingFooter: some View {
         if #available(iOS 26.0, *) {
             if let reason = SmartExpenseParser.unavailableReason {
-                if QwenExtractor.shared.isAvailable {
-                    Text("\(reason)\nQwen on-device model is active as fallback for receipt parsing.")
+                if AzureAIExtractor.shared.isAvailable {
+                    Text("\(reason)\nAzure AI is active as fallback for receipt parsing.")
                 } else {
                     Text(reason)
                 }
@@ -336,10 +356,10 @@ struct SettingsView: View {
                 Text("Tula will use only its built-in rule-based parser. No on-device AI is invoked.")
             }
         } else {
-            if QwenExtractor.shared.isAvailable {
-                Text("Apple Intelligence requires iOS 26. Qwen on-device model is active for receipt parsing on this device.")
+            if AzureAIExtractor.shared.isAvailable {
+                Text("Apple Intelligence requires iOS 26. Azure AI is active for receipt parsing on this device.")
             } else {
-                Text("Smart parsing requires iOS 26 with Apple Intelligence enabled, or the bundled Qwen model.")
+                Text("Smart parsing requires iOS 26 with Apple Intelligence, or an Azure AI API key configured above.")
             }
         }
     }
