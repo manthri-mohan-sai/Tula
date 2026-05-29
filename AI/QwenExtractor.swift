@@ -33,9 +33,9 @@ final class QwenExtractor: @unchecked Sendable {
 
     private var model: OpaquePointer? // llama_model *
     private var ctx: OpaquePointer?   // llama_context *
-    private let queue = DispatchQueue(label: "com.tula.qwen", qos: .userInitiated)
     private var unloadWorkItem: DispatchWorkItem?
     private var isLoaded: Bool { model != nil && ctx != nil }
+    private let lock = NSLock()
 
     // MARK: - Availability
 
@@ -105,9 +105,10 @@ final class QwenExtractor: @unchecked Sendable {
     private func scheduleUnload() {
         unloadWorkItem?.cancel()
         let workItem = DispatchWorkItem { [weak self] in
-            self?.queue.async {
-                self?.unloadModel()
-            }
+            guard let self else { return }
+            self.lock.lock()
+            self.unloadModel()
+            self.lock.unlock()
         }
         unloadWorkItem = workItem
         DispatchQueue.global().asyncAfter(
@@ -150,11 +151,11 @@ final class QwenExtractor: @unchecked Sendable {
 
     private func runInference(prompt: String) async -> String? {
         return await withCheckedContinuation { continuation in
-            queue.async { [weak self] in
-                guard let self else {
-                    continuation.resume(returning: nil)
-                    return
-                }
+            // Use Thread with 8MB stack (dispatch queues only have 512KB,
+            // which can overflow during model load/inference)
+            let thread = Thread {
+                self.lock.lock()
+                defer { self.lock.unlock() }
 
                 // Cancel any pending unload since we're about to use the model
                 self.unloadWorkItem?.cancel()
@@ -172,63 +173,64 @@ final class QwenExtractor: @unchecked Sendable {
                     return
                 }
 
-                // Tokenize prompt
-                let promptBytes = Array(prompt.utf8).map { Int8(bitPattern: $0) }
-                let maxTokenCount = Int32(prompt.count + 256)
-                var tokens = [llama_token](repeating: 0, count: Int(maxTokenCount))
-                let tokenCount = llama_tokenize(
-                    model,
-                    promptBytes.map { $0 },
-                    Int32(promptBytes.count),
-                    &tokens,
-                    maxTokenCount,
-                    true,  // add_special (BOS)
-                    false  // parse_special
-                )
+                let vocab = llama_model_get_vocab(model)
 
-                guard tokenCount > 0 else {
+                // Tokenize prompt using withUnsafeBufferPointer for safe memory
+                let promptUTF8 = Array(prompt.utf8CString) // includes null terminator
+                let maxTokens = Int32(promptUTF8.count + 256)
+                var tokens = [llama_token](repeating: 0, count: Int(maxTokens))
+
+                let nTokens = promptUTF8.withUnsafeBufferPointer { buf in
+                    tokens.withUnsafeMutableBufferPointer { tokBuf in
+                        llama_tokenize(
+                            vocab,
+                            buf.baseAddress,
+                            Int32(promptUTF8.count - 1), // exclude null terminator
+                            tokBuf.baseAddress,
+                            maxTokens,
+                            true,  // add_special (BOS)
+                            false  // parse_special
+                        )
+                    }
+                }
+
+                guard nTokens > 0 else {
                     self.scheduleUnload()
                     continuation.resume(returning: nil)
                     return
                 }
 
-                let promptTokens = Array(tokens.prefix(Int(tokenCount)))
+                let promptTokens = Array(tokens.prefix(Int(nTokens)))
 
-                // Clear KV cache for fresh generation
+                // Clear KV cache
                 llama_kv_cache_clear(ctx)
 
-                // Create batch and process prompt
-                var batch = llama_batch_init(Int32(promptTokens.count), 0, 1)
-                for (i, token) in promptTokens.enumerated() {
-                    batch.n_tokens = Int32(i + 1)
-                    batch.token[i] = token
-                    batch.pos[i] = Int32(i)
-                    batch.n_seq_id[i] = 1
-                    batch.seq_id[i]![0] = 0
-                    batch.logits[i] = (i == promptTokens.count - 1) ? 1 : 0
-                }
+                // Process prompt tokens in a single batch
+                let batch = llama_batch_get_one(
+                    UnsafeMutablePointer(mutating: promptTokens),
+                    Int32(promptTokens.count)
+                )
 
                 guard llama_decode(ctx, batch) == 0 else {
-                    llama_batch_free(batch)
                     self.scheduleUnload()
                     continuation.resume(returning: nil)
                     return
                 }
 
-                // Generate tokens
+                // Generate tokens one at a time
                 var outputTokens: [llama_token] = []
-                let vocabModel = llama_model_get_vocab(model)
-                let eosToken = llama_vocab_eos(vocabModel)
+                let eosToken = llama_vocab_eos(vocab)
                 var curPos = Int32(promptTokens.count)
 
                 for _ in 0..<Self.maxTokens {
-                    let logits = llama_get_logits_ith(ctx, batch.n_tokens - 1)!
-                    let vocabSize = llama_vocab_n_tokens(vocabModel)
+                    let logits = llama_get_logits_ith(ctx, -1)
+                    guard let logitsPtr = logits else { break }
 
-                    // Simple temperature + top-p sampling
+                    let vocabSize = Int(llama_vocab_n_tokens(vocab))
+
                     let nextToken = Self.sampleToken(
-                        logits: logits,
-                        vocabSize: Int(vocabSize),
+                        logits: logitsPtr,
+                        vocabSize: vocabSize,
                         temperature: Self.temperature,
                         topP: Self.topP
                     )
@@ -236,33 +238,30 @@ final class QwenExtractor: @unchecked Sendable {
                     if nextToken == eosToken { break }
                     outputTokens.append(nextToken)
 
-                    // Prepare next batch with single token
-                    batch.n_tokens = 1
-                    batch.token[0] = nextToken
-                    batch.pos[0] = curPos
-                    batch.n_seq_id[0] = 1
-                    batch.seq_id[0]![0] = 0
-                    batch.logits[0] = 1
+                    // Decode next token
+                    var nextTokenArr = [nextToken]
+                    let nextBatch = llama_batch_get_one(&nextTokenArr, 1)
+                    guard llama_decode(ctx, nextBatch) == 0 else { break }
                     curPos += 1
-
-                    guard llama_decode(ctx, batch) == 0 else { break }
                 }
-
-                llama_batch_free(batch)
 
                 // Detokenize output
                 var output = ""
+                var buf = [CChar](repeating: 0, count: 512)
                 for token in outputTokens {
-                    var buf = [CChar](repeating: 0, count: 256)
-                    let len = llama_token_to_piece(vocabModel, token, &buf, 256, 0, false)
+                    let len = llama_token_to_piece(vocab, token, &buf, Int32(buf.count), 0, false)
                     if len > 0 {
-                        output += String(cString: buf.prefix(Int(len)) + [0])
+                        buf[Int(len)] = 0 // null terminate
+                        output += String(cString: &buf)
                     }
                 }
 
                 self.scheduleUnload()
-                continuation.resume(returning: output)
+                continuation.resume(returning: output.isEmpty ? nil : output)
             }
+            thread.stackSize = 8 * 1024 * 1024 // 8MB stack
+            thread.qualityOfService = .userInitiated
+            thread.start()
         }
     }
 
@@ -424,7 +423,7 @@ final class QwenExtractor: @unchecked Sendable {
         // Try direct parse first
         if trimmed.hasPrefix("{") {
             if let end = findClosingBrace(in: trimmed) {
-                return String(trimmed.prefix(end + 1))
+                return String(trimmed[...end])
             }
         }
 
