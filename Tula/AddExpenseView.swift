@@ -778,20 +778,19 @@ struct AddExpenseView: View {
             // for the common case of clean printed receipts.
             let regexResult = await ReceiptStorage.parse(image)
 
-            // Pass 2: smart parser on the raw OCR text — only runs if
-            // Foundation Models is available. Adds: better date parsing,
-            // better merchant disambiguation, cleaner item list.
-            // Race-limited to 6s so a stalled FM call doesn't block UI.
+            // Pass 2: AI extraction on the raw OCR text — uses FM if
+            // available (iPhone 15 Pro+), otherwise Qwen on-device model
+            // (iPhone 12+), otherwise nil (regex result used alone).
+            // Race-limited to 10s so a stalled model doesn't block UI.
             let smartResult: ReceiptSmartParseResult? = await withTaskGroup(of: ReceiptSmartParseResult?.self) { group in
                 group.addTask {
-                    guard #available(iOS 26.0, *), SmartExpenseParser.isAvailable else { return nil }
-                    return await SmartExpenseParser.parseReceipt(
-                        regexResult.rawText,
+                    return await ExpenseAIService.shared.extractFromReceipt(
+                        rawText: regexResult.rawText,
                         categoryNames: categoryNames
                     )
                 }
                 group.addTask {
-                    try? await Task.sleep(for: .seconds(6))
+                    try? await Task.sleep(for: .seconds(10))
                     return nil
                 }
                 let first = await group.next() ?? nil

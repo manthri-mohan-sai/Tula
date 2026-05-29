@@ -242,6 +242,28 @@ struct SettingsView: View {
                 }
                 .disabled(true)
             }
+
+            // On-device Qwen model status
+            HStack {
+                settingsLabel("On-device model",
+                              icon: "cpu",
+                              color: QwenExtractor.shared.isAvailable ? .green : .secondary)
+                Spacer()
+                Text(QwenExtractor.shared.isAvailable ? "Ready" : "Not bundled")
+                    .font(.subheadline)
+                    .foregroundStyle(QwenExtractor.shared.isAvailable ? .green : .secondary)
+            }
+
+            // Active backend indicator
+            HStack {
+                settingsLabel("Active backend",
+                              icon: "bolt.fill",
+                              color: .orange)
+                Spacer()
+                Text(ExpenseAIService.shared.extractionBackendStatus)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
         } header: {
             Text("Smart Parsing")
         } footer: {
@@ -303,14 +325,22 @@ struct SettingsView: View {
     private var smartParsingFooter: some View {
         if #available(iOS 26.0, *) {
             if let reason = SmartExpenseParser.unavailableReason {
-                Text(reason)
+                if QwenExtractor.shared.isAvailable {
+                    Text("\(reason)\nQwen on-device model is active as fallback for receipt parsing.")
+                } else {
+                    Text(reason)
+                }
             } else if smartParsingEnabled {
                 Text("When the built-in parser can't categorize an entry, Tula asks on-device Apple Intelligence to help. Inputs never leave your device. Adds ~200-500ms for complex entries only.")
             } else {
                 Text("Tula will use only its built-in rule-based parser. No on-device AI is invoked.")
             }
         } else {
-            Text("Smart parsing requires iOS 26 with Apple Intelligence enabled.")
+            if QwenExtractor.shared.isAvailable {
+                Text("Apple Intelligence requires iOS 26. Qwen on-device model is active for receipt parsing on this device.")
+            } else {
+                Text("Smart parsing requires iOS 26 with Apple Intelligence enabled, or the bundled Qwen model.")
+            }
         }
     }
 
