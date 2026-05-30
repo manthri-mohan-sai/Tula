@@ -11,6 +11,7 @@
 //
 
 import Foundation
+import UIKit
 
 enum CloudAIParser {
 
@@ -180,6 +181,13 @@ enum CloudAIParser {
         let cfg = config ?? CloudAIConfig.load()
         guard !cfg.apiKey.isEmpty else { return nil }
 
+        // Resize image to max 1024px on longest side to keep payload small.
+        // Receipts are mostly text — 1024px is plenty for readability.
+        let resizedData = Self.resizeImageData(imageData, maxDimension: 1024, quality: 0.7)
+        guard let finalImageData = resizedData ?? imageData as Data? else { return nil }
+
+        print("🖼️ [CloudAI] Original: \(imageData.count / 1024)KB → Resized: \(finalImageData.count / 1024)KB")
+
         let categoryList = categories.map { "- \($0.name)" }.joined(separator: "\n")
 
         let systemPrompt = """
@@ -203,8 +211,8 @@ enum CloudAIParser {
         RESPOND WITH ONLY THE JSON OBJECT. NOTHING ELSE.
         """
 
-        let base64Image = imageData.base64EncodedString()
-        let mimeType = imageData.detectMimeType()
+        let base64Image = finalImageData.base64EncodedString()
+        let mimeType = finalImageData.detectMimeType()
 
         guard let json = await callImageChatCompletions(
             config: cfg,
@@ -326,9 +334,12 @@ enum CloudAIParser {
         imageBase64: String,
         mimeType: String
     ) async -> [String: Any]? {
-        guard let url = URL(string: config.endpoint) else { return nil }
+        guard let url = URL(string: config.endpoint) else {
+            print("🖼️ [CloudAI] Invalid endpoint URL: \(config.endpoint)")
+            return nil
+        }
 
-        print("🖼️ [CloudAI] Sending image (\(mimeType), \(imageBase64.count / 1024)KB base64)")
+        print("🖼️ [CloudAI] Sending image (\(mimeType), \(imageBase64.count / 1024)KB base64) to \(config.model)")
 
         let userContent: [[String: Any]] = [
             ["type": "text", "text": "Parse this receipt image."],
@@ -345,12 +356,17 @@ enum CloudAIParser {
             "max_tokens": 1000
         ]
 
-        guard let jsonData = try? JSONSerialization.data(withJSONObject: body) else { return nil }
+        guard let jsonData = try? JSONSerialization.data(withJSONObject: body) else {
+            print("🖼️ [CloudAI] Failed to serialize request body")
+            return nil
+        }
+
+        print("🖼️ [CloudAI] Request body size: \(jsonData.count / 1024)KB")
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.timeoutInterval = 60
+        request.timeoutInterval = 90
 
         if config.endpoint.contains("openai.azure.com") {
             request.setValue(config.apiKey, forHTTPHeaderField: "api-key")
@@ -360,43 +376,81 @@ enum CloudAIParser {
 
         request.httpBody = jsonData
 
-        guard let (data, response) = try? await URLSession.shared.data(for: request),
-              let httpResponse = response as? HTTPURLResponse else {
-            print("🖼️ [CloudAI] Image request failed — no response")
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse else {
+                print("🖼️ [CloudAI] Response is not HTTP")
+                return nil
+            }
+
+            guard httpResponse.statusCode == 200 else {
+                let errorBody = String(data: data, encoding: .utf8) ?? "(no body)"
+                print("🖼️ [CloudAI] HTTP \(httpResponse.statusCode): \(errorBody)")
+                return nil
+            }
+
+            guard let responseJSON = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let choices = responseJSON["choices"] as? [[String: Any]],
+                  let firstChoice = choices.first,
+                  let message = firstChoice["message"] as? [String: Any],
+                  let content = message["content"] as? String else {
+                print("🖼️ [CloudAI] Failed to parse image response structure")
+                if let raw = String(data: data, encoding: .utf8) {
+                    print("🖼️ [CloudAI] Raw response body: \(raw.prefix(2000))")
+                }
+                return nil
+            }
+
+            print("🖼️ [CloudAI] Raw image response:\n\(content)")
+
+            let cleaned = content
+                .replacingOccurrences(of: "```json", with: "")
+                .replacingOccurrences(of: "```", with: "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+
+            guard let contentData = cleaned.data(using: .utf8),
+                  let parsed = try? JSONSerialization.jsonObject(with: contentData) as? [String: Any] else {
+                print("🖼️ [CloudAI] Failed to parse JSON from image response: \(cleaned)")
+                return nil
+            }
+
+            print("🖼️ [CloudAI] Parsed image JSON: \(parsed)")
+            return parsed
+
+        } catch let error as URLError {
+            print("🖼️ [CloudAI] URLError: \(error.code.rawValue) — \(error.localizedDescription)")
+            return nil
+        } catch {
+            print("🖼️ [CloudAI] Error: \(error.localizedDescription)")
             return nil
         }
+    }
 
-        guard httpResponse.statusCode == 200 else {
-            let errorBody = String(data: data, encoding: .utf8) ?? "(no body)"
-            print("🖼️ [CloudAI] HTTP \(httpResponse.statusCode): \(errorBody)")
-            return nil
+    // MARK: - Image Resizing
+
+    /// Resize image data to fit within maxDimension while maintaining aspect ratio.
+    /// Returns nil if resizing fails (caller should use original).
+    private static func resizeImageData(_ data: Data, maxDimension: CGFloat, quality: CGFloat) -> Data? {
+        guard let image = UIImage(data: data) else { return nil }
+
+        let size = image.size
+        let longestSide = max(size.width, size.height)
+
+        // Already small enough
+        if longestSide <= maxDimension {
+            // Still re-compress at the target quality to reduce payload
+            return image.jpegData(compressionQuality: quality)
         }
 
-        guard let responseJSON = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let choices = responseJSON["choices"] as? [[String: Any]],
-              let firstChoice = choices.first,
-              let message = firstChoice["message"] as? [String: Any],
-              let content = message["content"] as? String else {
-            print("🖼️ [CloudAI] Failed to parse image response structure")
-            return nil
+        let scale = maxDimension / longestSide
+        let newSize = CGSize(width: size.width * scale, height: size.height * scale)
+
+        let renderer = UIGraphicsImageRenderer(size: newSize)
+        let resized = renderer.image { _ in
+            image.draw(in: CGRect(origin: .zero, size: newSize))
         }
 
-        print("🖼️ [CloudAI] Raw image response:\n\(content)")
-
-        let cleaned = content
-            .replacingOccurrences(of: "```json", with: "")
-            .replacingOccurrences(of: "```", with: "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-
-        guard let contentData = cleaned.data(using: .utf8),
-              let parsed = try? JSONSerialization.jsonObject(with: contentData) as? [String: Any] else {
-            print("🖼️ [CloudAI] Failed to parse JSON from image response: \(cleaned)")
-            return nil
-        }
-
-        print("🖼️ [CloudAI] Parsed image JSON: \(parsed)")
-
-        return parsed
+        return resized.jpegData(compressionQuality: quality)
     }
 }
 
