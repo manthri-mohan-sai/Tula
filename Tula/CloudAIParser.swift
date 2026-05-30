@@ -405,7 +405,7 @@ enum CloudAIParser {
 extension Data {
     /// Detect image MIME type from file header bytes.
     func detectMimeType() -> String {
-        var header = [UInt8](repeating: 0, count: min(count, 12))
+        var header = [UInt8](repeating: 0, count: Swift.min(count, 12))
         copyBytes(to: &header, count: header.count)
 
         if header.starts(with: [0xFF, 0xD8, 0xFF]) {
