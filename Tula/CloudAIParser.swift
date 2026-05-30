@@ -32,45 +32,57 @@ enum CloudAIParser {
         let systemPrompt: String
         if isVoice {
             systemPrompt = """
+            You are a JSON-only expense parser. You MUST respond with ONLY a single valid JSON object. \
+            No explanations, no markdown, no code fences, no extra text before or after the JSON.
+
+            Schema: {"amount":number,"merchant":string|null,"item":string|null,"category":string|null,"account":string|null}
+
             You parse expense entries from voice transcripts spoken by Indian users. \
-            The transcript may contain speech-recognition errors. Extract expense data \
-            and return ONLY valid JSON with these fields:
-            {"amount":number,"merchant":"string or null","item":"string or null","category":"string or null","account":"string or null"}
+            The transcript may contain speech-recognition errors.
 
             AMOUNT RULES for Indian English:
             - "two fifty" = 250, "three fifty" = 350, "four eighty" = 480
             - "one twenty" = 120, "five fifteen" = 515
             - Split digits: "1 20" = 120, "3 50" = 350
 
-            Categories (pick ONE from this list):
+            Categories (pick ONE exactly as written):
             \(categoryList)
 
             Accounts (pick from this list or null):
             \(accountList)
 
             Rules:
-            - Amount as integer in rupees. If unclear, return 0.
-            - Merchant = the place/vendor/app. Never a dish or product.
-            - Item = what was bought (dishes, products, services). Nil if not mentioned separately.
-            - Category must match one from the list exactly.
+            - amount: integer in rupees. If unclear, return 0.
+            - merchant: the place/vendor/app. Never a dish or product.
+            - item: what was bought (dishes, products, services). null if not mentioned.
+            - category: must match one from the list exactly.
+            - account: must match one from the list exactly, or null.
+
+            RESPOND WITH ONLY THE JSON OBJECT. NOTHING ELSE.
             """
         } else {
             systemPrompt = """
-            You parse expense log entries from Indian users. Inputs may mix Hindi/English. \
-            Extract expense data and return ONLY valid JSON:
-            {"amount":number,"merchant":"string or null","item":"string or null","category":"string or null","account":"string or null"}
+            You are a JSON-only expense parser. You MUST respond with ONLY a single valid JSON object. \
+            No explanations, no markdown, no code fences, no extra text before or after the JSON.
 
-            Categories (pick ONE):
+            Schema: {"amount":number,"merchant":string|null,"item":string|null,"category":string|null,"account":string|null}
+
+            You parse expense log entries from Indian users. Inputs may mix Hindi/English.
+
+            Categories (pick ONE exactly as written):
             \(categoryList)
 
             Accounts (pick from this list or null):
             \(accountList)
 
             Rules:
-            - Amount as integer in rupees. If unclear, return 0.
-            - Merchant = where the money went (place, vendor, app name). Short.
-            - Item = what was bought, if mentioned separately from merchant.
-            - Category must match one from the list exactly.
+            - amount: integer in rupees. If unclear, return 0.
+            - merchant: where the money went (place, vendor, app name). Keep short.
+            - item: what was bought, if mentioned separately from merchant. null otherwise.
+            - category: must match one from the list exactly.
+            - account: must match one from the list exactly, or null.
+
+            RESPOND WITH ONLY THE JSON OBJECT. NOTHING ELSE.
             """
         }
 
@@ -108,18 +120,24 @@ enum CloudAIParser {
         let categoryList = categories.map { "- \($0.name)" }.joined(separator: "\n")
 
         let systemPrompt = """
-        You extract structured expense data from receipt OCR text. Return ONLY valid JSON:
-        {"amount":number,"merchant":"string or null","date":"YYYY-MM-DD or null","category":"string or null","items":[{"name":"string","price":number}]}
+        You are a JSON-only receipt parser. You MUST respond with ONLY a single valid JSON object. \
+        No explanations, no markdown, no code fences, no extra text before or after the JSON.
 
-        Categories (pick ONE):
+        Schema: {"amount":number,"merchant":string|null,"date":"YYYY-MM-DD"|null,"category":string|null,"items":[{"name":string,"price":number}]}
+
+        You extract structured expense data from receipt OCR text.
+
+        Categories (pick ONE exactly as written):
         \(categoryList)
 
         Rules:
-        - amount = grand total / final amount paid (the LARGEST total on the receipt)
-        - merchant = business name, usually at the top of the receipt
-        - date = transaction date in YYYY-MM-DD format, null if not found
-        - category = best match from the list
-        - items = line items purchased (exclude tax, subtotals, discounts, total lines)
+        - amount: grand total / final amount paid (the LARGEST total on the receipt). Integer in rupees.
+        - merchant: business name, usually at the top of the receipt.
+        - date: transaction date in YYYY-MM-DD format, null if not found.
+        - category: must match one from the list exactly.
+        - items: line items purchased (exclude tax, subtotals, discounts, total lines).
+
+        RESPOND WITH ONLY THE JSON OBJECT. NOTHING ELSE.
         """
 
         guard let json = await callChatCompletions(
@@ -162,6 +180,9 @@ enum CloudAIParser {
     ) async -> [String: Any]? {
         guard let url = URL(string: config.endpoint) else { return nil }
 
+        // Log the input text being sent
+        print("☁️ [CloudAI] Input text:\n\(userMessage)")
+
         let body: [String: Any] = [
             "model": config.model,
             "messages": [
@@ -190,8 +211,14 @@ enum CloudAIParser {
         request.httpBody = jsonData
 
         guard let (data, response) = try? await URLSession.shared.data(for: request),
-              let httpResponse = response as? HTTPURLResponse,
-              httpResponse.statusCode == 200 else {
+              let httpResponse = response as? HTTPURLResponse else {
+            print("☁️ [CloudAI] Request failed — no response")
+            return nil
+        }
+
+        guard httpResponse.statusCode == 200 else {
+            let errorBody = String(data: data, encoding: .utf8) ?? "(no body)"
+            print("☁️ [CloudAI] HTTP \(httpResponse.statusCode): \(errorBody)")
             return nil
         }
 
@@ -200,8 +227,12 @@ enum CloudAIParser {
               let firstChoice = choices.first,
               let message = firstChoice["message"] as? [String: Any],
               let content = message["content"] as? String else {
+            print("☁️ [CloudAI] Failed to parse response structure")
             return nil
         }
+
+        // Log raw model response
+        print("☁️ [CloudAI] Raw response:\n\(content)")
 
         // Parse the content string as JSON
         let cleaned = content
@@ -211,8 +242,11 @@ enum CloudAIParser {
 
         guard let contentData = cleaned.data(using: .utf8),
               let parsed = try? JSONSerialization.jsonObject(with: contentData) as? [String: Any] else {
+            print("☁️ [CloudAI] Failed to parse JSON from content: \(cleaned)")
             return nil
         }
+
+        print("☁️ [CloudAI] Parsed JSON: \(parsed)")
 
         return parsed
     }
