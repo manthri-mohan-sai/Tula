@@ -186,7 +186,10 @@ final class ShareSession: ObservableObject {
                     )
                 }
                 group.addTask {
-                    try? await Task.sleep(for: .seconds(4))
+                    let timeout: Duration = (ReceiptParsingModeStorage.selected == .directImage && AIProviderStorage.selected != .appleFM)
+                        ? .seconds(30)
+                        : .seconds(4)
+                    try? await Task.sleep(for: timeout)
                     return nil
                 }
                 let first = await group.next() ?? nil

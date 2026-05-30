@@ -871,7 +871,11 @@ struct AddExpenseView: View {
                     )
                 }
                 group.addTask {
-                    try? await Task.sleep(for: .seconds(6))
+                    // Vision/image requests need more time than text-only OCR parsing
+                    let timeout: Duration = (ReceiptParsingModeStorage.selected == .directImage && AIProviderStorage.selected != .appleFM)
+                        ? .seconds(30)
+                        : .seconds(6)
+                    try? await Task.sleep(for: timeout)
                     return nil
                 }
                 let first = await group.next() ?? nil
