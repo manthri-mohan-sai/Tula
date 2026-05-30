@@ -1,4 +1,4 @@
-//
+﻿//
 //  AIProviderConfig.swift
 //  Tula
 //
@@ -117,7 +117,7 @@ struct CloudAIConfig: Codable {
 
     /// Load from UserDefaults (shared App Group container).
     static func load() -> CloudAIConfig {
-        guard let defaults = UserDefaults(suiteName: "group.com.app.Tula"),
+        guard let defaults = UserDefaults(suiteName: "group.com.app.alpha.Tula"),
               let data = defaults.data(forKey: storageKey),
               let config = try? JSONDecoder().decode(CloudAIConfig.self, from: data) else {
             return .default
@@ -127,7 +127,7 @@ struct CloudAIConfig: Codable {
 
     /// Save to UserDefaults (shared App Group container).
     func save() {
-        guard let defaults = UserDefaults(suiteName: "group.com.app.Tula"),
+        guard let defaults = UserDefaults(suiteName: "group.com.app.alpha.Tula"),
               let data = try? JSONEncoder().encode(self) else { return }
         defaults.set(data, forKey: CloudAIConfig.storageKey)
     }
@@ -136,7 +136,7 @@ struct CloudAIConfig: Codable {
 
     /// Load Gemini config from UserDefaults.
     static func loadGemini() -> CloudAIConfig {
-        guard let defaults = UserDefaults(suiteName: "group.com.app.Tula"),
+        guard let defaults = UserDefaults(suiteName: "group.com.app.alpha.Tula"),
               let data = defaults.data(forKey: geminiStorageKey),
               let config = try? JSONDecoder().decode(CloudAIConfig.self, from: data) else {
             return .geminiDefault
@@ -146,7 +146,7 @@ struct CloudAIConfig: Codable {
 
     /// Save as Gemini config to UserDefaults.
     func saveAsGemini() {
-        guard let defaults = UserDefaults(suiteName: "group.com.app.Tula"),
+        guard let defaults = UserDefaults(suiteName: "group.com.app.alpha.Tula"),
               let data = try? JSONEncoder().encode(self) else { return }
         defaults.set(data, forKey: CloudAIConfig.geminiStorageKey)
     }
@@ -165,7 +165,7 @@ enum ReceiptParsingMode: String, CaseIterable, Identifiable {
 
     var displayName: String {
         switch self {
-        case .ocrThenAI: return "OCR → Text → AI"
+        case .ocrThenAI: return "OCR â†’ Text â†’ AI"
         case .directImage: return "Send Image Directly"
         }
     }
@@ -190,7 +190,7 @@ enum ReceiptParsingModeStorage {
 
     static var selected: ReceiptParsingMode {
         get {
-            guard let defaults = UserDefaults(suiteName: "group.com.app.Tula"),
+            guard let defaults = UserDefaults(suiteName: "group.com.app.alpha.Tula"),
                   let raw = defaults.string(forKey: key),
                   let mode = ReceiptParsingMode(rawValue: raw) else {
                 return .directImage
@@ -198,7 +198,7 @@ enum ReceiptParsingModeStorage {
             return mode
         }
         set {
-            guard let defaults = UserDefaults(suiteName: "group.com.app.Tula") else { return }
+            guard let defaults = UserDefaults(suiteName: "group.com.app.alpha.Tula") else { return }
             defaults.set(newValue.rawValue, forKey: key)
         }
     }
@@ -212,7 +212,7 @@ enum AIProviderStorage {
 
     static var selected: AIProvider {
         get {
-            guard let defaults = UserDefaults(suiteName: "group.com.app.Tula"),
+            guard let defaults = UserDefaults(suiteName: "group.com.app.alpha.Tula"),
                   let raw = defaults.string(forKey: key),
                   let provider = AIProvider(rawValue: raw) else {
                 return .appleFM
@@ -220,7 +220,7 @@ enum AIProviderStorage {
             return provider
         }
         set {
-            guard let defaults = UserDefaults(suiteName: "group.com.app.Tula") else { return }
+            guard let defaults = UserDefaults(suiteName: "group.com.app.alpha.Tula") else { return }
             defaults.set(newValue.rawValue, forKey: key)
         }
     }

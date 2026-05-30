@@ -21,7 +21,7 @@ struct SettingsView: View {
     @AppStorage("budgetAlertsEnabled") private var budgetAlertsEnabled: Bool = false
     @AppStorage("launchAnimationEnabled") private var launchAnimationEnabled: Bool = true
     @AppStorage("smartParsingEnabled") private var smartParsingEnabled: Bool = true
-    @AppStorage("selectedAIProvider", store: UserDefaults(suiteName: "group.com.app.Tula"))
+    @AppStorage("selectedAIProvider", store: UserDefaults(suiteName: "group.com.app.alpha.Tula"))
     private var selectedProviderRaw: String = AIProvider.appleFM.rawValue
 
     /// Result of the most recent "Test smart parsing" tap in Settings —
@@ -43,7 +43,7 @@ struct SettingsView: View {
     @State private var showingGeminiConfig: Bool = false
 
     // Receipt parsing mode
-    @AppStorage("receiptParsingMode", store: UserDefaults(suiteName: "group.com.app.Tula"))
+    @AppStorage("receiptParsingMode", store: UserDefaults(suiteName: "group.com.app.alpha.Tula"))
     private var receiptParsingModeRaw: String = ReceiptParsingMode.directImage.rawValue
 
     @State private var showingAccounts = false

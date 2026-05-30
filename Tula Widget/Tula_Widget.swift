@@ -10,7 +10,7 @@ import SwiftUI
 //        - WidgetSnapshot.swift
 //        - Currency.swift
 //        - SharedAppearance.swift
-//   4. Both targets need App Group `group.com.app.Tula` (Signing & Capabilities)
+//   4. Both targets need App Group `group.com.app.alpha.Tula` (Signing & Capabilities)
 //
 // Widget gallery (v2):
 //   Home screen
