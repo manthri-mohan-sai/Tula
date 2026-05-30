@@ -174,7 +174,9 @@ struct LogExpenseIntent: AppIntent {
     ) async -> IntentDialog? {
         let usableCategories = categories.filter { !$0.isArchived }
         let usableAccounts = accounts.filter { !$0.isArchived }
-        let categoryNames = usableCategories.map { $0.name }
+        let categoryEntries = usableCategories.map {
+            CategoryEntry(name: $0.name, iconKey: $0.iconKey)
+        }
         let accountNames = usableAccounts.map { $0.name }
         let categoryByName = Dictionary(uniqueKeysWithValues:
             usableCategories.map { ($0.name.lowercased(), $0) })
@@ -187,7 +189,7 @@ struct LogExpenseIntent: AppIntent {
             group.addTask {
                 await SmartExpenseParser.parseVoice(
                     input,
-                    categoryNames: categoryNames,
+                    categories: categoryEntries,
                     accountNames: accountNames
                 )
             }

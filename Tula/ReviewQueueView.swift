@@ -50,7 +50,7 @@ struct ReviewQueueView: View {
         }
         .background(Color.tulaBackground)
         .navigationTitle("Review")
-        .navigationSubtitle(subtitleText)
+        .tulaNavigationSubtitle(subtitleText)
         .navigationBarTitleDisplayMode(.large)
         .sheet(item: $pickingFor) { expense in
             CategoryPickerSheet(

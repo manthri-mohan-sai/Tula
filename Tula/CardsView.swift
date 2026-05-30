@@ -153,7 +153,7 @@ struct CardsView: View {
         }
         .background(Color.tulaBackground)
         .navigationTitle("Accounts")
-        .navigationSubtitle(subtitleText)
+        .tulaNavigationSubtitle(subtitleText)
         .navigationBarTitleDisplayMode(.large)
         .toolbar {
             // Move money — transfer between accounts. Pre-selects the

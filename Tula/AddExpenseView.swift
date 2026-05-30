@@ -36,6 +36,24 @@ struct AddExpenseView: View {
     @State private var categoryManuallySet: Bool
     @State private var showingDeleteConfirm = false
 
+    /// Drives the items-breakdown sheet that opens when the user taps
+    /// the "View items" chip below the Item field. Sheet is read-only —
+    /// the user edits the underlying string in the form's existing
+    /// TextField, then re-opens the sheet to verify the new breakdown.
+    /// Keeps editing simple while still surfacing structure on demand.
+    @State private var showingItemsSheet = false
+
+    /// Parse the current note string into structured items + total for
+    /// the "View items" chip and the breakdown sheet. Returns nil when
+    /// the note isn't in the structured format we emit. Computed live
+    /// so editing the note in the TextField updates the chip in
+    /// real-time (chip appears/disappears as the user types items into
+    /// the format, or hides when they type freeform text).
+    private var parsedItemsForCurrentNote: (items: [ExpenseItem], total: Double?)? {
+        let parsed = ExpenseItemParser.parse(note.isEmpty ? nil : note)
+        return parsed.items.isEmpty ? nil : parsed
+    }
+
     /// Tracks which predictive chip (if any) is currently animating its
     /// "I notice this matches your history" pulse.
     @State private var pulsingChipID: String? = nil
@@ -190,7 +208,36 @@ struct AddExpenseView: View {
             } message: {
                 Text("This action can't be undone.")
             }
+            .sheet(isPresented: $showingItemsSheet) {
+                // Pass plain values to the sheet — no synthetic Expense
+                // construction. Avoids SwiftData @Model deadlocks that
+                // can hang the main thread when constructing a transient
+                // model under active @Query observation.
+                let parsed = parsedItemsForCurrentNote ?? ([], nil)
+                ExpenseItemsSheet(
+                    merchantName: merchant.isEmpty ? nil : merchant,
+                    amount: amount,
+                    date: date,
+                    categoryName: selectedCategory?.name,
+                    receiptImageData: currentReceiptImageData,
+                    items: parsed.items,
+                    total: parsed.total
+                )
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+            }
         }
+    }
+
+    /// Best-available receipt image data for the items sheet. Pulls from
+    /// the existing expense's stored data when editing (zero cost), or
+    /// nil when creating new — we deliberately DON'T encode the in-memory
+    /// `receiptImage` to JPEG here because the sheet open should be
+    /// instant. The freshly-picked photo isn't visible in the sheet
+    /// thumbnail until the user saves and re-opens the expense; small
+    /// trade-off for a non-blocking sheet open.
+    private var currentReceiptImageData: Data? {
+        existingExpense?.receiptImageData
     }
 
     // MARK: - Predictive Suggestions
@@ -570,6 +617,27 @@ struct AddExpenseView: View {
                         .textInputAutocapitalization(.words)
                         .multilineTextAlignment(.trailing)
                 }
+                // Items-breakdown link — appears as a quiet trailing-
+                // aligned text link only when the note text parses to
+                // ≥2 structured items. Sits just under the Item row
+                // (no divider between them; it visually belongs to
+                // that field). Hyperlink-style affordance — brand-amber
+                // text, no chevron, no icon — keeps it lightweight.
+                if let parsedItems = parsedItemsForCurrentNote, parsedItems.items.count >= 2 {
+                    HStack {
+                        Spacer()
+                        Button {
+                            showingItemsSheet = true
+                        } label: {
+                            Text("View all \(parsedItems.items.count) items")
+                                .font(.footnote.weight(.medium))
+                                .foregroundStyle(Color.tulaBrandFallback)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .padding(.horizontal, Spacing.lg)
+                    .padding(.bottom, Spacing.xs)
+                }
                 Divider().padding(.leading, 48)
                 detailRow(label: "Date", icon: "calendar") {
                     DatePicker("", selection: $date, displayedComponents: .date)
@@ -770,7 +838,9 @@ struct AddExpenseView: View {
         let beforeNote = note
         let beforeDate = date
 
-        let categoryNames = activeCategories.map { $0.name }
+        let categoryEntries = activeCategories.map {
+            CategoryEntry(name: $0.name, iconKey: $0.iconKey)
+        }
 
         Task.detached(priority: .userInitiated) {
             // Pass 1: regex-based extraction — deterministic, ~500ms,
@@ -787,7 +857,8 @@ struct AddExpenseView: View {
                     guard #available(iOS 26.0, *), SmartExpenseParser.isAvailable else { return nil }
                     return await SmartExpenseParser.parseReceipt(
                         regexResult.rawText,
-                        categoryNames: categoryNames
+                        categories: categoryEntries,
+                        documentType: regexResult.documentType
                     )
                 }
                 group.addTask {
@@ -895,21 +966,75 @@ struct AddExpenseView: View {
                     }
                 }
 
-                // CATEGORY: only FM provides this from OCR text. Resolve
-                // to a real Category object via name lookup. Doesn't
-                // overwrite if the user already picked one manually
-                // (categoryManuallySet stays the source of truth).
-                if let categoryName = smartResult?.category,
-                   !categoryManuallySet,
-                   let resolved = activeCategories.first(where: {
-                       $0.name.lowercased() == categoryName.lowercased()
-                   }) {
-                    withAnimation(.snappy(duration: 0.25)) {
-                        selectedCategory = resolved
+                // CATEGORY: resolution order matters.
+                //   1. MerchantRule lookup against the merchant we just
+                //      extracted — deterministic, uses user's learned
+                //      mappings ("BPCL" → Transport from 50 prior saves).
+                //   2. FM-suggested category from the smart parser.
+                //   3. No change (user can pick manually).
+                //
+                // The MerchantRule check is the BIG win — if the user has
+                // ever categorized this merchant before, we route deterministically
+                // without involving FM. Faster, more consistent, and learns
+                // from the user's actual behavior.
+                //
+                // **Two-pass name match for FM result**: first try exact
+                // case-insensitive equality. If that fails, try substring
+                // overlap in either direction ("Food" ↔ "Food & Drinks").
+                // FM occasionally returns slight variants of the category
+                // name despite the prompt asking for exact matches —
+                // substring fallback recovers from that.
+                if !categoryManuallySet {
+                    // Phase 1: MerchantRule lookup. Use the merchant we
+                    // just merged (FM-preferred, regex-fallback). We're
+                    // already inside the outer `MainActor.run` block so
+                    // direct call is fine — `context` is the @Environment
+                    // ModelContext bound at line 11.
+                    let merchantForLookup: String? = mergedMerchant
+                    let ruleCategory: Category? = MerchantRuleResolver.category(
+                        for: merchantForLookup,
+                        in: context
+                    )
+                    if let ruleCategory {
+                        withAnimation(.snappy(duration: 0.25)) {
+                            selectedCategory = ruleCategory
+                        }
+                    } else if let categoryName = smartResult?.category,
+                              let resolved = resolveCategory(named: categoryName) {
+                        // Phase 2: FM suggestion fallback.
+                        withAnimation(.snappy(duration: 0.25)) {
+                            selectedCategory = resolved
+                        }
                     }
                 }
             }
         }
+    }
+
+    /// Resolve a category name (e.g. from FM output) to one of the
+    /// user's active categories. Tries exact match first, then partial
+    /// overlap. Returns nil when nothing reasonable matches.
+    private func resolveCategory(named name: String) -> Category? {
+        let target = name.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !target.isEmpty else { return nil }
+
+        // Pass 1: exact case-insensitive match
+        if let exact = activeCategories.first(where: { $0.name.lowercased() == target }) {
+            return exact
+        }
+
+        // Pass 2: substring overlap — either direction. Picks the
+        // category whose name is contained in the FM output OR vice
+        // versa. "Food" matches "Food & Drinks" and "Food" matches
+        // "Foods". Sorted shortest-first so "Food" wins over "Food
+        // & Drinks" when both match.
+        let overlaps = activeCategories
+            .filter { cat in
+                let catLower = cat.name.lowercased()
+                return target.contains(catLower) || catLower.contains(target)
+            }
+            .sorted { $0.name.count < $1.name.count }
+        return overlaps.first
     }
 
     /// Parse FM's YYYY-MM-DD string into a Date. Returns nil for
@@ -925,9 +1050,31 @@ struct AddExpenseView: View {
 
     /// Render FM-extracted items as a note string. Same format as the
     /// regex pipeline produces for consistency.
+    /// Format FM-extracted items into a single note string. For short
+    /// lists, show all items inline. For LONG lists (DMart with 30+
+    /// items, hospital bills with many line items), truncate to the
+    /// first few + "and N more" suffix — full items dump becomes
+    /// unreadable past about 5 items in a note field.
+    ///
+    /// The Expense's note is meant to be a SUMMARY, not a full inventory.
+    /// Users who want to see every line can review the original receipt
+    /// photo (which we save attached to the expense).
     private func formatSmartItems(_ items: [ReceiptLineItem], total: Double) -> String {
+        /// Show this many items inline before truncating. Empirically
+        /// 5 items reads naturally on one line in the expense row;
+        /// beyond that it wraps and clutters the list view.
+        let maxInline = 5
+
         let parts = items.map { "\($0.name) \(Currency.format($0.price, code: currencyCode))" }
-        let body = parts.joined(separator: " · ")
+        let body: String
+        if parts.count > maxInline {
+            let visible = parts.prefix(maxInline).joined(separator: " · ")
+            let remaining = parts.count - maxInline
+            body = "\(visible) · and \(remaining) more item\(remaining == 1 ? "" : "s")"
+        } else {
+            body = parts.joined(separator: " · ")
+        }
+
         if total > 0 {
             return "\(body) (Total \(Currency.format(total, code: currencyCode)))"
         }

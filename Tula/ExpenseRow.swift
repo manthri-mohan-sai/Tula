@@ -65,6 +65,25 @@ struct ExpenseRow: View {
         expense.category == nil
     }
 
+    /// Parsed items + total from the note string, when the note is in
+    /// the structured format we emit from receipt/share-extension parsing.
+    /// Empty when the note is freehand text or absent. Computed inline —
+    /// cheap parse (~microseconds), no need to cache.
+    private var parsedItems: (items: [ExpenseItem], total: Double?) {
+        ExpenseItemParser.parse(expense.note)
+    }
+
+    /// Whether this expense has enough parsed items to be worth a sheet.
+    /// Single-item lists wouldn't be useful — the note already shows
+    /// "Masala Dosa ₹80" in the row.
+    private var hasItemsBreakdown: Bool {
+        parsedItems.items.count >= 2
+    }
+
+    /// Controls presentation of the items breakdown sheet. Sheet is
+    /// triggered by tapping the items chip on the row title line.
+    @State private var showingItemsSheet: Bool = false
+
     var body: some View {
         HStack(spacing: Spacing.md) {
             ZStack {
@@ -88,7 +107,7 @@ struct ExpenseRow: View {
                             .accessibilityLabel("Recurring")
                     }
                     if expense.source == .smartParsed {
-                        Image(systemName: "apple.intelligence")
+                        Image(systemName: SFSymbols.appleIntelligence)
                             .font(.caption2.weight(.semibold))
                             .foregroundStyle(Color.tulaBrandFallback)
                             .accessibilityLabel("Parsed by Apple Intelligence")
@@ -103,6 +122,33 @@ struct ExpenseRow: View {
                             .font(.caption2.weight(.semibold))
                             .foregroundStyle(.secondary)
                             .accessibilityLabel("Receipt attached")
+                    }
+                    if hasItemsBreakdown {
+                        // Tappable items chip — opens the breakdown sheet
+                        // without conflicting with the row's main tap
+                        // target (which navigates to edit). SwiftUI
+                        // treats Button taps as distinct gestures inside
+                        // a List/NavigationLink row, so this works without
+                        // simultaneousGesture or buttonStyle gymnastics.
+                        Button {
+                            showingItemsSheet = true
+                        } label: {
+                            HStack(spacing: 3) {
+                                Image(systemName: "list.bullet.rectangle.portrait.fill")
+                                    .font(.caption2.weight(.semibold))
+                                Text("\(parsedItems.items.count)")
+                                    .font(.caption2.weight(.semibold))
+                                    .monospacedDigit()
+                            }
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 1)
+                            .background(Color.tulaBrandFallback.opacity(0.15))
+                            .foregroundStyle(Color.tulaBrandFallback)
+                            .clipShape(Capsule())
+                            .fixedSize()
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Show \(parsedItems.items.count) items")
                     }
                     if needsReview {
                         Text("Review")
@@ -153,6 +199,19 @@ struct ExpenseRow: View {
         // density people expect from a modern finance app.
         .padding(.vertical, Spacing.md)
         .frame(minHeight: 64)
+        .sheet(isPresented: $showingItemsSheet) {
+            ExpenseItemsSheet(
+                merchantName: expense.merchant,
+                amount: expense.amount,
+                date: expense.date,
+                categoryName: expense.category?.name,
+                receiptImageData: expense.receiptImageData,
+                items: parsedItems.items,
+                total: parsedItems.total
+            )
+            .presentationDetents([.medium, .large])
+            .presentationDragIndicator(.visible)
+        }
     }
 
     /// Compact relative date: "Today", "Yesterday", "3 May" otherwise.

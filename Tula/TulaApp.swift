@@ -17,6 +17,19 @@ struct TulaApp: App {
     /// (or was skipped, or is disabled). Using @State (not @AppStorage)
     /// means the animation replays on every cold launch but not on
     /// foreground returns within the same session.
+    /// Holds a reference to the Darwin notification observer for the
+    /// share-extension "did save" signal. The observer is created on
+    /// first scene appearance and lives for the app's lifetime; the
+    /// @State binding keeps SwiftUI from deallocating it across view
+    /// rebuilds.
+    @State private var shareExtensionObserver: DarwinNotificationObserver? = nil
+
+    /// Set to true when the share extension posts a Darwin notification
+    /// indicating it saved an expense. The main app reads this flag on
+    /// the next ScenePhase change (or via the @Query system noticing
+    /// the new SQLite rows) to re-fetch and refresh UI.
+    @State private var shareExtensionDidSaveTick: Int = 0
+
     @State private var launchAnimationDone: Bool = false
 
     @Environment(\.scenePhase) private var scenePhase
@@ -26,14 +39,44 @@ struct TulaApp: App {
             Account.self, Category.self, Expense.self, Transfer.self,
             RecurringRule.self, MerchantRule.self, Budget.self,
         ])
+
+        // **Primary path**: shared App Group container. This is the
+        // location both the main app AND the TulaShare extension open
+        // so they see the same expense list. On iOS 18+, SwiftData
+        // relies on SQLite's built-in locking for cross-process safety;
+        // sufficient for the share-extension write-and-die pattern.
+        if let storeURL = SharedStorage.sharedStoreURL {
+            let sharedConfig = ModelConfiguration("Tula",
+                                                   schema: schema,
+                                                   url: storeURL)
+            if let container = try? ModelContainer(for: schema,
+                                                    configurations: [sharedConfig]) {
+                return container
+            }
+        }
+
+        // **Fallback 1**: if the App Group entitlement is missing or
+        // broken, fall back to a local store. The share extension
+        // won't be able to write here (it'd be sandboxed elsewhere),
+        // but the main app continues to function normally. User
+        // notices the share feature doesn't work; everything else does.
         let primaryConfig = ModelConfiguration("Tula", schema: schema)
         if let container = try? ModelContainer(for: schema, configurations: [primaryConfig]) {
             return container
         }
+
+        // **Fallback 2**: in-memory store. Only reached when the
+        // disk-backed store is corrupt or sandbox permissions are
+        // misconfigured. Lets the app launch (with empty data) so the
+        // user can at least see the UI and report the issue.
         let memoryConfig = ModelConfiguration("Tula", schema: schema, isStoredInMemoryOnly: true)
         if let container = try? ModelContainer(for: schema, configurations: [memoryConfig]) {
             return container
         }
+
+        // **Fallback 3**: empty-schema in-memory container. Last resort
+        // before crashing — guarantees we can construct *something*
+        // even if everything above failed.
         return (try? ModelContainer(for: Schema([]),
                                      configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]))
             ?? { preconditionFailure("Cannot create any ModelContainer.") }()
@@ -73,6 +116,27 @@ struct TulaApp: App {
                         SeedData.installMissingDefaultMerchantRules(into: context)
                         RecurringEngine.generateMissing(in: context)
                         WidgetRefresh.refresh(using: context)
+
+                        // Install the Darwin notification observer if it
+                        // isn't already running. Listens for the share
+                        // extension's "did save" signal so the main app
+                        // can refresh its @Query views without waiting
+                        // for the next foreground. Cross-process pings —
+                        // in-process NotificationCenter wouldn't see
+                        // changes from a separate process.
+                        if shareExtensionObserver == nil {
+                            shareExtensionObserver = DarwinNotificationObserver(
+                                name: SharedNotifications.didSaveExpense
+                            ) {
+                                // Bump the tick counter to force SwiftUI
+                                // to re-evaluate any views that key off
+                                // it, and refresh the widget snapshot
+                                // since totals may have changed.
+                                shareExtensionDidSaveTick &+= 1
+                                let ctx = ModelContext(sharedContainer)
+                                WidgetRefresh.refresh(using: ctx)
+                            }
+                        }
                     }
                     .sheet(isPresented: Binding(
                         get: { !onboardingComplete },
@@ -110,6 +174,7 @@ struct TulaApp: App {
         }
     }
 }
+
 
 // MARK: - Widget Snapshot Refresh
 

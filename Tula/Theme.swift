@@ -223,3 +223,44 @@ struct HeroAmountText: View {
             .monospacedDigit()
     }
 }
+
+// MARK: - Availability-Safe Navigation Modifiers
+//
+// SwiftUI's `.navigationSubtitle(_:)` modifier was added in iOS 26. To
+// keep the codebase compatible with iOS 17+ (the project's current
+// minimum), we route calls through a wrapper that applies the modifier
+// only when running on iOS 26 or later. On older systems the subtitle
+// is silently skipped — the screen still shows its main title, just
+// without the supplementary line.
+//
+// Usage: replace `.navigationSubtitle(text)` call sites with
+// `.tulaNavigationSubtitle(text)`. Same surface area, but compiles
+// against earlier deployment targets.
+extension View {
+    @ViewBuilder
+    func tulaNavigationSubtitle(_ text: String) -> some View {
+        if #available(iOS 26.0, *) {
+            self.navigationSubtitle(text)
+        } else {
+            self
+        }
+    }
+}
+
+// MARK: - Apple Intelligence Symbol Helper
+//
+// The "apple.intelligence" SF Symbol is iOS 26+. On earlier OSes it
+// renders as a missing-glyph rectangle. We pick a tasteful fallback —
+// "sparkles" reads as "AI / magic" and is universal since iOS 13.
+//
+// Usage: `Image(systemName: SFSymbols.appleIntelligence)`. Keeps the
+// brand-correct symbol on devices that have it; degrades cleanly
+// elsewhere without ugly placeholders.
+enum SFSymbols {
+    static var appleIntelligence: String {
+        if #available(iOS 26.0, *) {
+            return "apple.intelligence"
+        }
+        return "sparkles"
+    }
+}

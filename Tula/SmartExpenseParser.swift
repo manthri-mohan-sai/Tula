@@ -21,7 +21,13 @@ import FoundationModels
 /// **Latency note.** A single FM parse is ~100-500ms on supported devices.
 /// We never invoke it on the main thread, never block the save flow on it,
 /// and never call it for inputs the rules already handled.
-@available(iOS 26.0, *)
+///
+/// **Availability**: the enum itself has no `@available` annotation so
+/// its public functions (`parseVoice`, `parseReceipt`, `isAvailable`)
+/// can be called from any iOS 17+ deployment target. Each function is
+/// internally gated with `#if canImport(FoundationModels)` and
+/// `#available(iOS 26.0, *)` checks, returning nil on systems that
+/// don't have FM. Callers can invoke these unconditionally.
 enum SmartExpenseParser {
 
     // MARK: - Availability
@@ -37,6 +43,7 @@ enum SmartExpenseParser {
     /// is false, fall back to rules without ceremony.
     static var isAvailable: Bool {
         #if canImport(FoundationModels)
+        guard #available(iOS 26.0, *) else { return false }
         if case .available = SystemLanguageModel.default.availability {
             return true
         }
@@ -51,6 +58,9 @@ enum SmartExpenseParser {
     /// devices know what to enable.
     static var unavailableReason: String? {
         #if canImport(FoundationModels)
+        guard #available(iOS 26.0, *) else {
+            return "Apple Intelligence requires iOS 26 or later."
+        }
         switch SystemLanguageModel.default.availability {
         case .available:
             return nil
@@ -77,17 +87,18 @@ enum SmartExpenseParser {
     ///
     /// - Parameters:
     ///   - input: Raw user input — e.g. "spent 350 on lunch with team at sagar ratna".
-    ///   - categoryNames: User's actual category names so the model
-    ///     selects from them (and never returns something we'd then have
-    ///     to map back to a real Category).
+    ///   - categories: User's actual categories (name + icon key). The
+    ///     icon key drives hint-augmented prompt construction so the
+    ///     model knows what each category is FOR. Model selects from
+    ///     these by name (never invents new categories).
     /// - Returns: Parsed result or nil if unavailable / failed / timeout.
     ///
     /// **Failure is silent.** This method must never throw to its caller —
     /// the call site falls back to rules. If FM hiccups, the user still
     /// gets a working save flow.
     static func parse(_ input: String,
-                      categoryNames: [String]) async -> SmartParseResult? {
-        await parse(input, categoryNames: categoryNames, accountNames: [], isVoice: false)
+                      categories: [CategoryEntry]) async -> SmartParseResult? {
+        await parse(input, categories: categories, accountNames: [], isVoice: false)
     }
 
     /// Voice-specific parse. Identical schema, but the instructions tell
@@ -95,19 +106,20 @@ enum SmartExpenseParser {
     /// ("waffle" mistranscribed as "rahul"), split digits ("1 20" meant
     /// as "120"), and conversational phrasing. The model uses the
     /// category and account lists as anchors to correct context-sensitive
-    /// errors. Use this instead of `parse(_:categoryNames:)` for
+    /// errors. Use this instead of `parse(_:categories:)` for
     /// voice-sourced input where text quality is lower.
     ///
     /// - Parameters:
     ///   - input: The raw speech transcript.
-    ///   - categoryNames: User's actual category names.
+    ///   - categories: User's actual categories (name + icon key for
+    ///     hint-augmented prompts).
     ///   - accountNames: User's actual account names (Bank, Cash, etc.) so
     ///     the model can correctly identify which account was charged when
     ///     mentioned in the transcript ("paid from HDFC", "in cash", etc.).
     static func parseVoice(_ input: String,
-                            categoryNames: [String],
+                            categories: [CategoryEntry],
                             accountNames: [String]) async -> SmartParseResult? {
-        await parse(input, categoryNames: categoryNames,
+        await parse(input, categories: categories,
                     accountNames: accountNames, isVoice: true)
     }
 
@@ -118,134 +130,178 @@ enum SmartExpenseParser {
     ///
     /// **When to use this**: after `ReceiptStorage.parse` has done its
     /// regex pass. Pass the `rawText` from that result here. FM will
-    /// produce a structured `ReceiptSmartParseResult` that the caller
-    /// can merge with the regex result — preferring FM where it provides
-    /// stronger signal (date, multi-item lists, ambiguous merchants),
-    /// keeping regex where it's confident (clear totals, dishes called
-    /// out individually).
+    /// produce a structured result that the caller can merge with the
+    /// regex result.
+    ///
+    /// **Returns** a `ReceiptSmartParseResult` DTO (plain Swift, no FM
+    /// dependencies). This means callers can be deployment-target ≥ iOS
+    /// 17 even though the underlying FM model requires iOS 26 — the
+    /// availability gating lives entirely inside this function.
     ///
     /// **Failure modes**: nil return covers FM unavailable, FM timeout,
     /// or empty input. Caller falls back to regex-only result.
     static func parseReceipt(_ rawText: String,
-                              categoryNames: [String]) async -> ReceiptSmartParseResult? {
+                              categories: [CategoryEntry],
+                              documentType: ReceiptStorage.DocumentType = .generic) async -> ReceiptSmartParseResult? {
         #if canImport(FoundationModels)
-        guard isAvailable else { return nil }
+        guard #available(iOS 26.0, *), isAvailable else { return nil }
         let trimmed = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
-        guard !categoryNames.isEmpty else { return nil }
+        guard !categories.isEmpty else { return nil }
 
-        let categoryList = categoryNames.joined(separator: ", ")
+        // Build the rich category list with icon-derived hints. Each
+        // category appears as "- Name (hint keywords)" so the model
+        // knows what each category is FOR, not just its name. This
+        // turns "Transport" from an opaque label into a meaningful
+        // bucket the model can confidently route petrol/fuel/cab
+        // expenses into.
+        let categoryList = CategoryHint.formatList(
+            categories.map { (name: $0.name, iconKey: $0.iconKey) }
+        )
+
+        // Per-document-type hint added to the prompt. Tells the model
+        // what layout to expect, which improves accuracy especially on
+        // UPI screenshots and order summaries (where the "receipt"
+        // mental model would be misleading). Generic docs get no hint.
+        let layoutHint: String = {
+            switch documentType {
+            case .upi:
+                return """
+                LAYOUT: This is a UPI payment confirmation screenshot. \
+                The amount is the prominent number near the top \
+                (often after "₹"). The merchant is the value after \
+                "Paid to" / "To" / "Transferred to". There are no \
+                line items — return items: []. Date is the transaction \
+                timestamp.
+                """
+            case .orderSummary:
+                return """
+                LAYOUT: This is a food / grocery delivery order summary \
+                (Swiggy / Zomato / Blinkit / Zepto / Instamart). The \
+                grand total is at the BOTTOM, labeled "Bill Total" / \
+                "Total Paid" / "Amount Paid". The merchant is the \
+                restaurant/store name (NOT the delivery app brand). \
+                Items are listed mid-page.
+                """
+            case .restaurantBill:
+                return """
+                LAYOUT: This is a printed restaurant or kirana bill. \
+                Merchant is at the top in larger text. Line items \
+                appear with prices in a column layout. The grand total \
+                is at the bottom, often labeled "Grand Total" / \
+                "Bill Amount" / "Net Total".
+                """
+            case .hospitalBill:
+                return """
+                LAYOUT: This is a hospital / clinic / diagnostics bill. \
+                Multiple sub-sections (consultation, lab tests, pharmacy, \
+                room charges, taxes, discounts, advance paid). The \
+                FINAL payable is at the BOTTOM, labeled "Net Payable" / \
+                "Amount Payable" / "Final Amount" / "Balance Due". \
+                Merchant = the hospital name (top header). Items = \
+                the services / procedures / medicines listed. SKIP \
+                patient details (name, ID, ward) — those are not items.
+                """
+            case .utilityBill:
+                return """
+                LAYOUT: This is a utility bill (electricity, water, gas, \
+                broadband, mobile). One main amount labeled "Amount Due" / \
+                "Total Payable" / "Bill Amount", accompanied by a due \
+                date. Merchant = utility provider name. items: [] (no \
+                line items in the typical sense). Category should be \
+                "Bills" / "Utilities" / similar.
+                """
+            case .generic:
+                return ""
+            }
+        }()
+
         let instructions = """
-        You parse retail and restaurant receipts that have been read by \
-        OCR. The input is the raw text output — line breaks may not align \
-        with the original layout, characters may be misread, and totals \
-        may appear multiple times. Be skeptical and use cross-checks.
+        Parse this OCR'd receipt text into structured data. Fields:
 
-        Extract:
-        - amount: the GRAND TOTAL — the final amount the customer was \
-          billed for. NOT the cash tendered, NOT the change given, NOT \
-          a sum of subtotal + grand total. The grand total is ONE value \
-          on the receipt, not multiple values to add together.
-          Specifically:
-            * If "Grand Total", "Net Amount", "Bill Amount", "Total \
-              Amount", "Amount Payable", or "Payable" appears with a \
-              value, USE THAT EXACT VALUE. Do not look further.
-            * **The same total value often appears multiple times on \
-              one receipt** — once as a subtotal and once as a grand \
-              total. THIS IS THE SAME BILL. If you see "Subtotal 140" \
-              and "Grand Total 140" both present, the amount is 140, \
-              NOT 280. Never sum a subtotal with a grand total.
-            * **Restaurant bills with Price/Total columns**: line items \
-              have a per-unit price AND a line total (price × quantity). \
-              These are NOT bill totals — they're column values for \
-              individual rows. Only the bottommost summary value is \
-              the grand total.
-            * Lines labeled "Cash", "Tendered", "Paid", "Received", \
-              "Change", "Balance Due", "Return" are NOT the grand total \
-              — ignore them when picking amount.
-            * Do NOT sum line items to derive the total. Do NOT sum \
-              subtotal + tax to derive the total. Use the explicit \
-              total line that appears on the receipt.
-            * **Sanity check**: the amount you return should appear \
-              somewhere as a single number on the receipt. If you're \
-              about to return a number that isn't printed verbatim on \
-              the receipt, you're doing arithmetic — STOP and pick the \
-              largest value next to a "Grand Total" or "Total" marker \
-              that IS printed.
-          Return as a number, no currency symbol.
-        - merchant: the business name. Usually at the top of the receipt, \
-          in larger text. NEVER a dish, item, or category — always a \
-          place name (restaurant, store, brand). Title-cased. NEVER \
-          single common English words like "Return", "Command", "Option", \
-          "Shift", "Cash Bill", "Tax Invoice" — those are not merchant \
-          names, those are noise from the photo background or document \
-          type labels.
-        - date: the transaction date if present, in YYYY-MM-DD format. \
-          Receipts often show "Date: 15/03/2025" or "15-Mar-2025" — \
-          normalize all formats to YYYY-MM-DD. Leave nil if not present.
-        - items: a list of purchased items with their prices. Each entry \
-          is {name, price}. The price should be the LINE TOTAL (price × \
-          quantity) when both appear, or just the per-unit price if no \
-          quantity column. EXCLUDE tax lines, subtotals, totals, \
-          discounts, change-due, and payment-method lines. Item names \
-          should be title-cased and human-readable.
-        - category: the single best-fitting category from this exact list: \
-          \(categoryList). Pick based on the merchant type AND the items \
-          purchased. Food places → Food. Pharmacies → Health. Grocery \
-          stores → Groceries. Don't invent categories.
+        - **amount**: the GRAND TOTAL — the final amount billed. ONE \
+          value, printed verbatim on the receipt. NEVER sum two values \
+          to derive it. Cross-check by summing items: the total should \
+          approximately equal the items sum (allow ±25% for tax).
 
-        WORKED EXAMPLE OF AMOUNT EXTRACTION:
-        Given this OCR text:
-            MASALA PURI
-            40.00
-            50.00
-            PAPDI CHAT
-            SAMOSA CHAT
-            50.00
-            40.00
-            50.00
-            50.00
-            140.00
-            140.00
-            Subtotal :
-            Grand Total:
-            Payment: UPI
-        The correct extracted amount is 140. NOT 280. The 140.00 appears \
-        TWICE because the receipt prints subtotal AND grand total — \
-        both equal 140 because there is no tax. The answer is 140, not \
-        the sum. Items: Masala Puri 40, Papdi Chat 50, Samosa Chat 50. \
-        These items sum to 140, confirming 140 is correct.
+        - **merchant**: business / place name. Title-cased. Rules:
+            * PRIMARY: use the actual business name if present on the \
+              receipt (usually top header or "Paid to" label).
+            * If NO clear business name appears, INFER a GENERIC PLACE \
+              TYPE from the items: "Restaurant", "Pharmacy", "Grocery \
+              Store", "Hospital", "Petrol Pump", etc. A guess is more \
+              useful than nil — the user can correct it.
+            * NEVER use a dish, product, or document-type label \
+              ("Cash Bill", "Tax Invoice") as the merchant.
 
-        OCR ERROR GUIDANCE:
-        - "1" can be misread as "I", "l", or "|" — interpret these as 1 \
-          in numeric contexts.
-        - "0" can be misread as "O" or "D".
-        - "5" can be misread as "S".
-        - A leading "1" may be dropped (140 → 40). When the "Total" line \
-          shows a small number that's roughly half of one of the other \
-          candidates, the OCR likely dropped a digit — prefer the larger \
-          candidate. BUT never go larger than the "Total"/"Payable" \
-          marker if it's clearly present.
+        - **date**: transaction date in YYYY-MM-DD format. Nil if not present.
 
-        DO NOT:
-        - Confuse "Cash" / "Tendered" / "Change" with the grand total.
-        - Sum subtotal + grand total (or any two totals) to derive an amount.
-        - Sum tax + subtotal to derive a "total" — use the explicit total \
-          line if present.
-        - Return any number that isn't printed verbatim on the receipt as \
-          the amount.
-        - Invent items or merchant names not present in the text.
-        - Return tax lines, subtotals, or total markers as items.
-        - Change the order of items from how they appear on the receipt.
-        - Return a date format other than YYYY-MM-DD.
+        - **items**: purchased items as {name, price}.
+            * EXCLUDE tax, subtotal, total, discount, change, and \
+              payment-method lines.
+            * For LONG item lists (groceries, hospital bills with many \
+              line items), return ALL items — don't truncate. The \
+              caller will display them appropriately.
+            * For complex bills (hospital, utility), only include \
+              actual services/products purchased. Skip header rows, \
+              metadata, patient info, etc.
+
+        - **category**: pick ONE from the list below. Decision priority:
+            1. If MERCHANT is clear and matches a category's keywords \
+               (e.g., "Apollo Pharmacy" → Health), use that.
+            2. If MERCHANT is unclear or generic, use the ITEMS to \
+               decide. Items like "MRI / consultation / medicine" → \
+               Health. Items like "fuel / diesel / petrol" → Transport. \
+               Items like "tomato / onion / dal" → Groceries.
+            3. If ITEMS are unclear too, use ANY other signal in the \
+               text (document headers, footer markers, payment app).
+            4. NEVER invent a category not in this list.
+
+        Available categories (parenthesized keywords describe what fits):
+        \(categoryList)
+
+        \(layoutHint)
+
+        KEY RULES:
+        1. **Same value appearing twice = one bill, not double.** If "140" \
+           appears as both subtotal and grand total, the amount is 140. \
+           Returning 280 (the sum) is wrong.
+        2. **Amount must be printed verbatim** somewhere in the OCR text. \
+           If you're tempted to do arithmetic, stop — pick the value next \
+           to "Total" / "Grand Total" / "Net Payable" / "Amount Due".
+        3. **OCR digit errors**: "1" may appear as "I" / "l" / "|", "0" as \
+           "O", "5" as "S", "8" as "B". Recover these in numeric contexts.
+        4. **Leading "1" sometimes dropped** (140 → 40). If the total looks \
+           too small to match the items sum, prefer the larger candidate \
+           near the total marker.
+        5. **For complex multi-section bills** (hospital, utility), the \
+           FINAL net payable is at the BOTTOM. Earlier sub-totals \
+           (consultation total, lab total, etc.) are NOT the amount. \
+           Look for the BOTTOMMOST line with a final-payable label.
+
+        EXAMPLE (the receipt format that trips most parsers):
+        Input contains: "40 50 50 140 140 Subtotal: Grand Total: UPI"
+        Items: Masala Puri 40, Papdi Chat 50, Samosa Chat 50 (sum=140).
+        Subtotal 140 and Grand Total 140 are the SAME value printed twice.
+        amount = 140, NOT 280.
         """
 
         do {
             let session = LanguageModelSession(model: SystemLanguageModel.default,
                                                 instructions: instructions)
             let response = try await session.respond(to: trimmed,
-                                                      generating: ReceiptSmartParseResult.self)
-            return response.content
+                                                      generating: _FMReceiptResult.self)
+            let fm = response.content
+            // Convert FM-specific result into the plain DTO so the
+            // caller doesn't have to deal with @Generable types or
+            // iOS 26 availability gating.
+            return ReceiptSmartParseResult(
+                amount: fm.amount,
+                merchant: fm.merchant,
+                date: fm.date,
+                category: fm.category,
+                items: fm.items.map { ReceiptLineItem(name: $0.name, price: $0.price) }
+            )
         } catch {
             return nil
         }
@@ -270,7 +326,7 @@ enum SmartExpenseParser {
     /// updates and avoids visual flicker).
     static func correctTranscript(_ raw: String) async -> String? {
         #if canImport(FoundationModels)
-        guard isAvailable else { return nil }
+        guard #available(iOS 26.0, *), isAvailable else { return nil }
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
 
@@ -338,15 +394,20 @@ enum SmartExpenseParser {
     /// Unified implementation used by both `parse` and `parseVoice`.
     /// `isVoice` tunes the instructions toward speech-recognition quirks.
     private static func parse(_ input: String,
-                               categoryNames: [String],
+                               categories: [CategoryEntry],
                                accountNames: [String],
                                isVoice: Bool) async -> SmartParseResult? {
         #if canImport(FoundationModels)
-        guard isAvailable else { return nil }
+        guard #available(iOS 26.0, *), isAvailable else { return nil }
         guard !input.trimmingCharacters(in: .whitespaces).isEmpty else { return nil }
-        guard !categoryNames.isEmpty else { return nil }
+        guard !categories.isEmpty else { return nil }
 
-        let categoryList = categoryNames.joined(separator: ", ")
+        // Rich category list with icon-derived hints — same as parseReceipt.
+        // Lets the model route "petrol" → Transport, "pharmacy" → Health
+        // without needing to guess what the user means by each label.
+        let categoryList = CategoryHint.formatList(
+            categories.map { (name: $0.name, iconKey: $0.iconKey) }
+        )
         let accountList = accountNames.isEmpty
             ? "(no account list provided)"
             : accountNames.joined(separator: ", ")
@@ -369,7 +430,9 @@ enum SmartExpenseParser {
               See the AMOUNT RULES section below — read it carefully.
             - merchant: the place or vendor where money was spent.
             - item: what was bought, if mentioned separately from the merchant.
-            - category: best fit from this exact list (never invent): \(categoryList)
+            - category: pick ONE — use the parenthesized hint keywords to \
+              decide which category fits the merchant/item:
+            \(categoryList)
             - account: best fit from this exact list, or empty if none mentioned: \(accountList)
 
             **AMOUNT RULES — read these first and apply STRICTLY.**
@@ -492,8 +555,9 @@ enum SmartExpenseParser {
             - amount: total spent in rupees, as a number.
             - merchant: where the money went (the place, item, or vendor).
             - item: what was bought, if mentioned separately from the merchant.
-            - category: the single best-fitting category from this exact list \
-              (never invent new ones): \(categoryList)
+            - category: pick ONE — match the merchant/item to the parenthesized \
+              keywords (e.g. petrol/fuel → Transport, restaurants → Food):
+            \(categoryList)
             - account: best fit from this exact list, or empty if none mentioned: \
               \(accountList)
 
@@ -520,9 +584,16 @@ enum SmartExpenseParser {
             let session = LanguageModelSession(instructions: instructions)
             let response = try await session.respond(
                 to: input,
-                generating: SmartParseResult.self
+                generating: _FMSmartParseResult.self
             )
-            return response.content
+            let fm = response.content
+            return SmartParseResult(
+                amount: fm.amount,
+                merchant: fm.merchant,
+                item: fm.item,
+                category: fm.category,
+                account: fm.account
+            )
         } catch {
             return nil
         }
@@ -534,9 +605,11 @@ enum SmartExpenseParser {
 
 // MARK: - @Generable result type
 
-/// Structured output schema for the smart parser. Matches the shape the
-/// existing `ParsedExpense` carries (amount + merchant + item + category +
-/// account) so it can drop into the save flow without lossy conversion.
+/// FM-facing smart-parser schema. Has `@Generable` macro + `@Guide`
+/// descriptions for Foundation Models. Renamed with `_FM` prefix to
+/// distinguish from the public DTO `SmartParseResult` (defined below
+/// outside the `#if`). Parser converts FM result → DTO before returning,
+/// keeping iOS 26 availability gating internal to this file.
 ///
 /// `category` and `account` are Strings (not the SwiftData entities)
 /// because the model returns text; the call site maps each back to a
@@ -544,7 +617,7 @@ enum SmartExpenseParser {
 #if canImport(FoundationModels)
 @available(iOS 26.0, *)
 @Generable
-struct SmartParseResult: Codable, Sendable {
+struct _FMSmartParseResult: Codable, Sendable {
     @Guide(description: "Total amount spent, in rupees, as a single integer. Indian English compounds: ONES word followed by TENS word means ones×100+tens. 'two fifty' = 250, 'three fifty' = 350, 'four eighty' = 480 — NEVER just the tens portion alone. 'one twenty' = 120. Split-digit transcriptions: '1 20' = 120, '3 50' = 350. Do not drop the hundreds part.")
     let amount: Double
 
@@ -571,18 +644,15 @@ struct CorrectedTranscript: Codable, Sendable {
     let text: String
 }
 
-/// Receipt-specific structured output. Distinct schema from
-/// `SmartParseResult` because receipts have richer structure:
-///
-///   - `items`: line items as a typed array, not a single string
-///   - `date`: the transaction date stamped on the receipt
-///
-/// Account is absent (receipts don't tell you which card was used —
-/// the user picks that in the form). Item is absent (receipts have
-/// MULTIPLE items, surfaced via the `items` array instead).
+/// FM-facing receipt schema. Has the `@Generable` macro + `@Guide`
+/// descriptions that Foundation Models reads to shape its output. This
+/// type is iOS 26+ only because `@Generable` is iOS 26+. The public-
+/// facing `ReceiptSmartParseResult` (defined outside the `#if`) is a
+/// plain DTO mirror that the parser converts to before returning, so
+/// callers don't inherit iOS 26 availability.
 @available(iOS 26.0, *)
 @Generable
-struct ReceiptSmartParseResult: Codable, Sendable {
+struct _FMReceiptResult: Codable, Sendable {
     @Guide(description: "Grand total / final amount paid, as a number with no currency symbol. Always the LARGEST total — if line-item subtotals and a grand total both appear, return the grand total. Cross-check by summing items: the sum should approximately equal this value. Watch for OCR errors where a leading '1' has been dropped (140 misread as 40).")
     let amount: Double
 
@@ -596,13 +666,13 @@ struct ReceiptSmartParseResult: Codable, Sendable {
     let category: String?
 
     @Guide(description: "Line items purchased, in the order they appear on the receipt. EXCLUDE tax lines, subtotals, discounts, change due, and total/grand-total lines. Item names should be title-cased and human-readable.")
-    let items: [ReceiptLineItem]
+    let items: [_FMReceiptLineItem]
 }
 
-/// Single line item from a receipt — the thing bought and what it cost.
+/// FM-facing line item. Plain mirror is `ReceiptLineItem` outside `#if`.
 @available(iOS 26.0, *)
 @Generable
-struct ReceiptLineItem: Codable, Sendable {
+struct _FMReceiptLineItem: Codable, Sendable {
     @Guide(description: "Item name, title-cased. E.g. 'Masala Dosa', 'Coca Cola 500ml', 'Paracetamol Tablet'.")
     let name: String
 
@@ -610,7 +680,43 @@ struct ReceiptLineItem: Codable, Sendable {
     let price: Double
 }
 #else
-// Stub so call sites compile on older SDKs where the framework isn't present.
+// Stub for non-FM SDKs.
+struct CorrectedTranscript: Codable, Sendable {
+    let text: String
+}
+#endif
+
+// MARK: - Plain DTOs (always available)
+//
+// These types are the PUBLIC interface for the parser. They have no
+// Foundation Models dependencies, no availability annotations, and no
+// `@Generable` macros. The parser internally uses iOS 26-only `_FM*`
+// types for FM communication and converts to these DTOs before
+// returning. Result: callers compile and run on iOS 17+ even when the
+// parser's actual implementation needs iOS 26.
+
+/// Lightweight DTO passed to the parser describing one of the user's
+/// categories. Carries the name (which the FM model will return as its
+/// category choice) and the icon key (which we use to look up a hint
+/// phrase that helps the model understand what the category is FOR).
+///
+/// **Why a struct and not just `[String]`**: passing icon keys alongside
+/// names lets the parser build richer prompts ("Transport (petrol, cabs,
+/// transit)") without callers having to construct the hint string. It
+/// also future-proofs the API for when Category gets user-authored
+/// descriptions — we'd add a `description` field here without breaking
+/// existing callers.
+struct CategoryEntry: Sendable {
+    let name: String
+    let iconKey: String
+
+    init(name: String, iconKey: String) {
+        self.name = name
+        self.iconKey = iconKey
+    }
+}
+
+/// Public smart-parse result returned by `parseVoice` / `parse`.
 struct SmartParseResult: Codable, Sendable {
     let amount: Double
     let merchant: String?
@@ -619,10 +725,8 @@ struct SmartParseResult: Codable, Sendable {
     let account: String?
 }
 
-struct CorrectedTranscript: Codable, Sendable {
-    let text: String
-}
-
+/// Public receipt parse result returned by `SmartExpenseParser.parseReceipt`.
+/// Fields are nil/empty when FM was unavailable or didn't provide them.
 struct ReceiptSmartParseResult: Codable, Sendable {
     let amount: Double
     let merchant: String?
@@ -631,8 +735,8 @@ struct ReceiptSmartParseResult: Codable, Sendable {
     let items: [ReceiptLineItem]
 }
 
+/// Public line item type — one row in a receipt's purchased-items list.
 struct ReceiptLineItem: Codable, Sendable {
     let name: String
     let price: Double
 }
-#endif

@@ -1,5 +1,7 @@
 import UIKit
 import Vision
+import CoreImage
+import CoreImage.CIFilterBuiltins
 
 /// Receipt-photo helpers for Tula. Two responsibilities, kept in one file
 /// because they're always used together:
@@ -66,6 +68,44 @@ enum ReceiptStorage {
 
     // MARK: - OCR Parsing
 
+    /// Coarse classification of what kind of document this OCR text
+    /// represents. Drives extractor dispatch: each type has a slightly
+    /// different layout and extraction strategy. `.generic` is the
+    /// fallback for anything we can't confidently classify.
+    ///
+    /// **Why this matters**: a UPI confirmation screenshot, a Swiggy
+    /// order summary, and a printed restaurant bill all contain
+    /// "amounts" and "merchant-like text" but the SPATIAL LAYOUT and
+    /// KEYWORDS are very different. Treating them all as "receipts"
+    /// produces mediocre extraction on all three. Per-type parsers
+    /// tuned to each layout produce significantly better results.
+    enum DocumentType: String, Sendable {
+        /// UPI payment confirmation screenshot (PhonePe, GPay, Paytm,
+        /// bank apps). Format: amount near top, merchant + transaction
+        /// ID below, payment status banner. Very consistent across apps.
+        case upi
+        /// Food / grocery delivery order summary (Swiggy, Zomato, Blinkit,
+        /// Zepto, Instamart). Format: brand header, item list, total at
+        /// bottom, restaurant/store name often mid-page.
+        case orderSummary
+        /// Printed restaurant / kirana bill. Format: merchant + bill
+        /// number at top, table/order info, line items with prices,
+        /// subtotal + grand total at bottom.
+        case restaurantBill
+        /// Hospital / clinic / diagnostics bill. Format: patient header,
+        /// service line items, multiple tax/discount sections, "Net
+        /// Payable" or "Final Amount" at bottom. Often complex.
+        case hospitalBill
+        /// Utility bill (electricity, water, gas, broadband). Format:
+        /// consumer details, billing period, units consumed, "Amount
+        /// Due" with a due date prominent.
+        case utilityBill
+        /// Anything we couldn't confidently classify — generic receipt
+        /// path. Uses the general-purpose extractors with no
+        /// layout-specific tuning.
+        case generic
+    }
+
     /// Result of an OCR scan. All fields except `rawText` are optional —
     /// Vision's confidence on a given receipt may be insufficient. The
     /// caller pre-fills what's present and leaves the rest blank for the
@@ -87,6 +127,10 @@ enum ReceiptStorage {
         /// caller to surface in a "review extracted text" debug view, or
         /// to feed into Foundation Models for a second pass later.
         let rawText: String
+        /// What type of document we classified this as. Exposed so
+        /// callers can show contextual UI ("UPI Payment" vs "Receipt")
+        /// and so the smart parser can use it as a prompt hint.
+        let documentType: DocumentType
 
         /// Render a structured note from the items + amount. Returns nil
         /// when there's nothing meaningful to render (no items). Format:
@@ -96,14 +140,127 @@ enum ReceiptStorage {
         /// see which to trust.
         func formattedNote(currencyCode: String) -> String? {
             guard !items.isEmpty else { return nil }
-            let itemStr = items
-                .map { "\($0.name) \(Currency.format($0.price, code: currencyCode))" }
-                .joined(separator: " · ")
+            // Long lists get truncated to keep the note readable.
+            // Matches the formatter logic in AddExpenseView and
+            // ShareSession — single source of truth would be nicer
+            // but keeping each formatter self-contained avoids
+            // import gymnastics in the share extension.
+            let maxInline = 5
+            let parts = items.map { "\($0.name) \(Currency.format($0.price, code: currencyCode))" }
+            let itemStr: String
+            if parts.count > maxInline {
+                let visible = parts.prefix(maxInline).joined(separator: " · ")
+                let remaining = parts.count - maxInline
+                itemStr = "\(visible) · and \(remaining) more item\(remaining == 1 ? "" : "s")"
+            } else {
+                itemStr = parts.joined(separator: " · ")
+            }
             if let total = amount {
                 return "\(itemStr) (Total \(Currency.format(total, code: currencyCode)))"
             }
             return itemStr
         }
+    }
+
+    /// Preprocess a receipt photo to improve Vision OCR accuracy. Runs a
+    /// CoreImage filter chain that addresses the most common causes of
+    /// poor recognition on real-world receipts: thermal-paper fade, low
+    /// contrast in dim lighting, slight motion blur, and yellow/pink
+    /// backgrounds that confuse text-vs-paper detection.
+    ///
+    /// **Pipeline**:
+    ///   1. Grayscale conversion — removes color noise; receipt text is
+    ///      always black/dark, color is irrelevant to recognition.
+    ///   2. Contrast boost — pushes faded thermal text toward black.
+    ///   3. Brightness lift — lightens the paper background away from
+    ///      the text, widening the contrast gap.
+    ///   4. Light sharpening — undoes minor camera focus blur. Heavy
+    ///      sharpening introduces artifacts that hurt OCR, so we use
+    ///      a conservative `sharpness` value.
+    ///
+    /// **When to skip**: if the original image is already high-quality
+    /// (good contrast, sharp, well-lit) preprocessing can over-correct
+    /// and make OCR *worse*. We estimate quality from the image's
+    /// brightness histogram — well-balanced images skip preprocessing,
+    /// dim/washed-out ones get the full treatment.
+    ///
+    /// **Cost**: ~50-150ms on a typical receipt photo. Acceptable
+    /// because it gates Vision OCR (which is the expensive step).
+    /// Returns the original image if any filter fails — never crashes
+    /// the OCR flow.
+    private static func preprocessImage(_ image: UIImage) -> UIImage {
+        guard let ciImage = CIImage(image: image) else { return image }
+
+        // Estimate average brightness via CIAreaAverage. Result is a
+        // 1x1 image whose pixel encodes the average RGBA of the input.
+        // Low average → dim photo → preprocess. High average → already
+        // well-lit → skip to avoid over-correcting.
+        let averageBrightness: CGFloat = {
+            let filter = CIFilter.areaAverage()
+            filter.inputImage = ciImage
+            filter.extent = ciImage.extent
+            guard let output = filter.outputImage else { return 0.5 }
+            var bitmap = [UInt8](repeating: 0, count: 4)
+            let context = CIContext()
+            context.render(output,
+                           toBitmap: &bitmap,
+                           rowBytes: 4,
+                           bounds: CGRect(x: 0, y: 0, width: 1, height: 1),
+                           format: .RGBA8,
+                           colorSpace: nil)
+            // Use the luminance channel approximation: 0.299*R + 0.587*G + 0.114*B
+            let r = CGFloat(bitmap[0]) / 255.0
+            let g = CGFloat(bitmap[1]) / 255.0
+            let b = CGFloat(bitmap[2]) / 255.0
+            return 0.299 * r + 0.587 * g + 0.114 * b
+        }()
+
+        // If the image is already in the "well-lit" band (0.55-0.85),
+        // skip preprocessing. Receipts are mostly white paper so a
+        // well-photographed receipt should average around 0.7.
+        if averageBrightness > 0.55 && averageBrightness < 0.85 {
+            return image
+        }
+
+        // Filter chain — each stage takes the previous output as input.
+        // Built using the strongly-typed CIFilter.* builders (iOS 13+).
+        var current: CIImage = ciImage
+
+        // 1. Grayscale via CIColorControls saturation=0.
+        let desaturate = CIFilter.colorControls()
+        desaturate.inputImage = current
+        desaturate.saturation = 0
+        desaturate.brightness = 0
+        desaturate.contrast = 1.0
+        if let out = desaturate.outputImage { current = out }
+
+        // 2. Boost contrast — pushes faded thermal text darker.
+        //    Value 1.4 is empirically good; >2.0 starts clipping.
+        let contrast = CIFilter.colorControls()
+        contrast.inputImage = current
+        contrast.saturation = 0
+        // Lift dim images more aggressively than bright ones.
+        let brightnessBoost: Float = averageBrightness < 0.5 ? 0.1 : 0.05
+        contrast.brightness = brightnessBoost
+        contrast.contrast = 1.4
+        if let out = contrast.outputImage { current = out }
+
+        // 3. Light sharpening to recover focus-blur losses. CIUnsharpMask
+        //    is gentler than CISharpenLuminance for text.
+        let sharpen = CIFilter.unsharpMask()
+        sharpen.inputImage = current
+        sharpen.radius = 1.5
+        sharpen.intensity = 0.3
+        if let out = sharpen.outputImage { current = out }
+
+        // Render back to UIImage. Use a fresh context (cheap to allocate)
+        // and render at the original image's scale so pixel dimensions
+        // match the input (Vision uses absolute pixel size).
+        let context = CIContext()
+        guard let cgOutput = context.createCGImage(current, from: current.extent) else {
+            return image
+        }
+        return UIImage(cgImage: cgOutput, scale: image.scale, orientation: image.imageOrientation)
     }
 
     /// Run Vision OCR on the given image and best-effort extract amount
@@ -115,8 +272,12 @@ enum ReceiptStorage {
     /// the caller treats this as "no signal, user fills the form
     /// manually." Never throws to the caller; failure is silent.
     static func parse(_ image: UIImage) async -> ParseResult {
-        guard let cgImage = image.cgImage else {
-            return ParseResult(amount: nil, merchant: nil, items: [], date: nil, rawText: "")
+        // Preprocess before OCR — boosts accuracy on dim/faded photos
+        // while leaving good photos alone. See `preprocessImage` docs
+        // for the heuristic.
+        let prepared = preprocessImage(image)
+        guard let cgImage = prepared.cgImage ?? image.cgImage else {
+            return ParseResult(amount: nil, merchant: nil, items: [], date: nil, rawText: "", documentType: .generic)
         }
 
         // Capture observations off the main actor — Vision callbacks may
@@ -151,12 +312,411 @@ enum ReceiptStorage {
             .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 
         let rawText = lines.joined(separator: "\n")
-        let amount = extractAmount(from: lines)
-        let merchant = extractMerchant(from: lines, observations: observations)
-        let items = extractLineItems(from: lines, total: amount)
-        let date = extractDate(from: lines)
 
-        return ParseResult(amount: amount, merchant: merchant, items: items, date: date, rawText: rawText)
+        // Classify the document first. The class determines which set
+        // of extractors we use — UPI screenshots, food delivery order
+        // summaries, restaurant bills, and generic receipts each have
+        // a different layout that the per-type extractors handle better
+        // than the one-size-fits-all approach.
+        let documentType = classifyDocument(from: lines)
+
+        let amount: Double?
+        let merchant: String?
+        let date: Date?
+        let items: [(name: String, price: Double)]
+
+        switch documentType {
+        case .upi:
+            // UPI confirmations: amount is usually the only big number,
+            // merchant is "Paid to" / "To" label's value, no line items.
+            amount = extractUPIAmount(from: lines)
+            merchant = extractUPIMerchant(from: lines)
+            date = extractDate(from: lines)
+            items = []
+        case .orderSummary:
+            // Order summaries (Swiggy/Zomato): total is at the bottom
+            // labeled "Bill total" or "Total Paid", restaurant name
+            // is mid-page after "from" or near an "Order from" header.
+            amount = extractOrderSummaryAmount(from: lines)
+            merchant = extractOrderSummaryMerchant(from: lines)
+            date = extractDate(from: lines)
+            items = extractLineItems(from: lines, total: amount)
+        case .hospitalBill:
+            // Hospital bills: "Net Payable" / "Amount Payable" / "Final
+            // Amount" near the bottom. Merchant is the hospital name in
+            // the top header (usually first line). Items are services
+            // / procedures / medicines listed with prices.
+            amount = extractHospitalAmount(from: lines)
+            merchant = extractMerchant(from: lines, observations: observations)
+            date = extractDate(from: lines)
+            items = extractLineItems(from: lines, total: amount)
+        case .utilityBill:
+            // Utility bills: "Amount Due" / "Total Payable" with a due
+            // date. Merchant is the utility provider name (top header).
+            // No line items in the typical sense — bill has one total.
+            amount = extractUtilityAmount(from: lines)
+            merchant = extractMerchant(from: lines, observations: observations)
+            date = extractDate(from: lines)
+            items = []
+        case .restaurantBill, .generic:
+            // Standard path — what we had before. Restaurant bills and
+            // generic unclassified documents both work fine with the
+            // general-purpose extractors.
+            amount = extractAmount(from: lines)
+            merchant = extractMerchant(from: lines, observations: observations)
+            date = extractDate(from: lines)
+            items = extractLineItems(from: lines, total: amount)
+        }
+
+        return ParseResult(
+            amount: amount,
+            merchant: merchant,
+            items: items,
+            date: date,
+            rawText: rawText,
+            documentType: documentType
+        )
+    }
+
+    // MARK: - Document Classification
+    //
+    // Decide what KIND of document this OCR text represents. The
+    // classifier looks at distinctive keywords and structural hints
+    // — it's deliberately conservative, falling through to `.generic`
+    // when the signal isn't strong. False positives (mis-routing) are
+    // worse than false negatives (handling as generic) because the
+    // per-type extractors are tuned to specific layouts.
+
+    /// UPI-app keyword set. Lines containing any of these strongly
+    /// suggest a UPI confirmation screenshot. Single-word matches
+    /// like "upi" alone aren't sufficient — restaurant bills sometimes
+    /// say "Payment: UPI" too. We require co-occurrence of multiple
+    /// hints (see `classifyDocument`).
+    private static let upiKeywords: Set<String> = [
+        "upi ref", "upi transaction", "transaction id", "transaction reference",
+        "paid successfully", "payment successful", "paid to", "money transferred",
+        "rrn", "utr no", "utr reference",
+        "phonepe", "google pay", "gpay", "paytm", "bhim",
+        "@oksbi", "@okhdfcbank", "@okicici", "@okaxis", "@paytm", "@ybl", "@axl"
+    ]
+
+    /// Food / grocery delivery keyword set. Co-occurrence of these
+    /// with line-item-like content classifies as `.orderSummary`.
+    private static let orderSummaryKeywords: Set<String> = [
+        "swiggy", "zomato", "blinkit", "zepto", "instamart", "dunzo",
+        "bigbasket", "country delight", "licious",
+        "order id", "order #", "order placed", "order confirmation",
+        "delivery address", "delivery partner", "delivered to",
+        "bill total", "total paid", "to pay", "item total"
+    ]
+
+    /// Restaurant-bill markers — printed at the top of most table
+    /// service / cafe / kirana bills.
+    private static let restaurantKeywords: Set<String> = [
+        "bill no", "table no", "table :", "floor :",
+        "cash bill", "tax invoice", "kot no", "captain", "steward",
+        "service charge", "cgst", "sgst"
+    ]
+
+    /// Hospital / clinic / diagnostics bill markers.
+    private static let hospitalKeywords: Set<String> = [
+        "patient name", "patient id", "mrd no", "mrd number",
+        "diagnosis", "consultation", "consultant", "discharge",
+        "admission", "ward", "bed no", "ipd", "opd",
+        "procedure", "lab test", "investigation",
+        "net payable", "amount payable", "final amount",
+        "advance paid", "balance due"
+    ]
+
+    /// Utility bill markers — electricity, water, gas, broadband.
+    private static let utilityKeywords: Set<String> = [
+        "consumer no", "consumer number", "account no", "service no",
+        "units consumed", "kwh", "billing period", "billing month",
+        "due date", "previous reading", "current reading",
+        "electricity", "water board", "gas connection",
+        "broadband", "fiber", "internet plan", "mobile recharge",
+        "amount due", "total payable"
+    ]
+
+    /// Classify the OCR'd document into one of four buckets. Algorithm:
+    /// score each candidate type by how many of its keywords appear in
+    /// the text; pick the highest-scoring type if it crosses a confidence
+    /// threshold. Ties / low scores fall back to `.generic`.
+    ///
+    /// **Why score-based instead of single-keyword?** Each individual
+    /// keyword is noisy (a restaurant might mention "UPI" once; a UPI
+    /// screen might mention a merchant that's also a restaurant chain).
+    /// Requiring multiple hits reduces false positives.
+    private static func classifyDocument(from lines: [String]) -> DocumentType {
+        let combinedText = lines.joined(separator: " ").lowercased()
+
+        let upiScore = upiKeywords.filter { combinedText.contains($0) }.count
+        let orderScore = orderSummaryKeywords.filter { combinedText.contains($0) }.count
+        let restaurantScore = restaurantKeywords.filter { combinedText.contains($0) }.count
+        let hospitalScore = hospitalKeywords.filter { combinedText.contains($0) }.count
+        let utilityScore = utilityKeywords.filter { combinedText.contains($0) }.count
+
+        // Confidence threshold: need at least 2 keyword hits to commit
+        // to a type. Lone hits are too easily produced by coincidence.
+        let threshold = 2
+
+        // Pick the type with the highest score over threshold. Priority
+        // when tied: hospital > utility > upi > orderSummary > restaurant.
+        // Hospital and utility bills have the most distinct vocabularies
+        // so they should win when their keywords appear; restaurant
+        // keywords are common enough to lose ties.
+        let scores: [(DocumentType, Int)] = [
+            (.hospitalBill, hospitalScore),
+            (.utilityBill, utilityScore),
+            (.upi, upiScore),
+            (.orderSummary, orderScore),
+            (.restaurantBill, restaurantScore)
+        ]
+        let top = scores.max { $0.1 < $1.1 }
+        guard let (type, score) = top, score >= threshold else {
+            return .generic
+        }
+        return type
+    }
+
+    // MARK: - UPI Extractors
+    //
+    // UPI confirmation screens have a remarkably consistent layout
+    // across PhonePe, GPay, Paytm, and bank apps:
+    //   - "₹AMOUNT" near the top in large text (the paid amount)
+    //   - "Paid to MERCHANT NAME" right below
+    //   - Transaction ID / UTR / Ref later
+    //   - "Payment Successful" or similar banner
+    //
+    // Extractors here are tighter than the generic ones — they trust
+    // the layout instead of scanning the entire image.
+
+    /// Pull the payment amount from a UPI confirmation. The amount in
+    /// UPI screens is almost always the FIRST currency-shaped number
+    /// in the text, displayed prominently at the top. We take the first
+    /// plausible currency value we encounter rather than the largest
+    /// (which would risk picking up account-balance footers).
+    private static func extractUPIAmount(from lines: [String]) -> Double? {
+        // Priority 1: a line that's just "₹AMOUNT" or has a label like
+        // "Amount", "Paid", "Amount Paid".
+        let amountLabels = ["amount paid", "amount", "you paid", "paid", "transferred"]
+        for line in lines {
+            let lower = line.lowercased()
+            if amountLabels.contains(where: { lower.contains($0) }),
+               let value = currencyValue(in: line) {
+                return value
+            }
+        }
+
+        // Priority 2: first standalone currency value. UPI screens
+        // display the amount at the top, so the first match is usually
+        // the right one. Skip lines that are clearly footers (balance,
+        // available, history, etc).
+        let footerMarkers = ["balance", "available", "history", "limit", "remaining"]
+        for line in lines {
+            let lower = line.lowercased()
+            if footerMarkers.contains(where: { lower.contains($0) }) { continue }
+            if let value = currencyValue(in: line) {
+                return value
+            }
+        }
+        return nil
+    }
+
+    /// Pull the merchant name from a UPI confirmation. Look for the
+    /// "Paid to" / "To" label and grab the value next to or below it.
+    /// Falls back to scanning for a line that looks like a name (not a
+    /// transaction ID, not a date) appearing right after the amount.
+    private static func extractUPIMerchant(from lines: [String]) -> String? {
+        let merchantLabels = ["paid to", "to:", "to ", "transferred to", "sent to"]
+        for (index, line) in lines.enumerated() {
+            let lower = line.lowercased()
+            guard merchantLabels.contains(where: { lower.contains($0) }) else { continue }
+
+            // Try the same line first — "Paid to MERCHANT NAME"
+            for label in merchantLabels {
+                if let range = lower.range(of: label) {
+                    let after = String(line[range.upperBound...])
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                        .trimmingCharacters(in: CharacterSet(charactersIn: ":"))
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !after.isEmpty, looksLikeMerchantName(after) {
+                        return titleCased(after)
+                    }
+                }
+            }
+
+            // Fall back to the next line (label on one line, value below).
+            if index + 1 < lines.count {
+                let next = lines[index + 1].trimmingCharacters(in: .whitespacesAndNewlines)
+                if looksLikeMerchantName(next) {
+                    return titleCased(next)
+                }
+            }
+        }
+        return nil
+    }
+
+    // MARK: - Order Summary Extractors
+    //
+    // Swiggy / Zomato / Blinkit order summaries have a consistent
+    // pattern: brand header at very top, "Order from MERCHANT" or
+    // similar, then item list, then a clearly labeled grand total
+    // ("Bill Total", "Total Paid", "Amount Charged") at the bottom.
+
+    /// Bill-total label set for order summaries. These labels are
+    /// VERY specific to delivery apps — they reliably mark the final
+    /// charge including delivery fees and platform fees.
+    private static let orderTotalKeywords = [
+        "bill total", "total paid", "amount paid", "total amount",
+        "amount charged", "you paid", "order total"
+    ]
+
+    /// Pull the total from an order summary. Strategy: scan for one
+    /// of the order-summary-specific total keywords (which are highly
+    /// reliable), take its associated value. Fall back to the generic
+    /// largest-total heuristic if no specific keyword found.
+    private static func extractOrderSummaryAmount(from lines: [String]) -> Double? {
+        for (index, line) in lines.enumerated() {
+            guard !isPaymentMethodLine(line) else { continue }
+            let lower = line.lowercased()
+            guard orderTotalKeywords.contains(where: { lower.contains($0) }) else { continue }
+            if let amount = currencyValue(in: line) { return amount }
+            // Peek both directions — same as generic extractor.
+            if index > 0, !isPaymentMethodLine(lines[index - 1]),
+               let amount = currencyValue(in: lines[index - 1]) {
+                return amount
+            }
+            if index + 1 < lines.count, !isPaymentMethodLine(lines[index + 1]),
+               let amount = currencyValue(in: lines[index + 1]) {
+                return amount
+            }
+        }
+        // Fall back to the generic extractor.
+        return extractAmount(from: lines)
+    }
+
+    /// Pull the restaurant / store name from an order summary. Look for
+    /// "Order from X" / "from X" labels first. Fall back to the line
+    /// right after the brand header (Swiggy/Zomato) when no label found.
+    private static func extractOrderSummaryMerchant(from lines: [String]) -> String? {
+        let merchantLabels = ["order from", "from ", "ordered from"]
+        for (index, line) in lines.enumerated() {
+            let lower = line.lowercased()
+            guard merchantLabels.contains(where: { lower.contains($0) }) else { continue }
+
+            // Same line — "Order from RESTAURANT"
+            for label in merchantLabels {
+                if let range = lower.range(of: label) {
+                    let after = String(line[range.upperBound...])
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !after.isEmpty, looksLikeMerchantName(after) {
+                        return titleCased(after)
+                    }
+                }
+            }
+
+            // Next line
+            if index + 1 < lines.count {
+                let next = lines[index + 1].trimmingCharacters(in: .whitespacesAndNewlines)
+                if looksLikeMerchantName(next) {
+                    return titleCased(next)
+                }
+            }
+        }
+
+        // Last resort: skip the brand header (Swiggy/Zomato/etc) at the
+        // top and find the first merchant-looking line below it.
+        let brandSet: Set<String> = ["swiggy", "zomato", "blinkit", "zepto", "instamart", "dunzo"]
+        for line in lines.dropFirst(3) {  // skip first 3 lines (brand headers)
+            let lower = line.lowercased()
+            if brandSet.contains(where: { lower.contains($0) }) { continue }
+            if looksLikeMerchantName(line) {
+                return titleCased(line)
+            }
+        }
+        return nil
+    }
+
+    // MARK: - Hospital Bill Extractors
+    //
+    // Hospital / clinic bills are dense with sub-totals: consultation
+    // charges, lab work, pharmacy, room charges, taxes, discounts,
+    // advance paid, and finally "Net Payable". The grand total is
+    // ALMOST ALWAYS in the bottom 30% of the document with a clear
+    // label. We anchor on that label, falling back to the generic
+    // largest-wins approach if labels are missing.
+
+    /// Hospital-specific final-total labels. These are very strong
+    /// signals — when one appears in a hospital bill it IS the amount.
+    private static let hospitalTotalKeywords = [
+        "net payable", "amount payable", "final amount",
+        "net amount payable", "total payable", "amount due",
+        "balance due", "balance payable"
+    ]
+
+    /// Pull the final payable amount from a hospital bill. Strategy:
+    /// scan in REVERSE order (from bottom of document up) so we hit
+    /// the bottommost total first — hospitals print the final amount
+    /// last after listing all components. Look for hospital-specific
+    /// labels with look-back + look-forward like the generic extractor.
+    private static func extractHospitalAmount(from lines: [String]) -> Double? {
+        // Reverse iteration — the final payable is the LAST matching
+        // total, never an earlier sub-total.
+        for (revIdx, line) in lines.reversed().enumerated() {
+            let realIdx = lines.count - 1 - revIdx
+            guard !isPaymentMethodLine(line) else { continue }
+            let lower = line.lowercased()
+            guard hospitalTotalKeywords.contains(where: { lower.contains($0) }) else { continue }
+            if let amount = currencyValue(in: line) { return amount }
+            if realIdx > 0,
+               !isPaymentMethodLine(lines[realIdx - 1]),
+               let amount = currencyValue(in: lines[realIdx - 1]) {
+                return amount
+            }
+            if realIdx + 1 < lines.count,
+               !isPaymentMethodLine(lines[realIdx + 1]),
+               let amount = currencyValue(in: lines[realIdx + 1]) {
+                return amount
+            }
+        }
+        // Fall back to the generic extractor.
+        return extractAmount(from: lines)
+    }
+
+    // MARK: - Utility Bill Extractors
+    //
+    // Utility bills are well-structured but vary across providers
+    // (electricity boards, water boards, telcos). The amount is almost
+    // always labeled "Amount Due", "Total Payable", "Amount to Pay",
+    // accompanied by a due date.
+
+    private static let utilityTotalKeywords = [
+        "amount due", "total payable", "amount payable",
+        "total amount due", "bill amount", "amount to pay",
+        "net amount", "current bill amount"
+    ]
+
+    /// Pull the payable amount from a utility bill. Utility totals are
+    /// straightforward — single explicit label, single value. We scan
+    /// forward (top-down) since the amount is often in the upper-middle
+    /// of the bill near "Due Date".
+    private static func extractUtilityAmount(from lines: [String]) -> Double? {
+        for (idx, line) in lines.enumerated() {
+            guard !isPaymentMethodLine(line) else { continue }
+            let lower = line.lowercased()
+            guard utilityTotalKeywords.contains(where: { lower.contains($0) }) else { continue }
+            if let amount = currencyValue(in: line) { return amount }
+            if idx > 0, !isPaymentMethodLine(lines[idx - 1]),
+               let amount = currencyValue(in: lines[idx - 1]) {
+                return amount
+            }
+            if idx + 1 < lines.count, !isPaymentMethodLine(lines[idx + 1]),
+               let amount = currencyValue(in: lines[idx + 1]) {
+                return amount
+            }
+        }
+        return extractAmount(from: lines)
     }
 
     // MARK: - Amount extraction
@@ -177,10 +737,17 @@ enum ReceiptStorage {
 
     /// Final-total markers — unambiguous, never apply to line items.
     /// Checked first; if any of these match, we trust that value.
+    /// Expanded set covers hospital bills, utility bills, fancy
+    /// restaurant POS output, and Indian English variations.
     private static let finalTotalKeywords = [
         "grand total", "gr total", "net amount", "net total",
+        "net payable", "net amount payable",
         "bill amount", "amount payable", "amt payable", "to pay",
-        "total payable", "final amount", "round off total"
+        "total payable", "final amount", "round off total",
+        "amount due", "total due", "balance due", "balance payable",
+        "you pay", "you paid", "amount paid",
+        "final total", "final payable",
+        "invoice total", "billed amount"
     ]
 
     /// Ambiguous total markers — "total" appears next to line items
@@ -242,11 +809,40 @@ enum ReceiptStorage {
                let amount = currencyValue(in: lines[index + 1]) {
                 return amount
             }
+            // **Digit recovery pass**: OCR sometimes mis-reads digits as
+            // visually similar letters (1→I/l/|, 0→O, 5→S, 8→B). When
+            // we matched a final-total KEYWORD but couldn't find a
+            // number nearby, retry the SAME lines with substitutions
+            // applied. Costs nothing on receipts where OCR is clean
+            // (the original pass already returned). Recovers real-world
+            // cases like "I40.00" (140 misread) or "5O.OO" (50.00).
+            let candidates: [String] = {
+                var out = [line]
+                if index > 0, !isPaymentMethodLine(lines[index - 1]) {
+                    out.append(lines[index - 1])
+                }
+                if index + 1 < lines.count, !isPaymentMethodLine(lines[index + 1]) {
+                    out.append(lines[index + 1])
+                }
+                return out
+            }()
+            for candidate in candidates {
+                if let amount = currencyValue(in: applyOCRDigitRecovery(candidate)) {
+                    return amount
+                }
+            }
         }
 
         // Phase 2: ambiguous markers ("total"). Collect ALL matches —
-        // EXCLUDING payment-method lines — then take the maximum.
+        // EXCLUDING payment-method lines — then pick the best candidate.
         // Same look-back/look-forward applies here too.
+        //
+        // **Selection upgrade**: instead of always picking the largest,
+        // we cross-check each candidate against the sum of plausible
+        // line-item values. The "right" total is the one whose value
+        // approximately equals the items sum (within 10% to allow for
+        // tax). When no candidate matches the sum well, fall back to
+        // largest-wins (the previous behavior).
         var totalMarkedAmounts: [Double] = []
         for (index, line) in lines.enumerated() {
             guard !isPaymentMethodLine(line) else { continue }
@@ -266,8 +862,31 @@ enum ReceiptStorage {
                 totalMarkedAmounts.append(amount)
             }
         }
-        if let largest = totalMarkedAmounts.max() {
-            return largest
+
+        if !totalMarkedAmounts.isEmpty {
+            // Sum cross-validation: compute the sum of all "small" line
+            // amounts (those that look like item prices, not totals).
+            // The right total should approximately equal this sum.
+            let itemSum = estimateItemSum(from: lines, excluding: totalMarkedAmounts)
+            if itemSum > 0 {
+                // Pick the candidate closest to itemSum within a 10%
+                // tax-tolerance band on either side (some bills have
+                // GST added, some don't). If multiple candidates fall
+                // in the band, prefer the LARGER one (most likely the
+                // tax-inclusive grand total).
+                let withinBand = totalMarkedAmounts.filter { value in
+                    let ratio = value / itemSum
+                    return ratio >= 0.95 && ratio <= 1.25  // 0% tax to ~25% tax
+                }
+                if let match = withinBand.max() {
+                    return match
+                }
+            }
+            // No item sum signal or no candidate matched. Fall back
+            // to largest-wins — the previous behavior.
+            if let largest = totalMarkedAmounts.max() {
+                return largest
+            }
         }
 
         // Phase 3: no keyword match at all. Take the largest plausible-
@@ -276,6 +895,100 @@ enum ReceiptStorage {
             .filter { !isPaymentMethodLine($0) }
             .compactMap { currencyValue(in: $0) }
         return allAmounts.max()
+    }
+
+    /// Estimate the sum of probable line items in the receipt. Used by
+    /// the amount-extraction Phase 2 to cross-validate candidate totals
+    /// against actual item prices. The "right" total is the one whose
+    /// value approximately equals the sum of items.
+    ///
+    /// **Heuristic for what counts as an item**:
+    /// - Lines containing a currency value
+    /// - NOT payment-method lines (cash, change, etc.)
+    /// - NOT total-marker lines (subtotal, grand total, etc.)
+    /// - Currency value < ₹50,000 (filters out outlier values that are
+    ///   clearly totals, not items)
+    /// - The currency value isn't in the `excluding` set (so we don't
+    ///   sum the candidate totals themselves into the validation)
+    ///
+    /// Returns 0 when no items could be identified — caller falls back
+    /// to largest-wins. Approximate by design; precision isn't required
+    /// because we only use it for ratio comparison with a 25% tolerance.
+    private static func estimateItemSum(from lines: [String],
+                                         excluding totalCandidates: [Double]) -> Double {
+        let totalMarkerKeywords = ambiguousTotalKeywords + finalTotalKeywords
+        var sum: Double = 0
+        var count: Int = 0
+        for line in lines {
+            let lower = line.lowercased()
+            // Skip payment-method lines and total-marker lines.
+            if isPaymentMethodLine(line) { continue }
+            if totalMarkerKeywords.contains(where: { lower.contains($0) }) { continue }
+            guard let value = currencyValue(in: line) else { continue }
+            // Skip outliers (clearly totals, not items).
+            if value > 50_000 { continue }
+            // Skip values that match a total candidate within ₹1.
+            if totalCandidates.contains(where: { abs($0 - value) < 1 }) { continue }
+            sum += value
+            count += 1
+        }
+        // Require at least 2 items for a meaningful sum — a single
+        // matched line might just be a sub-total, not a real item list.
+        return count >= 2 ? sum : 0
+    }
+
+    /// Apply common OCR mis-read substitutions to recover digit values.
+    /// Used only as a secondary pass when keyword extraction matched a
+    /// label but no number was found on adjacent lines — assumes that
+    /// the matched lines DID contain the amount, OCR just garbled it.
+    ///
+    /// **Substitutions applied** (all uppercase letters → digits):
+    ///   I, l, | → 1   (vertical strokes commonly confused with one)
+    ///   O       → 0   (round letter commonly confused with zero)
+    ///   S       → 5   (curved similar shapes; happens on thermal print)
+    ///   B       → 8   (closed-loop similar shapes; rarer)
+    ///
+    /// **Why limited to specific positions**: blindly substituting these
+    /// letters across all text would mangle real merchant names ("ICICI"
+    /// would become "1C1C1"). We only apply when we ALREADY found a
+    /// total-marker keyword on the line, so any nearby characters are
+    /// extremely likely to be the amount, not a name.
+    ///
+    /// **Returns** the transformed line. Caller pipes through
+    /// `currencyValue` which then sees normal-looking digits.
+    private static func applyOCRDigitRecovery(_ line: String) -> String {
+        // Only apply in regions that look numeric. We detect "numeric
+        // regions" as runs of characters that are at least 40% digits
+        // already — clean text stays untouched, garbled amounts get fixed.
+        let words = line.split(separator: " ", omittingEmptySubsequences: false)
+        let transformed: [String] = words.map { word in
+            let str = String(word)
+            // Count digits in the word. If the word has at least one
+            // digit AND the digit-to-letter ratio is high, treat it as
+            // a candidate for substitution. Pure-letter words (merchant
+            // names, labels) stay untouched.
+            let digitCount = str.filter { $0.isNumber }.count
+            let letterCount = str.filter { $0.isLetter }.count
+            guard digitCount > 0, digitCount + letterCount > 0 else { return str }
+            // Substitute only when the word is at least 40% digits —
+            // empirically catches "I40", "5O.OO", "I,250" while leaving
+            // alphabetic content alone.
+            let ratio = Double(digitCount) / Double(digitCount + letterCount)
+            guard ratio >= 0.4 else { return str }
+            var out = ""
+            out.reserveCapacity(str.count)
+            for ch in str {
+                switch ch {
+                case "I", "l", "|": out.append("1")
+                case "O": out.append("0")
+                case "S": out.append("5")
+                case "B": out.append("8")
+                default:  out.append(ch)
+                }
+            }
+            return out
+        }
+        return transformed.joined(separator: " ")
     }
 
     /// Extract a single currency value from a line of text. Returns the

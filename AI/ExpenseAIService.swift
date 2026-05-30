@@ -17,7 +17,11 @@ final class ExpenseAIService {
         if appleExtractor.isAvailable {
 
             do {
-                return try await appleExtractor.extract(from: text)
+                if #available(iOS 26.0, *) {
+                    return try await appleExtractor.extract(from: text)
+                } else {
+                    return nil
+                }
             } catch {
                 print(error)
             }

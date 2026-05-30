@@ -421,7 +421,7 @@ struct HomeView: View {
             // The official SF Symbol for Apple Intelligence on iOS 26.
             // Falls back to `sparkles` if running on a pre-26 build —
             // shouldn't happen given our deployment target, but defensive.
-            Image(systemName: "apple.intelligence")
+            Image(systemName: SFSymbols.appleIntelligence)
                 .font(.subheadline.weight(.medium))
                 .foregroundStyle(Color.tulaBrandFallback)
                 .symbolEffect(.pulse, options: .repeating)
@@ -690,7 +690,9 @@ struct HomeView: View {
                                      ruleFallback: [ParsedExpense]) {
         let usableCategories = allCategories.filter { !$0.isArchived }
         let usableAccounts = allAccounts.filter { !$0.isArchived }
-        let categoryNames = usableCategories.map { $0.name }
+        let categoryEntries = usableCategories.map {
+            CategoryEntry(name: $0.name, iconKey: $0.iconKey)
+        }
         let accountNames = usableAccounts.map { $0.name }
         let categoryByName = Dictionary(uniqueKeysWithValues:
             usableCategories.map { ($0.name.lowercased(), $0) })
@@ -712,7 +714,7 @@ struct HomeView: View {
                 group.addTask {
                     await SmartExpenseParser.parseVoice(
                         rawInput,
-                        categoryNames: categoryNames,
+                        categories: categoryEntries,
                         accountNames: accountNames
                     )
                 }
@@ -854,7 +856,9 @@ struct HomeView: View {
             guard !candidates.isEmpty else { return }
 
             let usableCategories = allCategories.filter { !$0.isArchived }
-            let categoryNames = usableCategories.map { $0.name }
+            let categoryEntries = usableCategories.map {
+                CategoryEntry(name: $0.name, iconKey: $0.iconKey)
+            }
             let categoryMap = Dictionary(uniqueKeysWithValues:
                 usableCategories.map { ($0.name.lowercased(), $0) })
 
@@ -887,7 +891,7 @@ struct HomeView: View {
                 for item in workItems {
                     let result = await SmartExpenseParser.parse(
                         item.rawInput,
-                        categoryNames: categoryNames
+                        categories: categoryEntries
                     )
 
                     await MainActor.run {

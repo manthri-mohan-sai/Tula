@@ -127,7 +127,7 @@ struct AllExpensesView: View {
         }
         .animation(.snappy(duration: 0.25), value: filter.hasAnyFilter)
         .navigationTitle("Activity")
-        .navigationSubtitle(subtitleText)
+        .tulaNavigationSubtitle(subtitleText)
         .navigationBarTitleDisplayMode(.inline)
         .searchable(
             text: $searchText,

@@ -196,7 +196,7 @@ struct SettingsView: View {
                 let available = SmartExpenseParser.isAvailable
                 Toggle(isOn: $smartParsingEnabled) {
                     settingsLabel("Smart parsing",
-                                  icon: "apple.intelligence",
+                                  icon: SFSymbols.appleIntelligence,
                                   color: Color.tulaBrandFallback)
                 }
                 .disabled(!available)
@@ -261,16 +261,31 @@ struct SettingsView: View {
         Haptics.tap()
 
         let sample = "spent 350 on lunch with team at sagar ratna"
-        let categories = ["Food", "Groceries", "Transport", "Shopping",
-                          "Entertainment", "Bills & Utilities", "Rent",
-                          "Health", "Education", "Travel",
-                          "Personal Care", "Other"]
+        // Test categories with matching SF Symbol icon keys so the
+        // parser builds a hint-augmented prompt (same code path as
+        // real expense logging). Without icons, the test runs against
+        // an under-prompted FM and accuracy would look worse than
+        // real-world.
+        let categories: [CategoryEntry] = [
+            CategoryEntry(name: "Food", iconKey: "fork.knife"),
+            CategoryEntry(name: "Groceries", iconKey: "basket.fill"),
+            CategoryEntry(name: "Transport", iconKey: "car.fill"),
+            CategoryEntry(name: "Shopping", iconKey: "bag.fill"),
+            CategoryEntry(name: "Entertainment", iconKey: "tv.fill"),
+            CategoryEntry(name: "Bills & Utilities", iconKey: "bolt.fill"),
+            CategoryEntry(name: "Rent", iconKey: "house.fill"),
+            CategoryEntry(name: "Health", iconKey: "cross.case.fill"),
+            CategoryEntry(name: "Education", iconKey: "book.fill"),
+            CategoryEntry(name: "Travel", iconKey: "suitcase.fill"),
+            CategoryEntry(name: "Personal Care", iconKey: "scissors"),
+            CategoryEntry(name: "Other", iconKey: "tag.fill")
+        ]
         let startedAt = Date()
 
         Task {
             let parsed = await SmartExpenseParser.parse(
                 sample,
-                categoryNames: categories
+                categories: categories
             )
             let elapsed = Int(Date().timeIntervalSince(startedAt) * 1000)
 
