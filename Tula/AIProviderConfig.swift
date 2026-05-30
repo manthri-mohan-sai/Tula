@@ -152,6 +152,58 @@ struct CloudAIConfig: Codable {
     }
 }
 
+// MARK: - Receipt Parsing Mode
+
+/// How receipts are parsed when using a cloud AI provider.
+/// Apple FM always uses OCR (on-device only), so this setting only
+/// applies when OpenAI or Gemini is selected.
+enum ReceiptParsingMode: String, CaseIterable, Identifiable {
+    case ocrThenAI = "ocrThenAI"
+    case directImage = "directImage"
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .ocrThenAI: return "OCR → Text → AI"
+        case .directImage: return "Send Image Directly"
+        }
+    }
+
+    var subtitle: String {
+        switch self {
+        case .ocrThenAI: return "Extract text on-device first, then send text to AI."
+        case .directImage: return "Send receipt photo directly to AI for better accuracy."
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .ocrThenAI: return "doc.text.viewfinder"
+        case .directImage: return "photo"
+        }
+    }
+}
+
+enum ReceiptParsingModeStorage {
+    private static let key = "receiptParsingMode"
+
+    static var selected: ReceiptParsingMode {
+        get {
+            guard let defaults = UserDefaults(suiteName: "group.com.app.Tula"),
+                  let raw = defaults.string(forKey: key),
+                  let mode = ReceiptParsingMode(rawValue: raw) else {
+                return .directImage
+            }
+            return mode
+        }
+        set {
+            guard let defaults = UserDefaults(suiteName: "group.com.app.Tula") else { return }
+            defaults.set(newValue.rawValue, forKey: key)
+        }
+    }
+}
+
 // MARK: - Selected Provider Storage
 
 /// Convenience for reading/writing the selected provider to UserDefaults.

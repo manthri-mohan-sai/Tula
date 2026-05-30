@@ -42,6 +42,10 @@ struct SettingsView: View {
     @State private var geminiModel: String = ""
     @State private var showingGeminiConfig: Bool = false
 
+    // Receipt parsing mode
+    @AppStorage("receiptParsingMode", store: UserDefaults(suiteName: "group.com.app.Tula"))
+    private var receiptParsingModeRaw: String = ReceiptParsingMode.directImage.rawValue
+
     @State private var showingAccounts = false
     @State private var showingCategories = false
     @State private var showingRecurring = false
@@ -318,6 +322,11 @@ struct SettingsView: View {
             if selectedProvider == .gemini {
                 geminiConfigRow
             }
+
+            // Receipt parsing mode — only for cloud providers
+            if selectedProvider != .appleFM {
+                receiptParsingModePicker
+            }
         }
     }
 
@@ -326,6 +335,53 @@ struct SettingsView: View {
             return provider.icon
         }
         return provider.iconFallback
+    }
+
+    // MARK: - Receipt Parsing Mode
+
+    private var receiptParsingModePicker: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Receipt Parsing")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .padding(.top, 4)
+
+            ForEach(ReceiptParsingMode.allCases) { mode in
+                Button {
+                    withAnimation(.snappy(duration: 0.2)) {
+                        receiptParsingModeRaw = mode.rawValue
+                        ReceiptParsingModeStorage.selected = mode
+                    }
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: mode.icon)
+                            .font(.subheadline)
+                            .foregroundStyle(mode.rawValue == receiptParsingModeRaw ? Color.tulaBrandFallback : .secondary)
+                            .frame(width: 22)
+
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(mode.displayName)
+                                .font(.caption.weight(.medium))
+                                .foregroundStyle(.primary)
+                            Text(mode.subtitle)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+
+                        Spacer()
+
+                        if mode.rawValue == receiptParsingModeRaw {
+                            Image(systemName: "checkmark")
+                                .foregroundStyle(Color.tulaBrandFallback)
+                                .font(.caption.weight(.bold))
+                        }
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
     }
 
     // MARK: - Cloud Config

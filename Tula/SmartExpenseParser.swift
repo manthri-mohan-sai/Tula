@@ -355,6 +355,26 @@ enum SmartExpenseParser {
         #endif
     }
 
+    // MARK: - Image-Based Receipt Parsing
+
+    /// Parse a receipt by sending the image directly to the cloud AI model.
+    /// Only used when `ReceiptParsingModeStorage.selected == .directImage`
+    /// and a cloud provider is active. Apple FM always uses OCR text.
+    static func parseReceiptImage(_ imageData: Data,
+                                   categories: [CategoryEntry]) async -> ReceiptSmartParseResult? {
+        guard !categories.isEmpty, !imageData.isEmpty else { return nil }
+
+        switch AIProviderStorage.selected {
+        case .openAI:
+            return await CloudAIParser.parseReceiptImage(imageData, categories: categories)
+        case .gemini:
+            return await CloudAIParser.parseReceiptImage(imageData, categories: categories, config: .loadGemini())
+        case .appleFM:
+            // Apple FM doesn't support image input — caller should use parseReceipt with OCR text
+            return nil
+        }
+    }
+
     /// **Lightweight transcript-cleanup pass** for parallel correction
     /// during dictation pauses. Unlike `parseVoice` (which returns a full
     /// structured ParsedExpense), this just returns the corrected string —

@@ -848,13 +848,22 @@ struct AddExpenseView: View {
             // for the common case of clean printed receipts.
             let regexResult = await ReceiptStorage.parse(image)
 
-            // Pass 2: smart parser on the raw OCR text — only runs if
-            // Foundation Models is available. Adds: better date parsing,
-            // better merchant disambiguation, cleaner item list.
-            // Race-limited to 6s so a stalled FM call doesn't block UI.
+            // Pass 2: smart parser — runs if AI is available.
+            // If user chose "direct image" mode and a cloud provider is active,
+            // send the image directly instead of OCR text.
+            // Race-limited to 6s so a stalled call doesn't block UI.
             let smartResult: ReceiptSmartParseResult? = await withTaskGroup(of: ReceiptSmartParseResult?.self) { group in
                 group.addTask {
                     guard #available(iOS 26.0, *), SmartExpenseParser.isAvailable else { return nil }
+
+                    // Direct image mode: send photo to cloud AI (skips OCR text)
+                    if ReceiptParsingModeStorage.selected == .directImage,
+                       AIProviderStorage.selected != .appleFM,
+                       let jpegData = image.jpegData(compressionQuality: 0.8) {
+                        return await SmartExpenseParser.parseReceiptImage(jpegData, categories: categoryEntries)
+                    }
+
+                    // OCR text mode (default for Apple FM)
                     return await SmartExpenseParser.parseReceipt(
                         regexResult.rawText,
                         categories: categoryEntries,

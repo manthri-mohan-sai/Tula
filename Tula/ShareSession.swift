@@ -170,6 +170,15 @@ final class ShareSession: ObservableObject {
             let smartResult: ReceiptSmartParseResult? = await withTaskGroup(of: ReceiptSmartParseResult?.self) { group in
                 group.addTask {
                     guard #available(iOS 26.0, *), SmartExpenseParser.isAvailable else { return nil }
+
+                    // Direct image mode: send photo to cloud AI (skips OCR text)
+                    if ReceiptParsingModeStorage.selected == .directImage,
+                       AIProviderStorage.selected != .appleFM,
+                       let jpegData = image.jpegData(compressionQuality: 0.8) {
+                        return await SmartExpenseParser.parseReceiptImage(jpegData, categories: categoryEntries)
+                    }
+
+                    // OCR text mode (default for Apple FM)
                     return await SmartExpenseParser.parseReceipt(
                         regexResult.rawText,
                         categories: categoryEntries,
