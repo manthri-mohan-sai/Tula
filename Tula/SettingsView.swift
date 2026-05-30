@@ -36,6 +36,12 @@ struct SettingsView: View {
     @State private var cloudModel: String = ""
     @State private var showingCloudConfig: Bool = false
 
+    // Gemini config editing state
+    @State private var geminiEndpoint: String = ""
+    @State private var geminiAPIKey: String = ""
+    @State private var geminiModel: String = ""
+    @State private var showingGeminiConfig: Bool = false
+
     @State private var showingAccounts = false
     @State private var showingCategories = false
     @State private var showingRecurring = false
@@ -201,7 +207,7 @@ struct SettingsView: View {
     private var smartParsingSection: some View {
         Section {
             if #available(iOS 26.0, *) {
-                let available = SmartExpenseParser.isAvailable || selectedProvider == .openAI
+                let available = SmartExpenseParser.isAvailable || selectedProvider == .openAI || selectedProvider == .gemini
                 Toggle(isOn: $smartParsingEnabled) {
                     settingsLabel("Smart parsing",
                                   icon: SFSymbols.appleIntelligence,
@@ -305,9 +311,12 @@ struct SettingsView: View {
                 .buttonStyle(.plain)
             }
 
-            // Cloud config row — shown when OpenAI is selected
+            // Cloud config row — shown when a cloud provider is selected
             if selectedProvider == .openAI {
                 cloudConfigRow
+            }
+            if selectedProvider == .gemini {
+                geminiConfigRow
             }
         }
     }
@@ -424,6 +433,113 @@ struct SettingsView: View {
         .presentationDetents([.medium])
     }
 
+    // MARK: - Gemini Config
+
+    private var geminiConfigRow: some View {
+        Group {
+            Button {
+                let config = CloudAIConfig.loadGemini()
+                geminiEndpoint = config.endpoint
+                geminiAPIKey = config.apiKey
+                geminiModel = config.model
+                showingGeminiConfig = true
+            } label: {
+                HStack {
+                    settingsLabel("Configure API",
+                                  icon: "key.fill",
+                                  color: .blue)
+                    Spacer()
+                    if CloudAIConfig.loadGemini().apiKey.isEmpty {
+                        Text("Not set")
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    } else {
+                        Text("Configured")
+                            .font(.caption)
+                            .foregroundStyle(.green)
+                    }
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            .buttonStyle(.plain)
+            .sheet(isPresented: $showingGeminiConfig) {
+                geminiConfigSheet
+            }
+        }
+    }
+
+    private var geminiConfigSheet: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("API Key")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        SecureField("AI...", text: $geminiAPIKey)
+                            .font(.subheadline)
+                            .textContentType(.password)
+                            .autocorrectionDisabled()
+                            .textInputAutocapitalization(.never)
+                    }
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Model")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        TextField("gemini-2.5-flash", text: $geminiModel)
+                            .font(.subheadline)
+                            .autocorrectionDisabled()
+                            .textInputAutocapitalization(.never)
+                    }
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Endpoint")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        TextField("https://generativelanguage.googleapis.com/v1beta/openai/chat/completions", text: $geminiEndpoint)
+                            .font(.subheadline)
+                            .textContentType(.URL)
+                            .autocorrectionDisabled()
+                            .textInputAutocapitalization(.never)
+                    }
+                } header: {
+                    Text("Google Gemini API")
+                } footer: {
+                    Text("Get a free API key at aistudio.google.com/apikey. Gemini 2.5 Flash is recommended for speed and generous free limits.")
+                }
+            }
+            .navigationTitle("Gemini Setup")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { showingGeminiConfig = false }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        let config = CloudAIConfig(
+                            endpoint: geminiEndpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                ? CloudAIConfig.geminiDefault.endpoint
+                                : geminiEndpoint.trimmingCharacters(in: .whitespacesAndNewlines),
+                            apiKey: geminiAPIKey.trimmingCharacters(in: .whitespacesAndNewlines),
+                            model: geminiModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                ? "gemini-2.5-flash"
+                                : geminiModel.trimmingCharacters(in: .whitespacesAndNewlines)
+                        )
+                        config.saveAsGemini()
+                        showingGeminiConfig = false
+                        smartTestResult = nil
+                    }
+                    .fontWeight(.semibold)
+                    .disabled(geminiAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+        }
+        .presentationDetents([.medium])
+    }
+
     /// Fires the selected AI provider with a sample expense sentence and
     /// displays the result inline. Gives the user a deterministic
     /// way to verify parsing works on their device / with their key.
@@ -484,6 +600,13 @@ struct SettingsView: View {
                         } else {
                             reason = "Cloud AI call failed. Check your endpoint, key, and model."
                         }
+                    case .gemini:
+                        let config = CloudAIConfig.loadGemini()
+                        if config.apiKey.isEmpty {
+                            reason = "API key not configured. Tap 'Configure API' above."
+                        } else {
+                            reason = "Gemini call failed. Check your API key and model."
+                        }
                     }
                     smartTestResult = "✗ \(reason)"
                     Haptics.warning()
@@ -511,6 +634,12 @@ struct SettingsView: View {
                         Text("Cloud AI selected but API key not configured. Tap 'Configure API' to set up.")
                     } else {
                         Text("Using cloud AI (\(CloudAIConfig.load().model)). Expense text is sent to the configured endpoint for parsing.")
+                    }
+                case .gemini:
+                    if CloudAIConfig.loadGemini().apiKey.isEmpty {
+                        Text("Gemini selected but API key not configured. Tap 'Configure API' to set up.")
+                    } else {
+                        Text("Using Google Gemini (\(CloudAIConfig.loadGemini().model)). Expense text is sent to Google's servers for parsing.")
                     }
                 }
             } else {

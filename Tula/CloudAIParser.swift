@@ -21,9 +21,10 @@ enum CloudAIParser {
     static func parse(_ input: String,
                       categories: [CategoryEntry],
                       accountNames: [String] = [],
-                      isVoice: Bool = false) async -> SmartParseResult? {
-        let config = CloudAIConfig.load()
-        guard !config.apiKey.isEmpty else { return nil }
+                      isVoice: Bool = false,
+                      config: CloudAIConfig? = nil) async -> SmartParseResult? {
+        let cfg = config ?? CloudAIConfig.load()
+        guard !cfg.apiKey.isEmpty else { return nil }
 
         let categoryList = categories.map { "- \($0.name)" }.joined(separator: "\n")
         let accountList = accountNames.isEmpty ? "(none)" : accountNames.joined(separator: ", ")
@@ -74,7 +75,7 @@ enum CloudAIParser {
         }
 
         guard let json = await callChatCompletions(
-            config: config,
+            config: cfg,
             systemPrompt: systemPrompt,
             userMessage: input
         ) else { return nil }
@@ -99,9 +100,10 @@ enum CloudAIParser {
     /// Parse receipt OCR text via the cloud AI endpoint.
     /// Same contract as SmartExpenseParser.parseReceipt.
     static func parseReceipt(_ rawText: String,
-                              categories: [CategoryEntry]) async -> ReceiptSmartParseResult? {
-        let config = CloudAIConfig.load()
-        guard !config.apiKey.isEmpty else { return nil }
+                              categories: [CategoryEntry],
+                              config: CloudAIConfig? = nil) async -> ReceiptSmartParseResult? {
+        let cfg = config ?? CloudAIConfig.load()
+        guard !cfg.apiKey.isEmpty else { return nil }
 
         let categoryList = categories.map { "- \($0.name)" }.joined(separator: "\n")
 
@@ -121,7 +123,7 @@ enum CloudAIParser {
         """
 
         guard let json = await callChatCompletions(
-            config: config,
+            config: cfg,
             systemPrompt: systemPrompt,
             userMessage: rawText
         ) else { return nil }

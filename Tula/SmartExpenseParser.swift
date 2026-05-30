@@ -38,18 +38,22 @@ enum SmartExpenseParser {
     /// - Foundation Models is available on this device, OR
     /// - The user has a cloud AI provider configured with a valid API key
     static var isAvailable: Bool {
-        if AIProviderStorage.selected == .openAI {
+        switch AIProviderStorage.selected {
+        case .openAI:
             return !CloudAIConfig.load().apiKey.isEmpty
+        case .gemini:
+            return !CloudAIConfig.loadGemini().apiKey.isEmpty
+        case .appleFM:
+            #if canImport(FoundationModels)
+            guard #available(iOS 26.0, *) else { return false }
+            if case .available = SystemLanguageModel.default.availability {
+                return true
+            }
+            return false
+            #else
+            return false
+            #endif
         }
-        #if canImport(FoundationModels)
-        guard #available(iOS 26.0, *) else { return false }
-        if case .available = SystemLanguageModel.default.availability {
-            return true
-        }
-        return false
-        #else
-        return false
-        #endif
     }
 
     /// Whether Foundation Models specifically is available on-device.
@@ -110,11 +114,15 @@ enum SmartExpenseParser {
     /// gets a working save flow.
     static func parse(_ input: String,
                       categories: [CategoryEntry]) async -> SmartParseResult? {
-        // Route to cloud if user selected it and FM isn't the active provider
-        if AIProviderStorage.selected == .openAI {
+        // Route to cloud if user selected a cloud provider
+        switch AIProviderStorage.selected {
+        case .openAI:
             return await CloudAIParser.parse(input, categories: categories, accountNames: [], isVoice: false)
+        case .gemini:
+            return await CloudAIParser.parse(input, categories: categories, accountNames: [], isVoice: false, config: .loadGemini())
+        case .appleFM:
+            return await parse(input, categories: categories, accountNames: [], isVoice: false)
         }
-        return await parse(input, categories: categories, accountNames: [], isVoice: false)
     }
 
     /// Voice-specific parse. Identical schema, but the instructions tell
@@ -135,11 +143,15 @@ enum SmartExpenseParser {
     static func parseVoice(_ input: String,
                             categories: [CategoryEntry],
                             accountNames: [String]) async -> SmartParseResult? {
-        if AIProviderStorage.selected == .openAI {
+        switch AIProviderStorage.selected {
+        case .openAI:
             return await CloudAIParser.parse(input, categories: categories, accountNames: accountNames, isVoice: true)
+        case .gemini:
+            return await CloudAIParser.parse(input, categories: categories, accountNames: accountNames, isVoice: true, config: .loadGemini())
+        case .appleFM:
+            return await parse(input, categories: categories,
+                        accountNames: accountNames, isVoice: true)
         }
-        return await parse(input, categories: categories,
-                    accountNames: accountNames, isVoice: true)
     }
 
     /// **Receipt parsing pass** — runs Foundation Models on the raw OCR'd
@@ -163,10 +175,17 @@ enum SmartExpenseParser {
                               categories: [CategoryEntry],
                               documentType: ReceiptStorage.DocumentType = .generic) async -> ReceiptSmartParseResult? {
         // Route to cloud AI if selected
-        if AIProviderStorage.selected == .openAI {
+        switch AIProviderStorage.selected {
+        case .openAI:
             let trimmed = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty, !categories.isEmpty else { return nil }
             return await CloudAIParser.parseReceipt(trimmed, categories: categories)
+        case .gemini:
+            let trimmed = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, !categories.isEmpty else { return nil }
+            return await CloudAIParser.parseReceipt(trimmed, categories: categories, config: .loadGemini())
+        case .appleFM:
+            break
         }
 
         #if canImport(FoundationModels)

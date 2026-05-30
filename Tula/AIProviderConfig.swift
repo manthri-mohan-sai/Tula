@@ -17,6 +17,7 @@ import FoundationModels
 enum AIProvider: String, CaseIterable, Identifiable {
     case appleFM = "appleFM"
     case openAI = "openAI"
+    case gemini = "gemini"
 
     var id: String { rawValue }
 
@@ -24,6 +25,7 @@ enum AIProvider: String, CaseIterable, Identifiable {
         switch self {
         case .appleFM: return "Apple FM (On Device)"
         case .openAI: return "ChatGPT (Cloud)"
+        case .gemini: return "Google Gemini (Cloud)"
         }
     }
 
@@ -31,6 +33,7 @@ enum AIProvider: String, CaseIterable, Identifiable {
         switch self {
         case .appleFM: return "apple.intelligence"
         case .openAI: return "cloud.fill"
+        case .gemini: return "sparkle"
         }
     }
 
@@ -39,6 +42,7 @@ enum AIProvider: String, CaseIterable, Identifiable {
         switch self {
         case .appleFM: return "sparkles"
         case .openAI: return "cloud.fill"
+        case .gemini: return "sparkle"
         }
     }
 
@@ -46,6 +50,7 @@ enum AIProvider: String, CaseIterable, Identifiable {
         switch self {
         case .appleFM: return "Private, on-device. No data leaves your phone."
         case .openAI: return "Requires API key. Data sent to OpenAI servers."
+        case .gemini: return "Google AI. Free tier available."
         }
     }
 
@@ -54,6 +59,7 @@ enum AIProvider: String, CaseIterable, Identifiable {
         switch self {
         case .appleFM: return false
         case .openAI: return true
+        case .gemini: return true
         }
     }
 
@@ -72,6 +78,9 @@ enum AIProvider: String, CaseIterable, Identifiable {
             #endif
         case .openAI:
             let config = CloudAIConfig.load()
+            return !config.apiKey.isEmpty
+        case .gemini:
+            let config = CloudAIConfig.loadGemini()
             return !config.apiKey.isEmpty
         }
     }
@@ -94,9 +103,17 @@ struct CloudAIConfig: Codable {
         model: "gpt-4o-mini"
     )
 
+    /// Default Gemini settings (OpenAI-compatible endpoint).
+    static let geminiDefault = CloudAIConfig(
+        endpoint: "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+        apiKey: "",
+        model: "gemini-2.5-flash"
+    )
+
     // MARK: - Persistence
 
     private static let storageKey = "cloudAIConfig"
+    private static let geminiStorageKey = "geminiAIConfig"
 
     /// Load from UserDefaults (shared App Group container).
     static func load() -> CloudAIConfig {
@@ -112,7 +129,26 @@ struct CloudAIConfig: Codable {
     func save() {
         guard let defaults = UserDefaults(suiteName: "group.com.app.Tula"),
               let data = try? JSONEncoder().encode(self) else { return }
-        defaults.set(data, forKey: storageKey)
+        defaults.set(data, forKey: CloudAIConfig.storageKey)
+    }
+
+    // MARK: - Gemini Persistence
+
+    /// Load Gemini config from UserDefaults.
+    static func loadGemini() -> CloudAIConfig {
+        guard let defaults = UserDefaults(suiteName: "group.com.app.Tula"),
+              let data = defaults.data(forKey: geminiStorageKey),
+              let config = try? JSONDecoder().decode(CloudAIConfig.self, from: data) else {
+            return .geminiDefault
+        }
+        return config
+    }
+
+    /// Save as Gemini config to UserDefaults.
+    func saveAsGemini() {
+        guard let defaults = UserDefaults(suiteName: "group.com.app.Tula"),
+              let data = try? JSONEncoder().encode(self) else { return }
+        defaults.set(data, forKey: CloudAIConfig.geminiStorageKey)
     }
 }
 
