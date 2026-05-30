@@ -21,12 +21,20 @@ struct SettingsView: View {
     @AppStorage("budgetAlertsEnabled") private var budgetAlertsEnabled: Bool = false
     @AppStorage("launchAnimationEnabled") private var launchAnimationEnabled: Bool = true
     @AppStorage("smartParsingEnabled") private var smartParsingEnabled: Bool = true
+    @AppStorage("selectedAIProvider", store: UserDefaults(suiteName: "group.com.app.Tula"))
+    private var selectedProviderRaw: String = AIProvider.appleFM.rawValue
 
     /// Result of the most recent "Test smart parsing" tap in Settings —
     /// nil while idle, populated after a test parse. Surfaces what
     /// Foundation Models actually returned (or an error reason).
     @State private var smartTestResult: String? = nil
     @State private var smartTestInFlight: Bool = false
+
+    // Cloud AI config editing state
+    @State private var cloudEndpoint: String = ""
+    @State private var cloudAPIKey: String = ""
+    @State private var cloudModel: String = ""
+    @State private var showingCloudConfig: Bool = false
 
     @State private var showingAccounts = false
     @State private var showingCategories = false
@@ -193,19 +201,21 @@ struct SettingsView: View {
     private var smartParsingSection: some View {
         Section {
             if #available(iOS 26.0, *) {
-                let available = SmartExpenseParser.isAvailable
+                let available = SmartExpenseParser.isAvailable || selectedProvider == .openAI
                 Toggle(isOn: $smartParsingEnabled) {
                     settingsLabel("Smart parsing",
                                   icon: SFSymbols.appleIntelligence,
                                   color: Color.tulaBrandFallback)
                 }
-                .disabled(!available)
                 .tint(Color.tulaBrandFallback)
 
-                // Test row: actually fires FM with a sample sentence
-                // so the user gets a definitive yes/no on whether it's
-                // working on their device. Disabled when unavailable or
-                // the user has the feature off.
+                // Provider picker — shown when smart parsing is enabled
+                if smartParsingEnabled {
+                    providerPickerSection
+                }
+
+                // Test row: actually fires the selected provider with a
+                // sample sentence so the user gets a definitive yes/no.
                 Button {
                     runSmartParseTest()
                 } label: {
@@ -225,7 +235,7 @@ struct SettingsView: View {
                     }
                 }
                 .buttonStyle(.plain)
-                .disabled(!available || !smartParsingEnabled || smartTestInFlight)
+                .disabled(!smartParsingEnabled || smartTestInFlight)
 
                 if let result = smartTestResult {
                     Text(result)
@@ -249,11 +259,174 @@ struct SettingsView: View {
         }
     }
 
-    /// Fires Foundation Models with a sample expense sentence and
+    // MARK: - Provider Picker
+
+    private var selectedProvider: AIProvider {
+        get { AIProvider(rawValue: selectedProviderRaw) ?? .appleFM }
+        nonmutating set { selectedProviderRaw = newValue.rawValue }
+    }
+
+    private var providerPickerSection: some View {
+        Group {
+            // Provider selection list
+            ForEach(AIProvider.allCases) { provider in
+                Button {
+                    withAnimation(.snappy(duration: 0.25)) {
+                        selectedProviderRaw = provider.rawValue
+                        smartTestResult = nil
+                    }
+                } label: {
+                    HStack(spacing: 12) {
+                        Image(systemName: providerIcon(provider))
+                            .font(.subheadline)
+                            .foregroundStyle(provider == selectedProvider ? Color.tulaBrandFallback : .secondary)
+                            .frame(width: 24)
+
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(provider.displayName)
+                                .font(.subheadline.weight(.medium))
+                                .foregroundStyle(.primary)
+                            Text(provider.subtitle)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+
+                        Spacer()
+
+                        if provider == selectedProvider {
+                            Image(systemName: "checkmark.circle.fill")
+                                .foregroundStyle(Color.tulaBrandFallback)
+                                .font(.subheadline)
+                        }
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+
+            // Cloud config row — shown when OpenAI is selected
+            if selectedProvider == .openAI {
+                cloudConfigRow
+            }
+        }
+    }
+
+    private func providerIcon(_ provider: AIProvider) -> String {
+        if #available(iOS 26.0, *) {
+            return provider.icon
+        }
+        return provider.iconFallback
+    }
+
+    // MARK: - Cloud Config
+
+    private var cloudConfigRow: some View {
+        Group {
+            Button {
+                let config = CloudAIConfig.load()
+                cloudEndpoint = config.endpoint
+                cloudAPIKey = config.apiKey
+                cloudModel = config.model
+                showingCloudConfig = true
+            } label: {
+                HStack {
+                    settingsLabel("Configure API",
+                                  icon: "key.fill",
+                                  color: .orange)
+                    Spacer()
+                    if CloudAIConfig.load().apiKey.isEmpty {
+                        Text("Not set")
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    } else {
+                        Text("Configured")
+                            .font(.caption)
+                            .foregroundStyle(.green)
+                    }
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            .buttonStyle(.plain)
+            .sheet(isPresented: $showingCloudConfig) {
+                cloudConfigSheet
+            }
+        }
+    }
+
+    private var cloudConfigSheet: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Endpoint")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        TextField("https://api.openai.com/v1/chat/completions", text: $cloudEndpoint)
+                            .font(.subheadline)
+                            .textContentType(.URL)
+                            .autocorrectionDisabled()
+                            .textInputAutocapitalization(.never)
+                    }
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("API Key")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        SecureField("sk-...", text: $cloudAPIKey)
+                            .font(.subheadline)
+                            .textContentType(.password)
+                            .autocorrectionDisabled()
+                            .textInputAutocapitalization(.never)
+                    }
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Model")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        TextField("gpt-4o-mini", text: $cloudModel)
+                            .font(.subheadline)
+                            .autocorrectionDisabled()
+                            .textInputAutocapitalization(.never)
+                    }
+                } header: {
+                    Text("OpenAI-Compatible API")
+                } footer: {
+                    Text("Works with OpenAI, Azure OpenAI, and any OpenAI-compatible endpoint (Ollama, LM Studio, etc.). Your key is stored locally in the App Group.")
+                }
+            }
+            .navigationTitle("Cloud AI Setup")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { showingCloudConfig = false }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        let config = CloudAIConfig(
+                            endpoint: cloudEndpoint.trimmingCharacters(in: .whitespacesAndNewlines),
+                            apiKey: cloudAPIKey.trimmingCharacters(in: .whitespacesAndNewlines),
+                            model: cloudModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                ? "gpt-4o-mini"
+                                : cloudModel.trimmingCharacters(in: .whitespacesAndNewlines)
+                        )
+                        config.save()
+                        showingCloudConfig = false
+                        smartTestResult = nil
+                    }
+                    .fontWeight(.semibold)
+                    .disabled(cloudAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+        }
+        .presentationDetents([.medium])
+    }
+
+    /// Fires the selected AI provider with a sample expense sentence and
     /// displays the result inline. Gives the user a deterministic
-    /// way to verify FM works on their device — without it, they'd
-    /// have to guess based on whether the "Smart parsing…" pill
-    /// flashed during a real save.
+    /// way to verify parsing works on their device / with their key.
     private func runSmartParseTest() {
         guard #available(iOS 26.0, *) else { return }
         smartTestInFlight = true
@@ -261,11 +434,6 @@ struct SettingsView: View {
         Haptics.tap()
 
         let sample = "spent 350 on lunch with team at sagar ratna"
-        // Test categories with matching SF Symbol icon keys so the
-        // parser builds a hint-augmented prompt (same code path as
-        // real expense logging). Without icons, the test runs against
-        // an under-prompted FM and accuracy would look worse than
-        // real-world.
         let categories: [CategoryEntry] = [
             CategoryEntry(name: "Food", iconKey: "fork.knife"),
             CategoryEntry(name: "Groceries", iconKey: "basket.fill"),
@@ -295,15 +463,28 @@ struct SettingsView: View {
                     let amount = String(format: "%.0f", parsed.amount)
                     let merchant = parsed.merchant ?? "—"
                     let category = parsed.category ?? "—"
+                    let providerLabel = selectedProvider.displayName
                     smartTestResult = """
-                    ✓ Tested with: "\(sample)"
+                    ✓ Provider: \(providerLabel)
+                    Input: "\(sample)"
                     Amount: ₹\(amount) · Merchant: \(merchant) · Category: \(category)
-                    Round-trip: \(elapsed)ms — on-device, private
+                    Round-trip: \(elapsed)ms
                     """
                     Haptics.success()
                 } else {
-                    let reason = SmartExpenseParser.unavailableReason
-                        ?? "Foundation Models call failed unexpectedly. Try again, or check Settings → Apple Intelligence."
+                    let reason: String
+                    switch selectedProvider {
+                    case .appleFM:
+                        reason = SmartExpenseParser.unavailableReason
+                            ?? "Foundation Models call failed. Check Settings → Apple Intelligence."
+                    case .openAI:
+                        let config = CloudAIConfig.load()
+                        if config.apiKey.isEmpty {
+                            reason = "API key not configured. Tap 'Configure API' above."
+                        } else {
+                            reason = "Cloud AI call failed. Check your endpoint, key, and model."
+                        }
+                    }
                     smartTestResult = "✗ \(reason)"
                     Haptics.warning()
                 }
@@ -317,15 +498,26 @@ struct SettingsView: View {
     @ViewBuilder
     private var smartParsingFooter: some View {
         if #available(iOS 26.0, *) {
-            if let reason = SmartExpenseParser.unavailableReason {
-                Text(reason)
-            } else if smartParsingEnabled {
-                Text("When the built-in parser can't categorize an entry, Tula asks on-device Apple Intelligence to help. Inputs never leave your device. Adds ~200-500ms for complex entries only.")
+            if smartParsingEnabled {
+                switch selectedProvider {
+                case .appleFM:
+                    if let reason = SmartExpenseParser.unavailableReason {
+                        Text(reason)
+                    } else {
+                        Text("Using on-device Apple Intelligence. Inputs never leave your device. Adds ~200-500ms for complex entries only.")
+                    }
+                case .openAI:
+                    if CloudAIConfig.load().apiKey.isEmpty {
+                        Text("Cloud AI selected but API key not configured. Tap 'Configure API' to set up.")
+                    } else {
+                        Text("Using cloud AI (\(CloudAIConfig.load().model)). Expense text is sent to the configured endpoint for parsing.")
+                    }
+                }
             } else {
-                Text("Tula will use only its built-in rule-based parser. No on-device AI is invoked.")
+                Text("Tula will use only its built-in rule-based parser. No AI is invoked.")
             }
         } else {
-            Text("Smart parsing requires iOS 26 with Apple Intelligence enabled.")
+            Text("Smart parsing requires iOS 26 with Apple Intelligence enabled, or a cloud AI provider.")
         }
     }
 

@@ -65,8 +65,10 @@
 		47BC844D2FCABCBF000FB10E /* Exceptions for "Tula" folder in "TulaShare" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
+				AIProviderConfig.swift,
 				Budget.swift,
 				CategoryHint.swift,
+				CloudAIParser.swift,
 				Currency.swift,
 				MerchantRuleResolver.swift,
 				Models.swift,
