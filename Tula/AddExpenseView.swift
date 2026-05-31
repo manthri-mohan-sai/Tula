@@ -1255,6 +1255,7 @@ struct AddExpenseView: View {
         // doesn't see anything happen, but the app gets smarter with use.
         learnMerchantCategory()
         try? context.save(); WidgetRefresh.refresh(using: context)
+        NotificationManager.refreshDailyReminder(using: context)
         lastUsedAccountID = account.id.uuidString
         Haptics.success()
         // Evaluate budget thresholds after persisting — fires a
@@ -1331,6 +1332,7 @@ struct AddExpenseView: View {
         guard let existingExpense else { return }
         context.delete(existingExpense)
         try? context.save(); WidgetRefresh.refresh(using: context)
+        NotificationManager.refreshDailyReminder(using: context)
         Haptics.success()
         dismiss()
     }

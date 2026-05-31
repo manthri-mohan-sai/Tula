@@ -20,6 +20,10 @@ enum RecurringEngine {
         let calendar = Calendar.current
         var didGenerateAnything = false
 
+        // Count active confirmation-required rules to compute a per-rule
+        // notification cap that stays within iOS's 64-notification limit.
+        let confirmRuleCount = rules.filter { !$0.isPaused && $0.confirmationRequired }.count
+
         for rule in rules {
             // Auto-resume: if rule is paused but its `pausedUntil` has
             // elapsed, clear both flags here so downstream logic treats
@@ -48,10 +52,10 @@ enum RecurringEngine {
             // Rules requiring confirmation don't auto-log. Schedule
             // notifications for upcoming due dates instead — user
             // taps Log/Skip on the notification banner. We pre-queue
-            // the next 14 occurrences so iOS can fire them even when
+            // upcoming occurrences so iOS can fire them even when
             // the app is closed.
             if rule.confirmationRequired {
-                scheduleUpcomingConfirmations(for: rule, calendar: calendar)
+                scheduleUpcomingConfirmations(for: rule, calendar: calendar, totalConfirmRules: confirmRuleCount)
                 continue
             }
 
@@ -87,12 +91,13 @@ enum RecurringEngine {
     /// so re-running on every app launch is safe — already-scheduled
     /// notifications are simply replaced in place.
     ///
-    /// We cap at 14 occurrences because iOS limits a single app to ~64
-    /// pending notifications total; daily rules would otherwise saturate
-    /// the budget within two months.
+    /// The per-rule cap is dynamic: 60 (leaving headroom from iOS's 64
+    /// limit) divided among all active confirmation rules, with a floor
+    /// of 7 (one week of daily notifications minimum).
     private static func scheduleUpcomingConfirmations(
         for rule: RecurringRule,
-        calendar: Calendar
+        calendar: Calendar,
+        totalConfirmRules: Int
     ) {
         // Need a sensible account+currency to format the body line.
         // For expense rules we use the linked account; for transfers
@@ -104,32 +109,28 @@ enum RecurringEngine {
 
         let now = Date.now
 
-        // Anchor: start walking from start-of-today, not from `now`.
-        //
-        // Why this matters: `nextOccurrence(strictlyAfter:)` finds the
-        // first calendar-aware occurrence after the given date. If the
-        // user creates a "Lunch 1pm daily" rule at 3pm, anchoring on
-        // `now` would skip today's 1pm (already past) and queue
-        // tomorrow's 1pm as the first notification. From the user's
-        // perspective: "I set up lunch, nothing happened."
-        //
-        // Starting from start-of-today means nextOccurrence first
-        // surfaces today's 1pm. We then drop any candidate whose
-        // fire-time is already in the past via the `nextDate > now`
-        // filter inside the loop — iOS can't deliver retroactive
-        // notifications. Net effect: today's notification fires IF the
-        // user set up the rule before its scheduled time, and is
-        // silently skipped IF after — but the rule is still correctly
-        // queued for tomorrow onward.
+        // For rules without a specific time, we override the time-of-day
+        // to 9:00 AM on each computed occurrence. This prevents
+        // notifications firing at 2:43 AM just because the user happened
+        // to create the rule at that hour.
+
         let anchor = calendar.startOfDay(for: now)
         var nextDate = nextOccurrence(strictlyAfter: anchor, rule: rule, calendar: calendar)
 
+        // Override time-of-day for rules without a specific time.
+        if !rule.hasSpecificTime {
+            nextDate = overrideTime(of: nextDate, hour: 9, minute: 0, calendar: calendar)
+        }
+
+        // Dynamic cap: divide 60 notification slots among all
+        // confirmation rules. Floor at 7 (one week for daily rules).
+        let perRuleCap = max(7, totalConfirmRules > 0 ? 60 / totalConfirmRules : 14)
         var scheduled = 0
-        let cap = 14
-        while scheduled < cap {
+
+        while scheduled < perRuleCap {
             if let endDate = rule.endDate, nextDate > endDate { break }
 
-            // Skip past-due occurrences (today's 1pm at 3pm). iOS would
+            // Skip past-due occurrences (today's 9am at 3pm). iOS would
             // either drop them or fire them immediately as a stale alert,
             // both undesirable.
             if nextDate > now {
@@ -148,7 +149,20 @@ enum RecurringEngine {
                 rule: rule,
                 calendar: calendar
             )
+            // Override time again for the next candidate.
+            if !rule.hasSpecificTime {
+                nextDate = overrideTime(of: nextDate, hour: 9, minute: 0, calendar: calendar)
+            }
         }
+    }
+
+    /// Replaces the hour and minute of a date, preserving year/month/day.
+    private static func overrideTime(of date: Date, hour: Int, minute: Int, calendar: Calendar) -> Date {
+        var comps = calendar.dateComponents([.year, .month, .day], from: date)
+        comps.hour = hour
+        comps.minute = minute
+        comps.second = 0
+        return calendar.date(from: comps) ?? date
     }
 
     /// Returns the next date strictly after `date` that the rule should fire.
