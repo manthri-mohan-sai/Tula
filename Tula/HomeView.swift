@@ -776,6 +776,7 @@ struct HomeView: View {
                     expense.rawInput = rawInput
                     context.insert(expense)
                     try? context.save(); WidgetRefresh.refresh(using: context)
+                    NotificationManager.refreshDailyReminder(using: context)
                     lastUsedAccountID = account.id.uuidString
                     Haptics.success()
                     triggerSavePulse()

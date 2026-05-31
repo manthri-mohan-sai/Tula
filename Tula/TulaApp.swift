@@ -170,6 +170,9 @@ struct TulaApp: App {
             if newPhase == .active {
                 let context = ModelContext(sharedContainer)
                 WidgetRefresh.refresh(using: context)
+                // Re-schedule the daily reminder with fresh dynamic
+                // content (today's spend summary or "no spends" nudge).
+                NotificationManager.refreshDailyReminder(using: context)
             }
         }
     }

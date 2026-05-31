@@ -1,5 +1,6 @@
 import Foundation
 import UserNotifications
+import SwiftData
 
 /// Schedules notifications: a daily reminder to log expenses, and
 /// threshold alerts for budgets (75% / 100%).
@@ -33,14 +34,29 @@ enum NotificationManager {
 
     /// Schedule (or reschedule) the daily reminder at the given hour:minute.
     /// Replaces any previously-scheduled reminder.
-    static func scheduleDailyReminder(at hour: Int, minute: Int) {
+    ///
+    /// Uses a **non-repeating** trigger so the notification body can be
+    /// dynamic (today's spend summary vs "no spends logged" nudge).
+    /// The app re-schedules this every foreground via `refreshDailyReminder`.
+    static func scheduleDailyReminder(at hour: Int, minute: Int, context: ModelContext? = nil) {
         cancelDailyReminder()
 
         let content = UNMutableNotificationContent()
-        content.title = "Time to log your day"
-        content.body = "Tap to capture today's expenses in Tula."
         content.sound = .default
 
+        // Build dynamic body from today's expenses (if context available).
+        if let context = context {
+            let (title, body) = dailyReminderContent(using: context)
+            content.title = title
+            content.body = body
+        } else {
+            content.title = "Time to log your day"
+            content.body = "Tap to capture today's expenses in Tula."
+        }
+
+        // Schedule for the next occurrence of hour:minute. Repeats daily
+        // so the notification fires even if the user doesn't open the app.
+        // Content is refreshed with up-to-date spend data every foreground.
         var dateComponents = DateComponents()
         dateComponents.hour = hour
         dateComponents.minute = minute
@@ -49,6 +65,62 @@ enum NotificationManager {
         let request = UNNotificationRequest(identifier: reminderID, content: content, trigger: trigger)
 
         UNUserNotificationCenter.current().add(request) { _ in }
+    }
+
+    /// Re-schedules the daily reminder with fresh, dynamic content based
+    /// on today's spending. Call on every foreground so the notification
+    /// body stays up-to-date even if the user logged expenses after the
+    /// initial schedule.
+    static func refreshDailyReminder(using context: ModelContext) {
+        let defaults = UserDefaults.standard
+        guard defaults.bool(forKey: "reminderEnabled") else { return }
+        let hour = defaults.integer(forKey: "reminderHour")
+        let minute = defaults.integer(forKey: "reminderMinute")
+        // If hour is 0 and minute is 0, check if this is intentional
+        // (midnight) vs never-set. AppStorage defaults reminderHour=21,
+        // but standard UserDefaults returns 0 for missing keys.
+        // Use a sentinel: if both are 0 and reminderEnabled is true,
+        // treat as 21:00 (the AppStorage default).
+        let effectiveHour = (hour == 0 && minute == 0 && !defaults.bool(forKey: "reminderHourExplicitlySet")) ? 21 : hour
+        scheduleDailyReminder(at: effectiveHour, minute: minute, context: context)
+    }
+
+    /// Builds dynamic title + body for the daily reminder based on
+    /// whether the user has logged any expenses today.
+    private static func dailyReminderContent(using context: ModelContext) -> (title: String, body: String) {
+        let calendar = Calendar.current
+        let dayStart = calendar.startOfDay(for: .now)
+
+        let descriptor = FetchDescriptor<Expense>(
+            predicate: #Predicate { $0.date >= dayStart }
+        )
+        let todayExpenses = (try? context.fetch(descriptor)) ?? []
+
+        if todayExpenses.isEmpty {
+            // No spends logged — nudge
+            let titles = [
+                "No spends logged today",
+                "Quiet day?",
+                "Nothing logged yet"
+            ]
+            let bodies = [
+                "Did you miss any expenses? Tap to log them now.",
+                "If you spent anything today, take a moment to log it.",
+                "Even a coffee counts — tap to capture today's spending."
+            ]
+            let idx = calendar.component(.day, from: .now) % titles.count
+            return (titles[idx], bodies[idx])
+        } else {
+            // Has spends — give summary
+            let total = todayExpenses.reduce(0.0) { $0 + $1.amount }
+            let code = UserDefaults.standard.string(forKey: "primaryCurrencyCode") ?? "INR"
+            let formatted = Currency.format(total, code: code)
+            let count = todayExpenses.count
+
+            let title = "Today's spending: \(formatted)"
+            let body = "\(count) expense\(count == 1 ? "" : "s") logged. Missed any? Tap to add more."
+            return (title, body)
+        }
     }
 
     /// Cancel any scheduled daily reminder.

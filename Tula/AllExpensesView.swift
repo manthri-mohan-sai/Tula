@@ -273,12 +273,14 @@ struct AllExpensesView: View {
         )
         context.insert(copy)
         try? context.save(); WidgetRefresh.refresh(using: context)
+        NotificationManager.refreshDailyReminder(using: context)
         Haptics.success()
     }
 
     private func delete(_ expense: Expense) {
         context.delete(expense)
         try? context.save(); WidgetRefresh.refresh(using: context)
+        NotificationManager.refreshDailyReminder(using: context)
         Haptics.warning()
     }
 

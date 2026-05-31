@@ -110,6 +110,7 @@ enum RecurringConfirmationHandler {
             rule.lastGeneratedDate = dueDate
         }
         try? context.save(); WidgetRefresh.refresh(using: context)
+        NotificationManager.refreshDailyReminder(using: context)
     }
 
     /// Marks an occurrence as skipped without creating an expense.
