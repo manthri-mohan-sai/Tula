@@ -6,6 +6,11 @@ struct ExpenseRow: View {
     let expense: Expense
     @PrimaryCurrency private var currencyCode
 
+    /// True when the backing model has been deleted from SwiftData but
+    /// SwiftUI is still animating the row's exit. Reading properties of
+    /// an invalidated model crashes — this guard short-circuits the body.
+    private var isInvalidated: Bool { expense.modelContext == nil }
+
     private var categoryColor: Color {
         guard let hex = expense.category?.colorHex else { return .gray }
         return Color(hex: hex)
@@ -85,6 +90,14 @@ struct ExpenseRow: View {
     @State private var showingItemsSheet: Bool = false
 
     var body: some View {
+        if isInvalidated {
+            EmptyView()
+        } else {
+            rowContent
+        }
+    }
+
+    private var rowContent: some View {
         HStack(spacing: Spacing.md) {
             ZStack {
                 Circle()
@@ -213,6 +226,7 @@ struct ExpenseRow: View {
             .presentationDragIndicator(.visible)
         }
     }
+}
 
     /// Compact relative date: "Today", "Yesterday", "3 May" otherwise.
     private func relativeDateString(for date: Date) -> String {
@@ -238,12 +252,22 @@ struct ExpenseContextPreview: View {
     let expense: Expense
     @PrimaryCurrency private var currencyCode
 
+    private var isInvalidated: Bool { expense.modelContext == nil }
+
     private var categoryColor: Color {
         guard let hex = expense.category?.colorHex else { return .gray }
         return Color(hex: hex)
     }
 
     var body: some View {
+        if isInvalidated {
+            EmptyView()
+        } else {
+            previewContent
+        }
+    }
+
+    private var previewContent: some View {
         VStack(alignment: .leading, spacing: Spacing.md) {
             HStack(spacing: Spacing.md) {
                 ZStack {

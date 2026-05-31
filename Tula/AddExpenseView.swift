@@ -1330,8 +1330,11 @@ struct AddExpenseView: View {
 
     private func delete() {
         guard let existingExpense else { return }
-        context.delete(existingExpense)
-        try? context.save(); WidgetRefresh.refresh(using: context)
+        withAnimation {
+            context.delete(existingExpense)
+            try? context.save()
+        }
+        WidgetRefresh.refresh(using: context)
         NotificationManager.refreshDailyReminder(using: context)
         Haptics.success()
         dismiss()
