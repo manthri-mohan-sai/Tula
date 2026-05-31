@@ -413,8 +413,12 @@ struct CardsView: View {
     }
 
     private func delete(_ expense: Expense) {
-        context.delete(expense)
-        try? context.save()
+        withAnimation {
+            context.delete(expense)
+            try? context.save()
+        }
+        WidgetRefresh.refresh(using: context)
+        NotificationManager.refreshDailyReminder(using: context)
         Haptics.warning()
     }
 

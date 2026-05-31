@@ -1498,8 +1498,12 @@ struct HomeView: View {
     }
 
     private func delete(_ expense: Expense) {
-        context.delete(expense)
-        try? context.save(); WidgetRefresh.refresh(using: context)
+        withAnimation {
+            context.delete(expense)
+            try? context.save()
+        }
+        WidgetRefresh.refresh(using: context)
+        NotificationManager.refreshDailyReminder(using: context)
         Haptics.warning()
         showToast("Deleted")
     }
