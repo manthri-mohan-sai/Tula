@@ -56,14 +56,18 @@ final class TulaAppDelegate: NSObject, UIApplicationDelegate, UNUserNotification
             NotificationManager.NotificationDiagnostics.recordActionTapped(.skip, ruleID: ruleID)
             await RecurringConfirmationHandler.skipOccurrence(ruleID: ruleID, dueDate: dueDate)
         case UNNotificationDefaultActionIdentifier:
-            // Tapping the notification body (no action button) — also
-            // a no-op. We could route to RecurringRulesView later if
-            // wanted, but the simpler "two-button-only" UX is clearer.
             NotificationManager.NotificationDiagnostics.recordActionTapped(.body, ruleID: ruleID)
             break
         default:
             break
         }
+
+        // After handling, reschedule upcoming confirmations so the
+        // notification queue stays topped up. Without this, the pre-queued
+        // 14 notifications would eventually run out if the user never
+        // opens the app — each action response is a free wake that lets
+        // us replenish the queue.
+        await RecurringConfirmationHandler.rescheduleAll()
     }
 }
 
@@ -74,42 +78,46 @@ final class TulaAppDelegate: NSObject, UIApplicationDelegate, UNUserNotification
 /// app isn't running), looks up the rule, and creates the expense.
 @MainActor
 enum RecurringConfirmationHandler {
-    static func logOccurrence(ruleID: UUID, dueDate: Date) async {
+
+    /// Builds a ModelContainer pointing at the shared App Group store.
+    /// Falls back to the default local store if the group isn't configured.
+    private static func makeContainer() -> ModelContainer? {
         let schema = Schema([
             Account.self, Category.self, Expense.self, Transfer.self,
             RecurringRule.self, MerchantRule.self, Budget.self,
         ])
+        if let storeURL = SharedStorage.sharedStoreURL {
+            let config = ModelConfiguration("Tula", schema: schema, url: storeURL)
+            return try? ModelContainer(for: schema, configurations: [config])
+        }
         let config = ModelConfiguration("Tula", schema: schema)
-        guard let container = try? ModelContainer(for: schema, configurations: [config]) else { return }
+        return try? ModelContainer(for: schema, configurations: [config])
+    }
 
+    static func logOccurrence(ruleID: UUID, dueDate: Date) async {
+        guard let container = makeContainer() else { return }
         let context = ModelContext(container)
 
-        // SwiftData's UUID predicate filter — fetch the rule, then
-        // route through RecurringEngine.createTransaction which already
-        // handles both expense and transfer cases.
         let descriptor = FetchDescriptor<RecurringRule>(
             predicate: #Predicate { $0.id == ruleID }
         )
         guard let rule = (try? context.fetch(descriptor))?.first else { return }
 
         RecurringEngine.createTransaction(rule: rule, date: dueDate, in: context)
+        // Advance the boundary so nextDueDate() doesn't have to walk
+        // from startDate through every past occurrence.
+        if rule.lastGeneratedDate == nil || rule.lastGeneratedDate! < dueDate {
+            rule.lastGeneratedDate = dueDate
+        }
         try? context.save(); WidgetRefresh.refresh(using: context)
     }
 
     /// Marks an occurrence as skipped without creating an expense.
-    /// Called from the notification's Skip action button. Uses a fresh
-    /// container since the response can arrive when the app isn't
-    /// running. Result is persisted so the next launch's home view
-    /// correctly hides the skipped occurrence.
+    /// Called from the notification's Skip action button.
     static func skipOccurrence(ruleID: UUID, dueDate: Date) async {
-        let schema = Schema([
-            Account.self, Category.self, Expense.self, Transfer.self,
-            RecurringRule.self, MerchantRule.self, Budget.self,
-        ])
-        let config = ModelConfiguration("Tula", schema: schema)
-        guard let container = try? ModelContainer(for: schema, configurations: [config]) else { return }
-
+        guard let container = makeContainer() else { return }
         let context = ModelContext(container)
+
         let descriptor = FetchDescriptor<RecurringRule>(
             predicate: #Predicate { $0.id == ruleID }
         )
@@ -117,5 +125,14 @@ enum RecurringConfirmationHandler {
 
         RecurringEngine.skipOccurrence(rule: rule, dueDate: dueDate)
         try? context.save(); WidgetRefresh.refresh(using: context)
+    }
+
+    /// Re-runs the confirmation scheduling logic for all active rules.
+    /// Called after each notification action so the queue stays topped up
+    /// even if the user never fully opens the app.
+    static func rescheduleAll() async {
+        guard let container = makeContainer() else { return }
+        let context = ModelContext(container)
+        RecurringEngine.generateMissing(in: context)
     }
 }
