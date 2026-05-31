@@ -384,11 +384,44 @@ enum ReceiptStorage {
             return result
         }()
 
-        // rawText uses cleaned + de-duped lines so FM gets focused
-        // signal, not barcode noise or repeated observations.
+        // Strip iOS screenshot UI noise — status bar, search bar,
+        // navigation tabs. These appear at the top/bottom of app
+        // screenshots and add no receipt signal. They can confuse FM
+        // (e.g. "Home" might be mis-categorized). Keep the filter
+        // conservative: only remove patterns we're very sure about.
+        let screenshotNoisePatterns: [String] = [
+            "lte", "5g", "wi-fi", "search or ask",
+            "arriving tomorrow", "arriving today",
+            "home", "cart", "menu", "rufus", "wallet"
+        ]
+        let finalLines = dedupedLines.filter { line in
+            let lower = line.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+            // Very short lines at screenshot edges (time, signal)
+            if lower.count <= 12 {
+                // Skip lines like "10:30 -", "•ll LTE 11•"
+                if lower.contains("lte") || lower.contains("5g") || lower.contains("wi-fi") { return false }
+                // Skip bare time strings like "1:074", "10:30 -"
+                if lower.range(of: #"^\d{1,2}:\d{2}"#, options: .regularExpression) != nil,
+                   !lower.contains("₹"), !lower.contains("rs") { return false }
+            }
+            // Skip lines that are ONLY navigation tab labels (all short
+            // title-case words, no numbers, no currency). Matches:
+            // "Home You Wallet Cart Menu Rufus"
+            let words = lower.split(separator: " ")
+            if words.count >= 3 && words.count <= 8 {
+                let allNav = words.allSatisfy { word in
+                    screenshotNoisePatterns.contains(String(word))
+                }
+                if allNav { return false }
+            }
+            return true
+        }
+
+        // rawText uses cleaned + de-duped + UI-stripped lines so FM
+        // gets focused signal, not barcode noise or repeated observations.
         // Full lines array is still used by regex extractors which have
         // their own pattern matching and aren't fooled by noise lines.
-        let rawText = dedupedLines.joined(separator: "\n")
+        let rawText = finalLines.joined(separator: "\n")
 
         // Classify the document first. The class determines which set
         // of extractors we use — UPI screenshots, food delivery order
@@ -593,26 +626,36 @@ enum ReceiptStorage {
     /// plausible currency value we encounter rather than the largest
     /// (which would risk picking up account-balance footers).
     private static func extractUPIAmount(from lines: [String]) -> Double? {
-        // Priority 1: a line that's just "₹AMOUNT" or has a label like
-        // "Amount", "Paid", "Amount Paid".
+        // Priority 1: lines with a label like "Amount", "Paid",
+        // "Amount Paid". Collect ALL matches and return the LARGEST.
+        // Why largest, not first? BHIM shows "Paid in 1.49 Seconds"
+        // which matches "paid" + has value 1.49 — but the real
+        // payment amount (₹450) appears on a standalone line that
+        // might not contain a label keyword. Largest-wins ensures
+        // the real payment beats incidental numbers.
         let amountLabels = ["amount paid", "amount", "you paid", "paid", "transferred"]
+        // Lines to skip — they contain numbers that aren't the amount.
+        let skipPhrases = ["paid in", "seconds", "minutes", "hour"]
+        var labeledValues: [Double] = []
         for line in lines {
             let lower = line.lowercased()
-            if amountLabels.contains(where: { lower.contains($0) }),
-               let value = currencyValue(in: line) {
-                return value
+            guard amountLabels.contains(where: { lower.contains($0) }) else { continue }
+            // Skip lines like "Paid in 1.49 Seconds" — incidental numbers.
+            if skipPhrases.contains(where: { lower.contains($0) }) { continue }
+            if let value = currencyValue(in: line) {
+                labeledValues.append(value)
             }
         }
+        if let best = labeledValues.max() { return best }
 
-        // Priority 2: first standalone currency value. UPI screens
-        // display the amount at the top, so the first match is usually
-        // the right one. Skip lines that are clearly footers (balance,
-        // available, history, etc).
+        // Priority 2: first standalone currency value ≥ ₹10. UPI
+        // screens display the amount at the top, so the first
+        // plausible match is usually correct. Skip footer lines.
         let footerMarkers = ["balance", "available", "history", "limit", "remaining"]
         for line in lines {
             let lower = line.lowercased()
             if footerMarkers.contains(where: { lower.contains($0) }) { continue }
-            if let value = currencyValue(in: line) {
+            if let value = currencyValue(in: line), value >= 10 {
                 return value
             }
         }
@@ -624,7 +667,7 @@ enum ReceiptStorage {
     /// Falls back to scanning for a line that looks like a name (not a
     /// transaction ID, not a date) appearing right after the amount.
     private static func extractUPIMerchant(from lines: [String]) -> String? {
-        let merchantLabels = ["paid to", "to:", "to ", "transferred to", "sent to"]
+        let merchantLabels = ["paid to", "to:", "to ", "transferred to", "sent to", "banking name"]
         for (index, line) in lines.enumerated() {
             let lower = line.lowercased()
             guard merchantLabels.contains(where: { lower.contains($0) }) else { continue }
@@ -1001,7 +1044,10 @@ enum ReceiptStorage {
             "order #", "gstin", "gst no", "gst in", "fssai", "tin no",
             "phone", "mobile", "tel", "contact", "pin code", "pincode",
             "table no", "kot no", "token", "receipt no", "ref no",
-            "transaction id", "txn id", "utr", "rrn"
+            "transaction id", "txn id", "utr", "rrn",
+            // Petrol pump meter readings / hardware labels
+            "atot", "vtot", "nozzle", "density", "volume (l)",
+            "local id", "fip no"
         ]
         let allAmounts = lines
             .filter { line in
@@ -1111,11 +1157,17 @@ enum ReceiptStorage {
     /// Extract a single currency value from a line of text. Returns the
     /// largest plausible match if there are multiple numbers on one line.
     private static func currencyValue(in line: String) -> Double? {
-        // Regex: optional ₹ or Rs prefix, digits (with optional commas
-        // for Indian lakh formatting like 1,00,000), optional .NN decimal.
-        // We allow whitespace around the prefix because OCR often
-        // mis-spaces these tokens.
-        let pattern = #"(?:₹|rs\.?|inr)?\s*(\d{1,3}(?:,\d{2,3})*(?:\.\d{1,2})?)"#
+        // Regex with TWO alternatives in the capture group:
+        //   Alt 1: \d{4,5}\.\d{1,2} — handles unformatted 4-5 digit
+        //          amounts WITH decimal (petrol pumps: "02000.00",
+        //          POS terminals: "5000.00"). Requires decimal to avoid
+        //          false-matching 6-digit pin codes like "500050".
+        //   Alt 2: \d{1,3}(?:,\d{2,3})*(?:\.\d{1,2})? — Indian comma
+        //          format ("44,990.00", "1,00,000") or small numbers
+        //          ("444.50", "140").
+        // Alt 1 is listed FIRST so the regex engine prefers the longer
+        // 4-5 digit match over the shorter 1-3 digit fragment.
+        let pattern = #"(?:₹|rs\.?|inr)?\s*(\d{4,5}\.\d{1,2}|\d{1,3}(?:,\d{2,3})*(?:\.\d{1,2})?)"#
         guard let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) else {
             return nil
         }
