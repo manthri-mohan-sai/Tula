@@ -185,17 +185,28 @@ final class ShareSession: ObservableObject {
                 return first
             }
 
-            // Doubling guard (same as main app) — if FM returned 2× regex,
-            // trust regex.
+            // Merge strategy: regex wins for structured/labelled docs
+            // (UPI, order summaries), FM wins for unstructured.
+            let isStructuredDoc = regexResult.documentType == .upi
+                || regexResult.documentType == .orderSummary
+
             let mergedAmount: Double
-            if let smart = smartResult?.amount, let rgx = regexResult.amount,
-               smart > 0, rgx > 0, abs(smart - 2 * rgx) < 2 {
+            if isStructuredDoc, let rgx = regexResult.amount, rgx > 0 {
+                mergedAmount = rgx
+            } else if let smart = smartResult?.amount, let rgx = regexResult.amount,
+                      smart > 0, rgx > 0, abs(smart - 2 * rgx) < 2 {
+                // FM doubled — trust regex.
                 mergedAmount = rgx
             } else {
                 mergedAmount = smartResult?.amount ?? regexResult.amount ?? 0
             }
 
-            let mergedMerchant = smartResult?.merchant ?? regexResult.merchant ?? ""
+            let mergedMerchant: String
+            if isStructuredDoc, let rgx = regexResult.merchant, !rgx.isEmpty {
+                mergedMerchant = rgx
+            } else {
+                mergedMerchant = smartResult?.merchant ?? regexResult.merchant ?? ""
+            }
             let resolvedDate = regexResult.date ?? Self.parseISODate(smartResult?.date) ?? .now
 
             // Build note text from items if available. Long lists

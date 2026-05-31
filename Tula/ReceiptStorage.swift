@@ -272,11 +272,19 @@ enum ReceiptStorage {
     /// the caller treats this as "no signal, user fills the form
     /// manually." Never throws to the caller; failure is silent.
     static func parse(_ image: UIImage) async -> ParseResult {
-        // Preprocess before OCR — boosts accuracy on dim/faded photos
-        // while leaving good photos alone. See `preprocessImage` docs
-        // for the heuristic.
-        let prepared = preprocessImage(image)
-        guard let cgImage = prepared.cgImage ?? image.cgImage else {
+        // Run a quick first-pass OCR to detect if this is a digital
+        // screenshot (UPI, order summary). Digital images have perfect
+        // contrast and sharpness — preprocessing would over-correct them.
+        // We classify first on a fast OCR pass, then decide whether to
+        // preprocess for the accurate pass.
+        let rawCGImage = image.cgImage
+        let quickType = await quickClassify(image: image)
+        let isDigitalScreenshot = quickType == .upi || quickType == .orderSummary
+
+        // Preprocess before the accurate OCR pass — boosts accuracy on
+        // dim/faded physical receipts while skipping digital screenshots.
+        let prepared = isDigitalScreenshot ? image : preprocessImage(image)
+        guard let cgImage = prepared.cgImage ?? rawCGImage else {
             return ParseResult(amount: nil, merchant: nil, items: [], date: nil, rawText: "", documentType: .generic)
         }
 
@@ -291,12 +299,12 @@ enum ReceiptStorage {
             // `.accurate` is slower than `.fast` (~2x) but markedly better
             // on small/noisy text — typical for thermal-printed receipts.
             request.recognitionLevel = .accurate
-            // Receipts often contain numbers that look like words ("O0O")
-            // and words that look like garbage ("CGST"). Setting language
-            // correction off avoids "MASALA" being autocorrected to "MASALA"
-            // or numeric totals being miscategorized as text. Empirically
-            // produces cleaner extraction on Indian receipts.
-            request.usesLanguageCorrection = false
+            // Language correction ON for English-only receipts — fixes
+            // common OCR errors where thermal-print characters are
+            // misread ('l' for '1', 'O' for '0' in word context).
+            // We keep it OFF only for numeric-heavy fields handled by
+            // our own regex extractors which don't need word correction.
+            request.usesLanguageCorrection = true
             request.recognitionLanguages = ["en-IN", "en-US"]
 
             let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
@@ -311,7 +319,25 @@ enum ReceiptStorage {
             .compactMap { $0.topCandidates(1).first?.string }
             .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 
-        let rawText = lines.joined(separator: "\n")
+        // Clean noise lines before classification and FM parsing.
+        // OCR of barcodes, QR code fragments, and thermal-print artefacts
+        // produces lines that are overwhelmingly non-alphanumeric (e.g.
+        // "||||||||||||", "---***---", "https://...?token=ABCDEF123").
+        // These pollute the FM prompt and can cause hallucinated amounts
+        // from barcode digit sequences. We filter them out while keeping
+        // lines that are mostly alphanumeric text.
+        let cleanedLines = lines.filter { line in
+            let total = line.count
+            guard total > 0 else { return false }
+            // Keep lines that are at least 45% letters or digits.
+            let alphanumericCount = line.filter { $0.isLetter || $0.isNumber || $0.isWhitespace }.count
+            return Double(alphanumericCount) / Double(total) >= 0.45
+        }
+
+        // rawText uses cleaned lines so FM gets signal, not barcode noise.
+        // Full lines array is still used by regex extractors which have
+        // their own pattern matching and aren't fooled by noise lines.
+        let rawText = cleanedLines.joined(separator: "\n")
 
         // Classify the document first. The class determines which set
         // of extractors we use — UPI screenshots, food delivery order
@@ -443,6 +469,25 @@ enum ReceiptStorage {
     /// the text; pick the highest-scoring type if it crosses a confidence
     /// threshold. Ties / low scores fall back to `.generic`.
     ///
+    /// Quick first-pass classify to decide whether preprocessing is needed.
+    /// Uses Vision's `.fast` recognition level — lower accuracy but ~3× faster.
+    /// Only used to distinguish digital screenshots (UPI/order summary) from
+    /// physical receipts so we can skip unnecessary image preprocessing.
+    private static func quickClassify(image: UIImage) async -> DocumentType {
+        guard let cgImage = image.cgImage else { return .generic }
+        let observations: [VNRecognizedTextObservation] = await withCheckedContinuation { continuation in
+            let request = VNRecognizeTextRequest { req, _ in
+                continuation.resume(returning: (req.results as? [VNRecognizedTextObservation]) ?? [])
+            }
+            request.recognitionLevel = .fast
+            request.usesLanguageCorrection = false
+            let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
+            try? handler.perform([request])
+        }
+        let lines = observations.compactMap { $0.topCandidates(1).first?.string }
+        return classifyDocument(from: lines)
+    }
+
     /// **Why score-based instead of single-keyword?** Each individual
     /// keyword is noisy (a restaurant might mention "UPI" once; a UPI
     /// screen might mention a merchant that's also a restaurant chain).

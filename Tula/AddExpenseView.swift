@@ -873,27 +873,34 @@ struct AddExpenseView: View {
             await MainActor.run {
                 receiptOCRInFlight = false
 
-                // **Merge strategy** — FM takes priority when it agrees
-                // with regex or provides additional signal, regex wins
-                // when FM is absent. Both passes are conservative —
-                // never overwrite user-typed input.
-
-                // AMOUNT: prefer FM (sees full receipt context, handles
-                // OCR digit errors). Falls back to regex.
+                // **Merge strategy** — priority depends on document type.
                 //
-                // **Doubling guard**: if FM returns exactly 2× what
-                // regex found, FM is almost certainly summing subtotal +
-                // grand total on a receipt that printed the same value
-                // twice. Trust regex in this case. We use a tolerance
-                // of ±1 to allow for tax/rounding (e.g. 280.50 vs 140.00
-                // is still suspicious of doubling).
+                // For STRUCTURED documents (UPI, order summaries): regex
+                // wins. These layouts have labelled fields ("Paid to:",
+                // "Bill Total:") that our extractors match with high
+                // confidence. FM adding "context" here often introduces
+                // errors by misreading a merchant name or re-interpreting
+                // a subtotal as the grand total.
+                //
+                // For UNSTRUCTURED documents (restaurant bills, generic):
+                // FM wins. Regex struggles with varied layouts; FM reads
+                // the full text and applies reasoning about what the
+                // "grand total" label means in context.
+                let isStructuredDoc = regexResult.documentType == .upi
+                    || regexResult.documentType == .orderSummary
+
+                // AMOUNT
                 let mergedAmount: Double?
-                if let smart = smartResult?.amount, let rgx = regexResult.amount,
-                   smart > 0, rgx > 0,
-                   abs(smart - 2 * rgx) < 2 {
-                    // FM doubled — trust regex.
+                if isStructuredDoc, let rgx = regexResult.amount, rgx > 0 {
+                    // Regex found an amount in a labelled field — trust it.
+                    mergedAmount = rgx
+                } else if let smart = smartResult?.amount, let rgx = regexResult.amount,
+                          smart > 0, rgx > 0, abs(smart - 2 * rgx) < 2 {
+                    // FM doubled (summed subtotal + grand total that are the
+                    // same value printed twice) — trust regex instead.
                     mergedAmount = rgx
                 } else {
+                    // Unstructured: FM first, regex fallback.
                     mergedAmount = smartResult?.amount ?? regexResult.amount
                 }
                 if let parsedAmount = mergedAmount, parsedAmount > 0,
@@ -904,8 +911,15 @@ struct AddExpenseView: View {
                     }
                 }
 
-                // MERCHANT: prefer FM, falls back to regex.
-                let mergedMerchant = smartResult?.merchant ?? regexResult.merchant
+                // MERCHANT: regex wins for structured docs (labelled
+                // "Paid to:" / "Transferred to:" fields are exact).
+                // FM wins for unstructured where merchant is ambiguous.
+                let mergedMerchant: String?
+                if isStructuredDoc, let rgx = regexResult.merchant, !rgx.isEmpty {
+                    mergedMerchant = rgx
+                } else {
+                    mergedMerchant = smartResult?.merchant ?? regexResult.merchant
+                }
                 if let m = mergedMerchant, !m.isEmpty,
                    merchant == beforeMerchant, merchant.isEmpty {
                     withAnimation(.snappy(duration: 0.25)) {
