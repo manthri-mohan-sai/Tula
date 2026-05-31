@@ -35,6 +35,7 @@ struct SettingsView: View {
     @State private var showingReminders = false
     @State private var showingBackup = false
     @State private var showingExport = false
+    @State private var showingOCRDebug = false
     @State private var showingNotificationDeniedAlert = false
 
     /// Pretty-printed status for the daily reminder row trailing label.
@@ -73,6 +74,7 @@ struct SettingsView: View {
             .sheet(isPresented: $showingReminders) { RemindersView() }
             .sheet(isPresented: $showingBackup) { BackupRestoreView() }
             .sheet(isPresented: $showingExport) { ExportView() }
+            .sheet(isPresented: $showingOCRDebug) { OCRDebugView() }
             .sheet(isPresented: $showingCurrencyPicker) {
                 CurrencyPickerView(selectedCode: $primaryCurrencyCode)
             }
@@ -336,6 +338,9 @@ struct SettingsView: View {
         Section {
             settingsLinkRow(title: "Export", icon: "square.and.arrow.up.fill", color: .teal) {
                 showingExport = true
+            }
+            settingsLinkRow(title: "OCR Debug", icon: "doc.text.viewfinder", color: .orange) {
+                showingOCRDebug = true
             }
         } header: {
             Text("Tools")
