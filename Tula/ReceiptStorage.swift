@@ -215,24 +215,32 @@ enum ReceiptStorage {
             return 0.299 * r + 0.587 * g + 0.114 * b
         }()
 
-        // If the image is already in the "well-lit" band (0.55-0.85),
-        // skip preprocessing. Receipts are mostly white paper so a
-        // well-photographed receipt should average around 0.7.
-        if averageBrightness > 0.55 && averageBrightness < 0.85 {
-            return image
-        }
-
         // Filter chain — each stage takes the previous output as input.
         // Built using the strongly-typed CIFilter.* builders (iOS 13+).
         var current: CIImage = ciImage
 
-        // 1. Grayscale via CIColorControls saturation=0.
+        // 1. ALWAYS grayscale — color information is never useful for
+        //    receipt text recognition. Removing it eliminates color noise
+        //    (tinted thermal paper, colored ink, background patterns) and
+        //    gives Vision a cleaner signal regardless of lighting.
         let desaturate = CIFilter.colorControls()
         desaturate.inputImage = current
         desaturate.saturation = 0
         desaturate.brightness = 0
         desaturate.contrast = 1.0
         if let out = desaturate.outputImage { current = out }
+
+        // For well-lit images (0.6-0.82), stop after grayscale —
+        // contrast and sharpening would over-correct. The narrower
+        // band (was 0.55-0.85) ensures more borderline images get
+        // the full treatment.
+        if averageBrightness > 0.6 && averageBrightness < 0.82 {
+            let context = CIContext()
+            guard let cgOut = context.createCGImage(current, from: current.extent) else {
+                return image
+            }
+            return UIImage(cgImage: cgOut, scale: image.scale, orientation: image.imageOrientation)
+        }
 
         // 2. Boost contrast — pushes faded thermal text darker.
         //    Value 1.4 is empirically good; >2.0 starts clipping.
@@ -306,6 +314,11 @@ enum ReceiptStorage {
             // our own regex extractors which don't need word correction.
             request.usesLanguageCorrection = true
             request.recognitionLanguages = ["en-IN", "en-US"]
+            // Minimum text height filter — ignore text smaller than 1.5%
+            // of the image height. Tiny text is usually footer fine-print,
+            // barcode digits, or thermal-noise artefacts that pollute
+            // extraction without contributing useful information.
+            request.minimumTextHeight = 0.015
 
             let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
             do {
@@ -315,8 +328,17 @@ enum ReceiptStorage {
             }
         }
 
+        // Filter by recognition confidence. Low-confidence candidates are
+        // where most OCR noise originates — garbled characters from
+        // thermal-print artefacts, shadows, paper creases, and partial
+        // text at image edges. Threshold 0.25 drops obvious garbage while
+        // keeping faded but legible text (which typically scores 0.3-0.6).
         let lines = observations
-            .compactMap { $0.topCandidates(1).first?.string }
+            .compactMap { obs -> String? in
+                guard let candidate = obs.topCandidates(1).first,
+                      candidate.confidence >= 0.25 else { return nil }
+                return candidate.string
+            }
             .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 
         // Clean noise lines before classification and FM parsing.
@@ -327,17 +349,46 @@ enum ReceiptStorage {
         // from barcode digit sequences. We filter them out while keeping
         // lines that are mostly alphanumeric text.
         let cleanedLines = lines.filter { line in
-            let total = line.count
-            guard total > 0 else { return false }
-            // Keep lines that are at least 45% letters or digits.
-            let alphanumericCount = line.filter { $0.isLetter || $0.isNumber || $0.isWhitespace }.count
-            return Double(alphanumericCount) / Double(total) >= 0.45
+            let stripped = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            // Minimum content: at least 3 non-whitespace characters.
+            // Single/double chars are stray marks, not useful text.
+            guard stripped.count >= 3 else { return false }
+
+            // Repeated-character lines: "========", "--------", "********"
+            // These are decorative separators that add no extraction value.
+            let uniqueChars = Set(stripped)
+            if uniqueChars.count <= 2 { return false }
+
+            // At least 50% of NON-WHITESPACE characters must be letters
+            // or digits. Previous threshold was 45% and incorrectly
+            // counted whitespace, letting garbage like "| | | | |" pass.
+            let nonWhitespace = stripped.filter { !$0.isWhitespace }
+            guard nonWhitespace.count > 0 else { return false }
+            let alphanumericCount = nonWhitespace.filter { $0.isLetter || $0.isNumber }.count
+            return Double(alphanumericCount) / Double(nonWhitespace.count) >= 0.50
         }
 
-        // rawText uses cleaned lines so FM gets signal, not barcode noise.
+        // De-duplicate consecutive identical lines. Vision sometimes
+        // returns overlapping bounding boxes that produce the same text
+        // twice — this confuses FM into doubling amounts and creates
+        // false "item" entries in the regex extractor.
+        let dedupedLines: [String] = {
+            var result: [String] = []
+            for line in cleanedLines {
+                let normalized = line.trimmingCharacters(in: .whitespacesAndNewlines)
+                if normalized == result.last?.trimmingCharacters(in: .whitespacesAndNewlines) {
+                    continue
+                }
+                result.append(line)
+            }
+            return result
+        }()
+
+        // rawText uses cleaned + de-duped lines so FM gets focused
+        // signal, not barcode noise or repeated observations.
         // Full lines array is still used by regex extractors which have
         // their own pattern matching and aren't fooled by noise lines.
-        let rawText = cleanedLines.joined(separator: "\n")
+        let rawText = dedupedLines.joined(separator: "\n")
 
         // Classify the document first. The class determines which set
         // of extractors we use — UPI screenshots, food delivery order
@@ -803,17 +854,23 @@ enum ReceiptStorage {
     ]
 
     /// Payment-method markers — lines like "Cash 280" / "Tendered 200" /
-    /// "Change 60" / "Card payment 140". These are NOT bill totals;
+    /// "Change 60". These are NOT bill totals;
     /// confusing them with totals doubles the amount (the bill plus the
     /// cash tendered ≠ the actual bill). We aggressively exclude any
     /// line containing these keywords from amount extraction.
     ///
+    /// **Note**: "paid" and "credit" are intentionally EXCLUDED from this
+    /// list because they appear in legitimate total labels: "Amount Paid",
+    /// "Total Paid", "You Paid", "Credit Card". Those lines carry the
+    /// actual total. The `finalTotalKeywords` list takes priority (it
+    /// includes "amount paid", "you paid", etc.) so we won't miss them.
+    ///
     /// Real bug encountered: a receipt with "Total 140 / Cash 280 /
     /// Change 140" was parsed as ₹280 because cash > bill > change.
     private static let paymentMethodKeywords = [
-        "cash", "tendered", "tender", "received", "paid",
+        "cash", "tendered", "tender", "received",
         "change", "balance due", "return", "card payment",
-        "credit", "debit", "upi", "wallet"
+        "wallet"
     ]
 
     /// True when the line is a payment-method/cash-flow line that should
@@ -935,9 +992,24 @@ enum ReceiptStorage {
         }
 
         // Phase 3: no keyword match at all. Take the largest plausible-
-        // amount number on the receipt, again excluding payment lines.
+        // amount number on the receipt, excluding payment lines AND
+        // lines that contain noise identifiers (bill numbers, order
+        // IDs, phone numbers, GSTIN, etc.). These lines carry numbers
+        // that aren't monetary values.
+        let noiseLabels = [
+            "bill no", "invoice no", "inv no", "order no", "order id",
+            "order #", "gstin", "gst no", "gst in", "fssai", "tin no",
+            "phone", "mobile", "tel", "contact", "pin code", "pincode",
+            "table no", "kot no", "token", "receipt no", "ref no",
+            "transaction id", "txn id", "utr", "rrn"
+        ]
         let allAmounts = lines
-            .filter { !isPaymentMethodLine($0) }
+            .filter { line in
+                let lower = line.lowercased()
+                if isPaymentMethodLine(line) { return false }
+                if noiseLabels.contains(where: { lower.contains($0) }) { return false }
+                return true
+            }
             .compactMap { currencyValue(in: $0) }
         return allAmounts.max()
     }

@@ -296,7 +296,7 @@ enum SmartExpenseParser {
             // caller doesn't have to deal with @Generable types or
             // iOS 26 availability gating.
             return ReceiptSmartParseResult(
-                amount: fm.amount,
+                amount: fm.amount ?? 0,
                 merchant: fm.merchant,
                 date: fm.date,
                 category: fm.category,
@@ -653,19 +653,19 @@ struct CorrectedTranscript: Codable, Sendable {
 @available(iOS 26.0, *)
 @Generable
 struct _FMReceiptResult: Codable, Sendable {
-    @Guide(description: "Grand total / final amount paid, as a number with no currency symbol. Always the LARGEST total — if line-item subtotals and a grand total both appear, return the grand total. Cross-check by summing items: the sum should approximately equal this value. Watch for OCR errors where a leading '1' has been dropped (140 misread as 40).")
-    let amount: Double
+    @Guide(description: "Grand total only — ONE number printed verbatim on the receipt near a 'Grand Total' / 'Net Payable' / 'Amount Due' / 'Bill Amount' label. NEVER add two values together. If the same number appears twice (e.g. subtotal and grand total both say 140), the amount is 140 NOT 280. Nil when no clear total is found. OCR digit errors: I/l/|→1, O→0, S→5, B→8 — recover these in numeric contexts.")
+    let amount: Double?
 
-    @Guide(description: "Business name. Usually printed at the top of the receipt. Title-cased. Always a place name (restaurant, store, app, brand) — never a product or dish.")
+    @Guide(description: "Business or place name from the receipt header or 'Paid to' label. Title-cased. Always a place name (restaurant, store, app, hospital, petrol pump) — NEVER a product, dish, or document label like 'Cash Bill' or 'Tax Invoice'. If no business name is visible but items make the place type obvious, infer a generic: 'Restaurant', 'Pharmacy', 'Grocery Store', 'Petrol Pump', 'Hospital'. Prefer a real name over a generic whenever possible.")
     let merchant: String?
 
-    @Guide(description: "Transaction date in YYYY-MM-DD format. Receipts may print dates as 15/03/2025, 15-Mar-2025, March 15 2025, etc — normalize all to YYYY-MM-DD. Nil when no date is present on the receipt.")
+    @Guide(description: "Transaction date in YYYY-MM-DD format. Indian receipts use DD/MM/YYYY — convert to YYYY-MM-DD. Normalize '15/03/2025', '15-Mar-2025', 'March 15 2025' etc. Nil when no date is present.")
     let date: String?
 
-    @Guide(description: "Best-fitting category name from the categories listed in the instructions. Choose based on merchant type and items.")
+    @Guide(description: "Best-fitting category name from the categories listed in the instructions. Decide by merchant type first, then by items if merchant is ambiguous.")
     let category: String?
 
-    @Guide(description: "Line items purchased, in the order they appear on the receipt. EXCLUDE tax lines, subtotals, discounts, change due, and total/grand-total lines. Item names should be title-cased and human-readable.")
+    @Guide(description: "Line items purchased in order. ONLY actual products/services/dishes. NEVER include: CGST, SGST, GST, service charge, delivery fee, platform fee, packaging charge, subtotal, total, grand total, discount, cash, change, tip, round-off, or any tax line.")
     let items: [_FMReceiptLineItem]
 }
 
@@ -673,10 +673,10 @@ struct _FMReceiptResult: Codable, Sendable {
 @available(iOS 26.0, *)
 @Generable
 struct _FMReceiptLineItem: Codable, Sendable {
-    @Guide(description: "Item name, title-cased. E.g. 'Masala Dosa', 'Coca Cola 500ml', 'Paracetamol Tablet'.")
+    @Guide(description: "Item name, title-cased and human-readable. E.g. 'Masala Dosa', 'Coca Cola 500ml', 'Paracetamol Tablet'. Never a tax line (CGST/SGST/GST), service charge, delivery fee, discount, subtotal, or total.")
     let name: String
 
-    @Guide(description: "Price for this item as a number with no currency symbol.")
+    @Guide(description: "Price for this single item as a number with no currency symbol. Must be a value printed on the receipt, not computed.")
     let price: Double
 }
 #else
