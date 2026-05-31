@@ -1,4 +1,5 @@
 import SwiftUI
+import SwiftData
 
 /// Single-line representation of an expense. Used on the home screen's recent
 /// activity, account/category detail screens, etc.
@@ -226,7 +227,6 @@ struct ExpenseRow: View {
             .presentationDragIndicator(.visible)
         }
     }
-}
 
     /// Compact relative date: "Today", "Yesterday", "3 May" otherwise.
     private func relativeDateString(for date: Date) -> String {
