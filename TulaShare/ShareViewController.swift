@@ -13,6 +13,46 @@ import os.log
 
 private let shareLog = Logger(subsystem: "com.app.alpha.Tula.TulaShare", category: "ShareExtension")
 
+// MARK: - Crash Logger (writes before extension is killed)
+
+/// Writes a log entry synchronously to the App Group container.
+/// Uses low-level file I/O to survive even during memory pressure kills.
+private func writeShareLog(_ message: String) {
+    let groupID = "group.com.app.alpha.Tula"
+    guard let containerURL = FileManager.default.containerURL(
+        forSecurityApplicationGroupIdentifier: groupID
+    ) else { return }
+
+    let logFile = containerURL.appendingPathComponent("share_crash.log")
+    let timestamp = DateFormatter.localizedString(from: Date(), dateStyle: .short, timeStyle: .medium)
+    let entry = "[\(timestamp)] \(message)\n"
+
+    if let data = entry.data(using: .utf8) {
+        if FileManager.default.fileExists(atPath: logFile.path) {
+            if let handle = try? FileHandle(forWritingTo: logFile) {
+                handle.seekToEndOfFile()
+                handle.write(data)
+                handle.closeFile()
+            }
+        } else {
+            try? data.write(to: logFile)
+        }
+    }
+}
+
+/// Installs a global uncaught exception handler that writes the crash
+/// reason to the shared log file before the process terminates.
+private func installCrashHandler() {
+    NSSetUncaughtExceptionHandler { exception in
+        let msg = """
+        UNCAUGHT EXCEPTION: \(exception.name.rawValue)
+        Reason: \(exception.reason ?? "nil")
+        Stack: \(exception.callStackSymbols.prefix(10).joined(separator: "\n"))
+        """
+        writeShareLog(msg)
+    }
+}
+
 /// The Tula share extension's principal view controller. Replaces the
 /// Apple-default storyboard-based UI with a SwiftUI-hosted preview that
 /// matches Tula's brand and gives the user one-tap "Add" / "Edit in Tula"
@@ -43,7 +83,24 @@ class ShareViewController: UIViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        installCrashHandler()
+        writeShareLog("viewDidLoad START")
         shareLog.info("ShareViewController viewDidLoad started")
+
+        // Log memory usage
+        let memUsage = ProcessInfo.processInfo.physicalMemory
+        writeShareLog("Device memory: \(memUsage / 1024 / 1024)MB")
+
+        // Log input items
+        if let items = extensionContext?.inputItems as? [NSExtensionItem] {
+            let providers = items.flatMap { $0.attachments ?? [] }
+            writeShareLog("Providers: \(providers.count)")
+            for (i, p) in providers.enumerated() {
+                writeShareLog("  [\(i)] types: \(p.registeredTypeIdentifiers)")
+            }
+        } else {
+            writeShareLog("No extensionContext or inputItems")
+        }
 
         // Background matches the app's surface so the share sheet
         // doesn't look like a system dialog.
@@ -75,14 +132,17 @@ class ShareViewController: UIViewController {
         self.session = session
 
         shareLog.info("ShareSession created, starting content load")
+        writeShareLog("Session created, calling start()")
         // Begin loading the shared content. Updates `session` state
         // as content arrives and parsing completes; SwiftUI re-renders
         // automatically via @Published.
         session.start()
+        writeShareLog("session.start() returned")
 
         // Host the SwiftUI root inside a child UIHostingController.
         // Auto layout pins it to all edges so it fills the share-sheet
         // modal exactly.
+        writeShareLog("Creating UIHostingController...")
         let host = UIHostingController(rootView: ShareRootView(session: session))
         addChild(host)
         host.view.translatesAutoresizingMaskIntoConstraints = false
@@ -94,5 +154,12 @@ class ShareViewController: UIViewController {
             host.view.bottomAnchor.constraint(equalTo: view.bottomAnchor)
         ])
         host.didMove(toParent: self)
+        writeShareLog("viewDidLoad COMPLETE — UI hosted successfully")
+    }
+
+    override func didReceiveMemoryWarning() {
+        super.didReceiveMemoryWarning()
+        writeShareLog("⚠️ MEMORY WARNING received — iOS may kill extension soon")
+        shareLog.warning("Memory warning in share extension")
     }
 }

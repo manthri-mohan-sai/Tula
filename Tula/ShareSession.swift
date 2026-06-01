@@ -5,8 +5,47 @@ import UniformTypeIdentifiers
 import UIKit
 import Combine
 import os.log
+import ImageIO
 
 private let shareLog = Logger(subsystem: "com.app.alpha.Tula.TulaShare", category: "ShareSession")
+
+// MARK: - Memory-Safe Image Decoding
+
+/// Decodes an image from data using ImageIO, downsampling at decode time
+/// so the full-resolution bitmap is never loaded into memory. This prevents
+/// the extension from being killed when sharing 48MP+ camera photos.
+private func downsampleImageData(_ data: Data, maxPixels: CGFloat = 1500) -> UIImage? {
+    let options: [CFString: Any] = [
+        kCGImageSourceShouldCache: false
+    ]
+    guard let source = CGImageSourceCreateWithData(data as CFData, options as CFDictionary) else {
+        return nil
+    }
+
+    // Get the image dimensions without decoding
+    guard let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+          let width = properties[kCGImagePropertyPixelWidth] as? CGFloat,
+          let height = properties[kCGImagePropertyPixelHeight] as? CGFloat else {
+        return nil
+    }
+
+    let maxDimension = max(width, height)
+    let downsampleFactor = maxDimension > maxPixels ? maxPixels / maxDimension : 1.0
+    let targetMaxPixels = max(width, height) * downsampleFactor
+
+    let downsampleOptions: [CFString: Any] = [
+        kCGImageSourceCreateThumbnailFromImageAlways: true,
+        kCGImageSourceShouldCacheImmediately: true,
+        kCGImageSourceCreateThumbnailWithTransform: true,
+        kCGImageSourceThumbnailMaxPixelSize: targetMaxPixels
+    ]
+
+    guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, downsampleOptions as CFDictionary) else {
+        return nil
+    }
+
+    return UIImage(cgImage: cgImage)
+}
 
 // MARK: - Crash Log Writer
 
@@ -194,40 +233,48 @@ final class ShareSession: ObservableObject {
 
             // `loadItem` returns various types — could be a URL to the
             // image file, the raw Data, or a UIImage. Handle all cases.
-            let image: UIImage? = {
+            // Use ImageIO-based downsampling to avoid decoding the full
+            // bitmap of 48MP+ photos which would exceed memory limits.
+            let downscaled: UIImage? = autoreleasepool {
                 if let img = item as? UIImage {
-                    shareLog.info("Item is UIImage")
-                    return img
+                    shareLog.info("Item is UIImage directly")
+                    return ReceiptStorage.downscaleForOCR(img)
                 }
                 if let url = item as? URL {
                     shareLog.info("Item is URL: \(url.path)")
                     if let data = try? Data(contentsOf: url) {
                         shareLog.info("Read \(data.count) bytes from URL")
-                        return UIImage(data: data)
+                        ShareCrashLog.write("Image data size: \(data.count) bytes")
+                        // Use ImageIO to downsample at decode time — never loads full bitmap
+                        if let img = downsampleImageData(data) {
+                            shareLog.info("ImageIO downsampled OK: \(Int(img.size.width))x\(Int(img.size.height))")
+                            return img
+                        }
+                        shareLog.warning("ImageIO downsample failed, trying UIImage fallback")
+                        if let img = UIImage(data: data) {
+                            return ReceiptStorage.downscaleForOCR(img)
+                        }
                     } else {
                         shareLog.error("Failed to read data from URL")
+                        ShareCrashLog.write("Failed to read data from URL: \(url.path)")
                     }
                 }
                 if let data = item as? Data {
                     shareLog.info("Item is Data: \(data.count) bytes")
-                    return UIImage(data: data)
+                    ShareCrashLog.write("Image data size: \(data.count) bytes")
+                    // Use ImageIO to downsample at decode time
+                    if let img = downsampleImageData(data) {
+                        shareLog.info("ImageIO downsampled OK: \(Int(img.size.width))x\(Int(img.size.height))")
+                        return img
+                    }
+                    shareLog.warning("ImageIO downsample failed, trying UIImage fallback")
+                    if let img = UIImage(data: data) {
+                        return ReceiptStorage.downscaleForOCR(img)
+                    }
                 }
                 shareLog.error("Item is unrecognized type, returning nil")
+                ShareCrashLog.write("Unrecognized item type: \(String(describing: type(of: item)))")
                 return nil
-            }()
-
-            let downscaled: UIImage? = autoreleasepool {
-                guard let image else {
-                    ShareCrashLog.write("UIImage decode returned nil.\nItem type: \(String(describing: type(of: item)))\ntypeID: \(typeID)")
-                    return nil
-                }
-                let size = image.size
-                shareLog.info("Raw image size: \(Int(size.width))x\(Int(size.height)), scale=\(image.scale)")
-                let result = ReceiptStorage.downscaleForOCR(image)
-                if result == nil {
-                    ShareCrashLog.write("downscaleForOCR returned nil.\nOriginal size: \(Int(size.width))x\(Int(size.height))")
-                }
-                return result
             }
 
             Task { @MainActor [weak self] in
