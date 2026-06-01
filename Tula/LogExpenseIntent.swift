@@ -162,7 +162,6 @@ struct LogExpenseIntent: AppIntent {
     /// Siri itself has an intent-execution time budget (~10s). If FM is
     /// slow, we want to fall through to rules well before Siri kills the
     /// intent — a fast worse answer beats a no-answer timeout.
-    @available(iOS 26.0, *)
     @MainActor
     private func trySmartParseForSiri(
         input: String,
