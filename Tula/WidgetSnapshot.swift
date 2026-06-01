@@ -44,6 +44,14 @@ struct WidgetSnapshot: Codable, Equatable {
     /// rules are excluded.
     var upcomingRecurrings: [UpcomingRecurring]
 
+    /// Top spending categories this month, sorted by amount descending.
+    /// Capped at 5 — the medium Category Breakdown widget shows 4 rows.
+    var categoryBreakdown: [CategorySpend]
+
+    /// Last month's total spend. Used by the Monthly Comparison widget
+    /// to show change vs current month.
+    var lastMonthTotal: Double
+
     /// When this snapshot was generated.
     var generatedAt: Date
 
@@ -77,6 +85,47 @@ struct WidgetSnapshot: Codable, Equatable {
         var iconKey: String
     }
 
+    /// One category's spend for the month. Drives the Category Breakdown
+    /// widget. Percentage is pre-computed relative to monthTotal.
+    struct CategorySpend: Codable, Equatable, Identifiable {
+        var id: UUID
+        var name: String
+        var amount: Double
+        var colorHex: String
+        var iconKey: String
+        var percentage: Double
+    }
+
+    init(currencyCode: String, todayTotal: Double, monthTotal: Double,
+         monthlyBudgetCap: Double, topBudgets: [Entry], dailyTotals: [Double],
+         upcomingRecurrings: [UpcomingRecurring], categoryBreakdown: [CategorySpend],
+         lastMonthTotal: Double, generatedAt: Date) {
+        self.currencyCode = currencyCode
+        self.todayTotal = todayTotal
+        self.monthTotal = monthTotal
+        self.monthlyBudgetCap = monthlyBudgetCap
+        self.topBudgets = topBudgets
+        self.dailyTotals = dailyTotals
+        self.upcomingRecurrings = upcomingRecurrings
+        self.categoryBreakdown = categoryBreakdown
+        self.lastMonthTotal = lastMonthTotal
+        self.generatedAt = generatedAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        currencyCode = try c.decode(String.self, forKey: .currencyCode)
+        todayTotal = try c.decode(Double.self, forKey: .todayTotal)
+        monthTotal = try c.decode(Double.self, forKey: .monthTotal)
+        monthlyBudgetCap = try c.decode(Double.self, forKey: .monthlyBudgetCap)
+        topBudgets = try c.decode([Entry].self, forKey: .topBudgets)
+        dailyTotals = try c.decode([Double].self, forKey: .dailyTotals)
+        upcomingRecurrings = try c.decode([UpcomingRecurring].self, forKey: .upcomingRecurrings)
+        categoryBreakdown = (try? c.decode([CategorySpend].self, forKey: .categoryBreakdown)) ?? []
+        lastMonthTotal = (try? c.decode(Double.self, forKey: .lastMonthTotal)) ?? 0
+        generatedAt = try c.decode(Date.self, forKey: .generatedAt)
+    }
+
     static let empty = WidgetSnapshot(
         currencyCode: "INR",
         todayTotal: 0,
@@ -85,6 +134,8 @@ struct WidgetSnapshot: Codable, Equatable {
         topBudgets: [],
         dailyTotals: Array(repeating: 0, count: 7),
         upcomingRecurrings: [],
+        categoryBreakdown: [],
+        lastMonthTotal: 0,
         generatedAt: .distantPast
     )
 }

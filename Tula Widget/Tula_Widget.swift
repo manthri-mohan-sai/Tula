@@ -81,6 +81,8 @@ struct TulaWidgetBundle: WidgetBundle {
         TulaTodayWidget()
         TulaCategoryWidget()
         TulaMonthCompareWidget()
+        TulaUpcomingWidget()
+        TulaQuickActionsWidget()
     }
 }
 
@@ -382,7 +384,6 @@ struct CategoryWidgetView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Header
             HStack(alignment: .firstTextBaseline) {
                 Text("Spending")
                     .font(.caption.weight(.semibold))
@@ -394,20 +395,34 @@ struct CategoryWidgetView: View {
                     .monospacedDigit()
             }
 
-            Spacer(minLength: 6)
-
             if snapshot.categoryBreakdown.isEmpty {
                 categoryEmptyView
             } else {
-                let maxAmount = snapshot.categoryBreakdown.first?.amount ?? 1
-                VStack(spacing: 6) {
-                    ForEach(Array(snapshot.categoryBreakdown.prefix(4))) { cat in
+                let categories = Array(snapshot.categoryBreakdown.prefix(3))
+                let maxAmount = categories.first?.amount ?? 1
+
+                Spacer(minLength: 4)
+
+                VStack(spacing: 0) {
+                    ForEach(Array(categories.enumerated()), id: \.element.id) { index, cat in
                         CategoryWidgetRow(
                             entry: cat,
                             maxAmount: maxAmount,
                             currencyCode: snapshot.currencyCode
                         )
+                        .padding(.vertical, 5)
+                        if index < categories.count - 1 {
+                            Divider().opacity(0.3)
+                        }
                     }
+                }
+
+                if snapshot.categoryBreakdown.count > 3 {
+                    Spacer(minLength: 2)
+                    Text("+\(snapshot.categoryBreakdown.count - 3) more")
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundStyle(.tertiary)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
                 }
             }
 
@@ -446,41 +461,39 @@ private struct CategoryWidgetRow: View {
     }
 
     var body: some View {
-        VStack(spacing: 3) {
-            HStack(spacing: 8) {
-                Image(systemName: entry.iconKey)
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .frame(width: 18, height: 18)
-                    .background(color, in: RoundedRectangle(cornerRadius: 4, style: .continuous))
+        HStack(spacing: 8) {
+            Image(systemName: entry.iconKey)
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 20, height: 20)
+                .background(color, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
 
-                Text(entry.name)
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
+            Text(entry.name)
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
 
-                Spacer(minLength: 4)
+            Spacer(minLength: 4)
 
-                Text("\(Int(entry.percentage * 100))%")
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(.tertiary)
-                    .monospacedDigit()
-
-                Text(Currency.compact(entry.amount, code: currencyCode))
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.primary)
-                    .monospacedDigit()
+            ZStack(alignment: .leading) {
+                Capsule().fill(.quaternary)
+                    .frame(width: 40, height: 3)
+                Capsule()
+                    .fill(color.opacity(0.7))
+                    .frame(width: max(40 * barFraction, 2), height: 3)
             }
+            .frame(width: 40)
 
-            GeometryReader { geo in
-                ZStack(alignment: .leading) {
-                    Capsule().fill(.quaternary)
-                    Capsule()
-                        .fill(color)
-                        .frame(width: max(geo.size.width * barFraction, 2))
-                }
-            }
-            .frame(height: 3)
+            Text("\(Int(entry.percentage * 100))%")
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(.tertiary)
+                .monospacedDigit()
+                .frame(width: 30, alignment: .trailing)
+
+            Text(Currency.compact(entry.amount, code: currencyCode))
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.primary)
+                .monospacedDigit()
         }
     }
 }
@@ -603,6 +616,258 @@ struct MonthCompareWidgetView: View {
             maxHeight: .infinity,
             alignment: .topLeading
         )
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// MARK: - Upcoming Widget (medium)
+// ═══════════════════════════════════════════════════════════════════
+
+struct TulaUpcomingWidget: Widget {
+    let kind: String = "TulaUpcomingWidget"
+
+    var body: some WidgetConfiguration {
+        StaticConfiguration(
+            kind: kind,
+            provider: TulaWidgetProvider()
+        ) { entry in
+            UpcomingWidgetView(snapshot: entry.snapshot)
+                .containerBackground(.fill.tertiary, for: .widget)
+        }
+        .configurationDisplayName("Upcoming")
+        .description("Recurring expenses due soon.")
+        .supportedFamilies([.systemMedium])
+    }
+}
+
+struct UpcomingWidgetView: View {
+    let snapshot: WidgetSnapshot
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Upcoming")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                if !snapshot.upcomingRecurrings.isEmpty {
+                    Text(totalLabel)
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(.tertiary)
+                        .monospacedDigit()
+                }
+            }
+
+            if snapshot.upcomingRecurrings.isEmpty {
+                VStack(spacing: 4) {
+                    Text("Nothing upcoming")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.primary)
+                    Text("Set up rules in Tula → Recurring.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+            } else {
+                Spacer()
+                VStack(spacing: 0) {
+                    ForEach(
+                        Array(snapshot.upcomingRecurrings.prefix(3).enumerated()),
+                        id: \.element.id
+                    ) { index, item in
+                        UpcomingWidgetRow(
+                            item: item,
+                            currencyCode: snapshot.currencyCode
+                        )
+                        .padding(.vertical, 6)
+                        if index < min(snapshot.upcomingRecurrings.count, 3) - 1 {
+                            Divider().opacity(0.3)
+                                .padding(.leading, 28)
+                        }
+                    }
+                }
+                Spacer()
+            }
+        }
+        .frame(
+            maxWidth: .infinity,
+            maxHeight: .infinity,
+            alignment: .topLeading
+        )
+    }
+
+    private var totalLabel: String {
+        let total = snapshot.upcomingRecurrings.reduce(0) { $0 + $1.amount }
+        return Currency.compact(total, code: snapshot.currencyCode)
+    }
+}
+
+private struct UpcomingWidgetRow: View {
+    let item: WidgetSnapshot.UpcomingRecurring
+    let currencyCode: String
+
+    private var dueLabel: String {
+        let cal = Calendar.current
+        let days = cal.dateComponents(
+            [.day],
+            from: cal.startOfDay(for: .now),
+            to: cal.startOfDay(for: item.dueDate)
+        ).day ?? 0
+        switch days {
+        case ..<0:  return "overdue"
+        case 0:     return "today"
+        case 1:     return "tomorrow"
+        case 2...6: return "in \(days) days"
+        default:    return item.dueDate.formatted(.dateTime.day().month(.abbreviated))
+        }
+    }
+
+    private var color: Color { Color(hex: item.colorHex) }
+    private var isOverdue: Bool { item.dueDate < Date.now }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: item.iconKey)
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 20, height: 20)
+                .background(color, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+
+            Text(item.name)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+
+            Text(dueLabel)
+                .font(.caption2)
+                .foregroundStyle(isOverdue ? .red : .secondary)
+                .lineLimit(1)
+
+            Spacer(minLength: 4)
+
+            Text(Currency.format(item.amount, code: currencyCode))
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.primary)
+                .monospacedDigit()
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// MARK: - Quick Actions Widget (small + lockscreen circular)
+// ═══════════════════════════════════════════════════════════════════
+
+struct TulaQuickActionsWidget: Widget {
+    let kind: String = "TulaQuickActionsWidget"
+
+    var body: some WidgetConfiguration {
+        StaticConfiguration(
+            kind: kind,
+            provider: TulaWidgetProvider()
+        ) { entry in
+            QuickActionsEntryView(snapshot: entry.snapshot)
+                .containerBackground(.fill.tertiary, for: .widget)
+        }
+        .configurationDisplayName("Quick Add")
+        .description("Quickly add, scan, or voice-log an expense.")
+        .supportedFamilies([
+            .systemSmall,
+            .accessoryCircular,
+        ])
+    }
+}
+
+struct QuickActionsEntryView: View {
+    @Environment(\.widgetFamily) private var family
+    let snapshot: WidgetSnapshot
+
+    var body: some View {
+        switch family {
+        case .accessoryCircular: LockScreenAddButton()
+        default:                 HomeQuickActionsView()
+        }
+    }
+}
+
+// MARK: - Quick Actions: home screen (small)
+
+struct HomeQuickActionsView: View {
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Quick Add")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text("तु")
+                    .font(.system(size: 11, weight: .heavy))
+                    .foregroundStyle(Color.tulaBrandFallback.opacity(0.5))
+            }
+
+            Spacer()
+
+            HStack(spacing: 0) {
+                QuickActionButton(
+                    icon: "doc.text.viewfinder",
+                    label: "Scan",
+                    color: Color.tulaBrandFallback,
+                    url: URL(string: "tula://scan")!
+                )
+                Spacer()
+                QuickActionButton(
+                    icon: "mic.fill",
+                    label: "Voice",
+                    color: .purple,
+                    url: URL(string: "tula://voice")!
+                )
+                Spacer()
+                QuickActionButton(
+                    icon: "plus",
+                    label: "Add",
+                    color: .blue,
+                    url: URL(string: "tula://add")!
+                )
+            }
+
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+private struct QuickActionButton: View {
+    let icon: String
+    let label: String
+    let color: Color
+    let url: URL
+
+    var body: some View {
+        Link(destination: url) {
+            VStack(spacing: 5) {
+                Image(systemName: icon)
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(color)
+                    .frame(width: 40, height: 40)
+                    .background(color.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                Text(label)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
+// MARK: - Quick Actions: lockscreen circular
+
+struct LockScreenAddButton: View {
+    var body: some View {
+        ZStack {
+            AccessoryWidgetBackground()
+            Image(systemName: "plus.circle.fill")
+                .font(.system(size: 28, weight: .medium))
+                .widgetAccentable()
+        }
+        .widgetURL(URL(string: "tula://add"))
     }
 }
 

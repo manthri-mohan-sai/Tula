@@ -265,6 +265,46 @@ enum WidgetRefresh {
 
         let upcomingRecurrings = buildUpcomingRecurrings(in: context)
 
+        // Category breakdown — group this month's expenses by category,
+        // sum each, sort descending, take top 5 for the widget.
+        let categoryBreakdown: [WidgetSnapshot.CategorySpend] = {
+            var totals: [UUID: (category: (name: String, colorHex: String, iconKey: String), amount: Double)] = [:]
+            for expense in monthExpenses {
+                guard let cat = expense.category else { continue }
+                let key = cat.id
+                if var existing = totals[key] {
+                    existing.amount += expense.amount
+                    totals[key] = existing
+                } else {
+                    totals[key] = (category: (name: cat.name, colorHex: cat.colorHex, iconKey: cat.iconKey), amount: expense.amount)
+                }
+            }
+            return totals
+                .map { (key, val) in
+                    WidgetSnapshot.CategorySpend(
+                        id: key,
+                        name: val.category.name,
+                        amount: val.amount,
+                        colorHex: val.category.colorHex,
+                        iconKey: val.category.iconKey,
+                        percentage: monthTotal > 0 ? val.amount / monthTotal : 0
+                    )
+                }
+                .sorted { $0.amount > $1.amount }
+                .prefix(5)
+                .map { $0 }
+        }()
+
+        // Last month's total for comparison widget.
+        let lastMonthTotal: Double = {
+            guard let prevMonthStart = calendar.date(byAdding: .month, value: -1, to: monthStart) else { return 0 }
+            let lastMonthFetch = FetchDescriptor<Expense>(
+                predicate: #Predicate { $0.date >= prevMonthStart && $0.date < monthStart }
+            )
+            let lastMonthExpenses = (try? context.fetch(lastMonthFetch)) ?? []
+            return lastMonthExpenses.reduce(0) { $0 + $1.amount }
+        }()
+
         let primaryCurrencyCode = UserDefaults.standard
             .string(forKey: "primaryCurrencyCode") ?? "INR"
 
@@ -276,6 +316,8 @@ enum WidgetRefresh {
             topBudgets: entries,
             dailyTotals: dailyTotals,
             upcomingRecurrings: upcomingRecurrings,
+            categoryBreakdown: categoryBreakdown,
+            lastMonthTotal: lastMonthTotal,
             generatedAt: now
         )
 
@@ -377,12 +419,18 @@ struct RootTabView: View {
             case "voice":
                 Haptics.impact()
                 selectedTab = .home
-                // Slight delay lets the view hierarchy settle (especially
-                // if the app is launching cold) before the QuickLogBar
-                // reads and acts on the notification.
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
                     NotificationCenter.default.post(
                         name: .tulaStartVoiceCapture,
+                        object: nil
+                    )
+                }
+            case "scan":
+                Haptics.impact()
+                showingAddExpense = true
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                    NotificationCenter.default.post(
+                        name: .tulaStartReceiptScan,
                         object: nil
                     )
                 }
@@ -399,4 +447,5 @@ extension Notification.Name {
     /// widget. The QuickLogBar on Home observes this and starts the
     /// microphone automatically.
     static let tulaStartVoiceCapture = Notification.Name("tula.startVoiceCapture")
+    static let tulaStartReceiptScan = Notification.Name("tula.startReceiptScan")
 }

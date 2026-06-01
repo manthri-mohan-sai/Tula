@@ -208,6 +208,9 @@ struct AddExpenseView: View {
             } message: {
                 Text("This action can't be undone.")
             }
+            .onReceive(NotificationCenter.default.publisher(for: .tulaStartReceiptScan)) { _ in
+                showingReceiptSource = .camera
+            }
             .sheet(isPresented: $showingItemsSheet) {
                 // Pass plain values to the sheet — no synthetic Expense
                 // construction. Avoids SwiftData @Model deadlocks that
@@ -606,14 +609,14 @@ struct AddExpenseView: View {
         Card(padding: 0, cornerRadius: CornerRadius.medium) {
             VStack(spacing: 0) {
                 detailRow(label: "Merchant", icon: "storefront.fill") {
-                    TextField("Ramachandra Restaurant, Swiggy…", text: $merchant)
+                    TextField("Store, app or person", text: $merchant)
                         .textInputAutocapitalization(.words)
                         .autocorrectionDisabled()
                         .multilineTextAlignment(.trailing)
                 }
                 Divider().padding(.leading, 48)
                 detailRow(label: "Item", icon: "text.alignleft") {
-                    TextField("Masala Dosa, Chai…", text: $note)
+                    TextField("What did you spend on?", text: $note)
                         .textInputAutocapitalization(.words)
                         .multilineTextAlignment(.trailing)
                 }
