@@ -12,7 +12,7 @@ import SwiftData
 /// Shared infrastructure used by both the main Tula app and the
 /// TulaShare extension. Centralizes:
 ///
-/// - **App Group identifier**: `group.com.app.Tula` — the entitlement
+/// - **App Group identifier**: `group.com.app.alpha.Tula` — the entitlement
 ///   that lets the two targets share a container directory.
 /// - **Shared container URL**: where receipt photos live (outside the
 ///   SwiftData store, addressed by file URL).
@@ -36,7 +36,7 @@ enum SharedStorage {
     /// and the TulaShare target. If either is missing or mismatched,
     /// `sharedContainerURL` will return nil and the share flow breaks
     /// silently.
-    static let appGroupID = "group.com.app.Tula"
+    static let appGroupID = "group.com.app.alpha.Tula"
 
     /// The shared container directory provided by the App Group.
     /// Both processes can read/write files here. Nil means the App

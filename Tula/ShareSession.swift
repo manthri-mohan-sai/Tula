@@ -4,6 +4,9 @@ import SwiftData
 import UniformTypeIdentifiers
 import UIKit
 import Combine
+import os.log
+
+private let shareLog = Logger(subsystem: "com.app.alpha.Tula.TulaShare", category: "ShareSession")
 
 /// Drives the share extension's parsing + UI state. Lives for the
 /// lifetime of one share invocation. Holds the extracted content
@@ -78,8 +81,10 @@ final class ShareSession: ObservableObject {
     /// attachments off the input items, classifies each, and routes
     /// to OCR (for images) or text parsing.
     func start() {
+        shareLog.info("start() called")
         guard let items = extensionContext?.inputItems as? [NSExtensionItem],
               !items.isEmpty else {
+            shareLog.error("No input items from extensionContext")
             phase = .failed("Nothing shared")
             return
         }
@@ -89,16 +94,22 @@ final class ShareSession: ObservableObject {
         // (rare, possible via custom share sources), we use the image
         // because it has richer parseable data via OCR.
         let providers = items.flatMap { $0.attachments ?? [] }
+        shareLog.info("Found \(providers.count) provider(s)")
+        for (i, p) in providers.enumerated() {
+            shareLog.info("  Provider[\(i)] types: \(p.registeredTypeIdentifiers)")
+        }
 
         if let imageProvider = providers.first(where: { $0.hasItemConformingToTypeIdentifier(UTType.image.identifier) }) {
+            shareLog.info("Matched image provider, loading image...")
             loadImage(from: imageProvider)
         } else if let textProvider = providers.first(where: { $0.hasItemConformingToTypeIdentifier(UTType.text.identifier) }) {
+            shareLog.info("Matched text provider")
             loadText(from: textProvider)
         } else if let urlProvider = providers.first(where: { $0.hasItemConformingToTypeIdentifier(UTType.url.identifier) }) {
-            // URLs are converted to text — the URL string is what the
-            // user is sharing, often a confirmation page or similar.
+            shareLog.info("Matched URL provider")
             loadText(from: urlProvider)
         } else {
+            shareLog.error("No matching provider found for image/text/url")
             phase = .failed("Couldn't read what you shared")
         }
     }
@@ -117,15 +128,41 @@ final class ShareSession: ObservableObject {
     /// Downscaling to 1500px max yields ~4MB held, plenty of headroom
     /// for Vision OCR + FM model load.
     private func loadImage(from provider: NSItemProvider) {
-        provider.loadItem(forTypeIdentifier: UTType.image.identifier, options: nil) { [weak self] item, error in
+        // Camera photos (HEIC/JPEG) may not respond to generic "public.image"
+        // on all devices. Try the provider's first registered type that
+        // conforms to public.image — this covers HEIC, JPEG, PNG, etc.
+        let typeID = provider.registeredTypeIdentifiers.first(where: {
+            UTType($0)?.conforms(to: .image) == true
+        }) ?? UTType.image.identifier
+        shareLog.info("loadImage: using typeID=\(typeID) from registered=\(provider.registeredTypeIdentifiers)")
+
+        provider.loadItem(forTypeIdentifier: typeID, options: nil) { [weak self] item, error in
+            if let error {
+                shareLog.error("loadItem failed: \(error.localizedDescription)")
+            }
+            shareLog.info("loadItem returned item type: \(String(describing: type(of: item)))")
+
             // `loadItem` returns various types — could be a URL to the
             // image file, the raw Data, or a UIImage. Handle all cases.
-            let rawImage: UIImage? = {
-                if let img = item as? UIImage { return img }
-                if let url = item as? URL, let data = try? Data(contentsOf: url) {
+            let image: UIImage? = {
+                if let img = item as? UIImage {
+                    shareLog.info("Item is UIImage")
+                    return img
+                }
+                if let url = item as? URL {
+                    shareLog.info("Item is URL: \(url.path)")
+                    if let data = try? Data(contentsOf: url) {
+                        shareLog.info("Read \(data.count) bytes from URL")
+                        return UIImage(data: data)
+                    } else {
+                        shareLog.error("Failed to read data from URL")
+                    }
+                }
+                if let data = item as? Data {
+                    shareLog.info("Item is Data: \(data.count) bytes")
                     return UIImage(data: data)
                 }
-                if let data = item as? Data { return UIImage(data: data) }
+                shareLog.error("Item is unrecognized type, returning nil")
                 return nil
             }()
 
@@ -141,9 +178,11 @@ final class ShareSession: ObservableObject {
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 guard let image else {
+                    shareLog.error("UIImage creation failed")
                     self.phase = .failed("Couldn't read the photo")
                     return
                 }
+                shareLog.info("Image loaded: \(Int(image.size.width))x\(Int(image.size.height))")
                 self.content = .image(image)
                 self.runImagePipeline(image: image)
             }
@@ -186,8 +225,11 @@ final class ShareSession: ObservableObject {
     /// bill screenshots will blow past it if processed at full res.
     private func runImagePipeline(image: UIImage) {
         phase = .parsing
+        shareLog.info("runImagePipeline started")
         Task.detached(priority: .userInitiated) { [weak self] in
-            let regexResult = await ReceiptStorage.parseForExtension(image)
+            shareLog.info("Running OCR via ReceiptStorage.parse...")
+            let regexResult = await ReceiptStorage.parse(image)
+            shareLog.info("OCR done. rawText length=\(regexResult.rawText.count), amount=\(String(describing: regexResult.amount)), merchant=\(String(describing: regexResult.merchant))")
 
             // Load the user's actual categories from the shared store
             // so the FM prompt gets icon-derived hints. Falls back to
@@ -208,6 +250,15 @@ final class ShareSession: ObservableObject {
             let smartResult: ReceiptSmartParseResult? = await withTaskGroup(of: ReceiptSmartParseResult?.self) { group in
                 group.addTask {
                     guard #available(iOS 26.0, *), SmartExpenseParser.isAvailable else { return nil }
+
+                    // Direct image mode: send photo to cloud AI (skips OCR text)
+                    if ReceiptParsingModeStorage.selected == .directImage,
+                       AIProviderStorage.selected != .appleFM,
+                       let jpegData = image.jpegData(compressionQuality: 0.8) {
+                        return await SmartExpenseParser.parseReceiptImage(jpegData, categories: categoryEntries)
+                    }
+
+                    // OCR text mode (default for Apple FM)
                     return await SmartExpenseParser.parseReceipt(
                         regexResult.rawText,
                         categories: categoryEntries,
@@ -216,7 +267,10 @@ final class ShareSession: ObservableObject {
                     )
                 }
                 group.addTask {
-                    try? await Task.sleep(for: .seconds(4))
+                    let timeout: Duration = (ReceiptParsingModeStorage.selected == .directImage && AIProviderStorage.selected != .appleFM)
+                        ? .seconds(30)
+                        : .seconds(4)
+                    try? await Task.sleep(for: timeout)
                     return nil
                 }
                 let first = await group.next() ?? nil

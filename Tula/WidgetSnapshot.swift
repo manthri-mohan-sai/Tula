@@ -95,7 +95,7 @@ struct WidgetSnapshot: Codable, Equatable {
 ///
 /// Setup checklist (must be done in Xcode):
 /// 1. In Signing & Capabilities for BOTH targets (main app + widget), add
-///    an App Group with id `group.com.app.Tula` (must match `appGroupID`).
+///    an App Group with id `group.com.app.alpha.Tula` (must match `appGroupID`).
 /// 2. Add this file's target membership to the Widget Extension target.
 /// 3. Add `WidgetCenter.shared.reloadAllTimelines()` calls wherever data
 ///    that the widget shows is mutated (already done in `TulaApp`).
@@ -103,7 +103,7 @@ enum WidgetStorage {
 
     /// Must match the App Group entitlement on both targets. Update in one
     /// place when the bundle id changes.
-    static let appGroupID = "group.com.app.Tula"
+    static let appGroupID = "group.com.app.alpha.Tula"
 
     /// Key under which the snapshot JSON is stored.
     private static let snapshotKey = "widget_snapshot_v1"

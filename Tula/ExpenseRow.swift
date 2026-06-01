@@ -91,6 +91,14 @@ struct ExpenseRow: View {
     @State private var showingItemsSheet: Bool = false
 
     var body: some View {
+        if isInvalidated {
+            EmptyView()
+        } else {
+            rowContent
+        }
+    }
+
+    private var rowContent: some View {
         HStack(spacing: Spacing.md) {
             ZStack {
                 Circle()
@@ -231,6 +239,14 @@ struct ExpenseContextPreview: View {
     }
 
     var body: some View {
+        if isInvalidated {
+            EmptyView()
+        } else {
+            previewContent
+        }
+    }
+
+    private var previewContent: some View {
         VStack(alignment: .leading, spacing: Spacing.md) {
             HStack(spacing: Spacing.md) {
                 ZStack {

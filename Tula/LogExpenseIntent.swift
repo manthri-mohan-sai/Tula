@@ -67,8 +67,7 @@ struct LogExpenseIntent: AppIntent {
         // while FM returns a single structured result. Detecting this
         // upstream means "350 food and 400 groceries" still creates two
         // expenses (one bug we don't want to regress).
-        if #available(iOS 26.0, *),
-           SmartExpenseParser.isAvailable,
+        if SmartExpenseParser.isAvailable,
            !isLikelyMultiExpense(expenseDescription),
            let savedDialog = await trySmartParseForSiri(
                input: expenseDescription,
@@ -163,7 +162,6 @@ struct LogExpenseIntent: AppIntent {
     /// Siri itself has an intent-execution time budget (~10s). If FM is
     /// slow, we want to fall through to rules well before Siri kills the
     /// intent — a fast worse answer beats a no-answer timeout.
-    @available(iOS 26.0, *)
     @MainActor
     private func trySmartParseForSiri(
         input: String,
