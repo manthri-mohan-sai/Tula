@@ -9,6 +9,9 @@
 import UIKit
 import SwiftUI
 import UniformTypeIdentifiers
+import os.log
+
+private let shareLog = Logger(subsystem: "com.app.alpha.Tula.TulaShare", category: "ShareExtension")
 
 /// The Tula share extension's principal view controller. Replaces the
 /// Apple-default storyboard-based UI with a SwiftUI-hosted preview that
@@ -40,6 +43,7 @@ class ShareViewController: UIViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        shareLog.info("ShareViewController viewDidLoad started")
 
         // Background matches the app's surface so the share sheet
         // doesn't look like a system dialog.
@@ -70,6 +74,7 @@ class ShareViewController: UIViewController {
         )
         self.session = session
 
+        shareLog.info("ShareSession created, starting content load")
         // Begin loading the shared content. Updates `session` state
         // as content arrives and parsing completes; SwiftUI re-renders
         // automatically via @Published.
