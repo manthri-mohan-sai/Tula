@@ -854,7 +854,7 @@ struct AddExpenseView: View {
             // Race-limited to 6s so a stalled call doesn't block UI.
             let smartResult: ReceiptSmartParseResult? = await withTaskGroup(of: ReceiptSmartParseResult?.self) { group in
                 group.addTask {
-                    guard #available(iOS 26.0, *), SmartExpenseParser.isAvailable else { return nil }
+                    guard SmartExpenseParser.isAvailable else { return nil }
 
                     // Direct image mode: send photo to cloud AI (skips OCR text)
                     if ReceiptParsingModeStorage.selected == .directImage,

@@ -67,8 +67,7 @@ struct LogExpenseIntent: AppIntent {
         // while FM returns a single structured result. Detecting this
         // upstream means "350 food and 400 groceries" still creates two
         // expenses (one bug we don't want to regress).
-        if #available(iOS 26.0, *),
-           SmartExpenseParser.isAvailable,
+        if SmartExpenseParser.isAvailable,
            !isLikelyMultiExpense(expenseDescription),
            let savedDialog = await trySmartParseForSiri(
                input: expenseDescription,

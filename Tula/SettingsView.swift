@@ -22,7 +22,7 @@ struct SettingsView: View {
     @AppStorage("launchAnimationEnabled") private var launchAnimationEnabled: Bool = true
     @AppStorage("smartParsingEnabled") private var smartParsingEnabled: Bool = true
     @AppStorage("selectedAIProvider", store: UserDefaults(suiteName: "group.com.app.alpha.Tula"))
-    private var selectedProviderRaw: String = AIProvider.appleFM.rawValue
+    private var selectedProviderRaw: String = AIProvider.gemini.rawValue
 
     /// Result of the most recent "Test smart parsing" tap in Settings —
     /// nil while idle, populated after a test parse. Surfaces what
@@ -210,57 +210,47 @@ struct SettingsView: View {
     /// explaining why.
     private var smartParsingSection: some View {
         Section {
-            if #available(iOS 26.0, *) {
-                let available = SmartExpenseParser.isAvailable || selectedProvider == .openAI || selectedProvider == .gemini
-                Toggle(isOn: $smartParsingEnabled) {
-                    settingsLabel("Smart parsing",
-                                  icon: SFSymbols.appleIntelligence,
-                                  color: Color.tulaBrandFallback)
-                }
-                .tint(Color.tulaBrandFallback)
+            Toggle(isOn: $smartParsingEnabled) {
+                settingsLabel("Smart parsing",
+                              icon: "sparkle",
+                              color: Color.tulaBrandFallback)
+            }
+            .tint(Color.tulaBrandFallback)
 
-                // Provider picker — shown when smart parsing is enabled
-                if smartParsingEnabled {
-                    providerPickerSection
-                }
+            // Provider picker — shown when smart parsing is enabled
+            if smartParsingEnabled {
+                providerPickerSection
+            }
 
-                // Test row: actually fires the selected provider with a
-                // sample sentence so the user gets a definitive yes/no.
-                Button {
-                    runSmartParseTest()
-                } label: {
-                    HStack {
-                        settingsLabel("Test smart parsing",
-                                      icon: "play.circle.fill",
-                                      color: .indigo)
-                        Spacer()
-                        if smartTestInFlight {
-                            ProgressView()
-                                .controlSize(.small)
-                        } else {
-                            Image(systemName: "chevron.right")
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(.tertiary)
-                        }
+            // Test row: actually fires the selected provider with a
+            // sample sentence so the user gets a definitive yes/no.
+            Button {
+                runSmartParseTest()
+            } label: {
+                HStack {
+                    settingsLabel("Test smart parsing",
+                                  icon: "play.circle.fill",
+                                  color: .indigo)
+                    Spacer()
+                    if smartTestInFlight {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Image(systemName: "chevron.right")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.tertiary)
                     }
                 }
-                .buttonStyle(.plain)
-                .disabled(!smartParsingEnabled || smartTestInFlight)
+            }
+            .buttonStyle(.plain)
+            .disabled(!smartParsingEnabled || smartTestInFlight)
 
-                if let result = smartTestResult {
-                    Text(result)
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                        .padding(.vertical, 4)
-                        .textSelection(.enabled)
-                }
-            } else {
-                Toggle(isOn: .constant(false)) {
-                    settingsLabel("Smart parsing",
-                                  icon: "sparkles",
-                                  color: .gray)
-                }
-                .disabled(true)
+            if let result = smartTestResult {
+                Text(result)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .padding(.vertical, 4)
+                    .textSelection(.enabled)
             }
         } header: {
             Text("Smart Parsing")
@@ -278,8 +268,10 @@ struct SettingsView: View {
 
     private var providerPickerSection: some View {
         Group {
-            // Provider selection list
-            ForEach(AIProvider.allCases) { provider in
+            // Only Gemini is shown — Apple FM and OpenAI are still in
+            // the codebase but hidden from the user for now.
+            let visibleProviders: [AIProvider] = [.gemini]
+            ForEach(visibleProviders) { provider in
                 Button {
                     withAnimation(.snappy(duration: 0.25)) {
                         selectedProviderRaw = provider.rawValue
@@ -396,7 +388,7 @@ struct SettingsView: View {
                 showingCloudConfig = true
             } label: {
                 HStack {
-                    settingsLabel("Configure API",
+                    settingsLabel("Configure",
                                   icon: "key.fill",
                                   color: .orange)
                     Spacer()
@@ -501,7 +493,7 @@ struct SettingsView: View {
                 showingGeminiConfig = true
             } label: {
                 HStack {
-                    settingsLabel("Configure API",
+                    settingsLabel("Configure",
                                   icon: "key.fill",
                                   color: .blue)
                     Spacer()
@@ -600,7 +592,10 @@ struct SettingsView: View {
     /// displays the result inline. Gives the user a deterministic
     /// way to verify parsing works on their device / with their key.
     private func runSmartParseTest() {
-        guard #available(iOS 26.0, *) else { return }
+        guard SmartExpenseParser.isAvailable else {
+            smartTestResult = "No AI provider configured. Add your Gemini API key."
+            return
+        }
         smartTestInFlight = true
         smartTestResult = nil
         Haptics.tap()
@@ -676,33 +671,29 @@ struct SettingsView: View {
     /// shouldn't be left wondering why the toggle is gray.
     @ViewBuilder
     private var smartParsingFooter: some View {
-        if #available(iOS 26.0, *) {
-            if smartParsingEnabled {
-                switch selectedProvider {
-                case .appleFM:
-                    if let reason = SmartExpenseParser.unavailableReason {
-                        Text(reason)
-                    } else {
-                        Text("Using on-device Apple Intelligence. Inputs never leave your device. Adds ~200-500ms for complex entries only.")
-                    }
-                case .openAI:
-                    if CloudAIConfig.load().apiKey.isEmpty {
-                        Text("Cloud AI selected but API key not configured. Tap 'Configure API' to set up.")
-                    } else {
-                        Text("Using cloud AI (\(CloudAIConfig.load().model)). Expense text is sent to the configured endpoint for parsing.")
-                    }
-                case .gemini:
-                    if CloudAIConfig.loadGemini().apiKey.isEmpty {
-                        Text("Gemini selected but API key not configured. Tap 'Configure API' to set up.")
-                    } else {
-                        Text("Using Google Gemini (\(CloudAIConfig.loadGemini().model)). Expense text is sent to Google's servers for parsing.")
-                    }
+        if smartParsingEnabled {
+            switch selectedProvider {
+            case .appleFM:
+                if let reason = SmartExpenseParser.unavailableReason {
+                    Text(reason)
+                } else {
+                    Text("Using on-device Apple Intelligence. Inputs never leave your device. Adds ~200-500ms for complex entries only.")
                 }
-            } else {
-                Text("Tula will use only its built-in rule-based parser. No AI is invoked.")
+            case .openAI:
+                if CloudAIConfig.load().apiKey.isEmpty {
+                    Text("Cloud AI selected but API key not configured. Tap 'Configure' to set up.")
+                } else {
+                    Text("Using cloud AI (\(CloudAIConfig.load().model)). Expense text is sent to the configured endpoint for parsing.")
+                }
+            case .gemini:
+                if CloudAIConfig.loadGemini().apiKey.isEmpty {
+                    Text("Gemini selected but API key not configured. Tap 'Configure' to set up.")
+                } else {
+                    Text("Using Google Gemini (\(CloudAIConfig.loadGemini().model)). Expense text/image is sent to Google's servers for parsing.")
+                }
             }
         } else {
-            Text("Smart parsing requires iOS 26 with Apple Intelligence enabled, or a cloud AI provider.")
+            Text("Tula will use only its built-in rule-based parser. No AI is invoked.")
         }
     }
 

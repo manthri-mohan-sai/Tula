@@ -671,7 +671,7 @@ struct HomeView: View {
         let isMultiExpense = parsedExpenses.count >= 2
 
         if isVoice, !isMultiExpense {
-            if #available(iOS 26.0, *), SmartExpenseParser.isAvailable {
+            if SmartExpenseParser.isAvailable {
                 handleVoiceQuickLog(rawInput: rawInput, ruleFallback: parsedExpenses)
                 return
             }
@@ -840,9 +840,8 @@ struct HomeView: View {
     /// happen silently — no toast, no spinner. The user just sees the
     /// category appear a beat later.
     private func enrichWithSmartParser(_ expenses: [Expense]) {
-        if #available(iOS 26.0, *) {
-            guard smartParsingEnabled,
-                  SmartExpenseParser.isAvailable else { return }
+        guard smartParsingEnabled,
+              SmartExpenseParser.isAvailable else { return }
 
             // Only enrich expenses where category is missing AND raw input
             // looks complex enough to benefit (rules already handled the
@@ -931,7 +930,6 @@ struct HomeView: View {
                     }
                 }
             }
-        }
     }
 
     /// Soft heuristic for whether an input is "complex" enough to warrant
