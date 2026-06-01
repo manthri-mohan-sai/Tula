@@ -677,9 +677,9 @@ enum CloudAIParser {
     }
 
     private static let geminiFallbackModels = [
+        "gemini-2.5-flash-lite",
+        "gemini-3.5-flash",
         "gemini-2.5-flash",
-        "gemini-2.0-flash",
-        "gemini-1.5-flash",
     ]
 
     // MARK: - JSON Schemas for Gemini Native API
