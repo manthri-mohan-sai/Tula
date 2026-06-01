@@ -4,10 +4,7 @@ import SwiftData
 import UniformTypeIdentifiers
 import UIKit
 import Combine
-import os.log
 import ImageIO
-
-private let shareLog = Logger(subsystem: "com.app.alpha.Tula.TulaShare", category: "ShareSession")
 
 // MARK: - Memory-Safe Image Decoding
 
@@ -45,48 +42,6 @@ private func downsampleImageData(_ data: Data, maxPixels: CGFloat = 1500) -> UII
     }
 
     return UIImage(cgImage: cgImage)
-}
-
-// MARK: - Crash Log Writer
-
-/// Writes diagnostic info to a log file in the shared App Group container
-/// so the user can find it in Files app. Each share attempt appends to the
-/// same file with a timestamp separator.
-private enum ShareCrashLog {
-    static func write(_ message: String) {
-        let groupID = "group.com.app.alpha.Tula"
-        guard let containerURL = FileManager.default.containerURL(
-            forSecurityApplicationGroupIdentifier: groupID
-        ) else {
-            shareLog.error("Cannot write crash log — no App Group container")
-            return
-        }
-
-        let logDir = containerURL.appendingPathComponent("ShareLogs", isDirectory: true)
-        try? FileManager.default.createDirectory(at: logDir, withIntermediateDirectories: true)
-
-        let logFile = logDir.appendingPathComponent("share_debug.log")
-        let timestamp = ISO8601DateFormatter().string(from: Date())
-        let entry = """
-        
-        ── [\(timestamp)] ──────────────────────────
-        \(message)
-        
-        """
-
-        if let data = entry.data(using: .utf8) {
-            if FileManager.default.fileExists(atPath: logFile.path) {
-                if let handle = try? FileHandle(forWritingTo: logFile) {
-                    handle.seekToEndOfFile()
-                    handle.write(data)
-                    handle.closeFile()
-                }
-            } else {
-                try? data.write(to: logFile)
-            }
-        }
-        shareLog.info("Wrote crash log entry to \(logFile.path)")
-    }
 }
 
 /// Drives the share extension's parsing + UI state. Lives for the
@@ -164,36 +119,21 @@ final class ShareSession: ObservableObject {
     /// attachments off the input items, classifies each, and routes
     /// to OCR (for images) or text parsing.
     func start() {
-        shareLog.info("start() called")
-        ShareCrashLog.write("Share extension started")
         guard let items = extensionContext?.inputItems as? [NSExtensionItem],
               !items.isEmpty else {
-            shareLog.error("No input items from extensionContext")
             phase = .failed("Nothing shared")
             return
         }
 
-        // Find the first attachment that matches a type we handle.
-        // Images take priority over text — if the user shared both
-        // (rare, possible via custom share sources), we use the image
-        // because it has richer parseable data via OCR.
         let providers = items.flatMap { $0.attachments ?? [] }
-        shareLog.info("Found \(providers.count) provider(s)")
-        for (i, p) in providers.enumerated() {
-            shareLog.info("  Provider[\(i)] types: \(p.registeredTypeIdentifiers)")
-        }
 
         if let imageProvider = providers.first(where: { $0.hasItemConformingToTypeIdentifier(UTType.image.identifier) }) {
-            shareLog.info("Matched image provider, loading image...")
             loadImage(from: imageProvider)
         } else if let textProvider = providers.first(where: { $0.hasItemConformingToTypeIdentifier(UTType.text.identifier) }) {
-            shareLog.info("Matched text provider")
             loadText(from: textProvider)
         } else if let urlProvider = providers.first(where: { $0.hasItemConformingToTypeIdentifier(UTType.url.identifier) }) {
-            shareLog.info("Matched URL provider")
             loadText(from: urlProvider)
         } else {
-            shareLog.error("No matching provider found for image/text/url")
             phase = .failed("Couldn't read what you shared")
         }
     }
@@ -218,74 +158,50 @@ final class ShareSession: ObservableObject {
         let typeID = provider.registeredTypeIdentifiers.first(where: {
             UTType($0)?.conforms(to: .image) == true
         }) ?? UTType.image.identifier
-        shareLog.info("loadImage: using typeID=\(typeID) from registered=\(provider.registeredTypeIdentifiers)")
 
         provider.loadItem(forTypeIdentifier: typeID, options: nil) { [weak self] item, error in
             if let error {
-                shareLog.error("loadItem failed: \(error.localizedDescription)")
-                ShareCrashLog.write("loadItem error: \(error.localizedDescription)\ntypeID: \(typeID)")
                 Task { @MainActor in
                     self?.phase = .failed("Failed to load image: \(error.localizedDescription)")
                 }
                 return
             }
-            shareLog.info("loadItem returned item type: \(String(describing: type(of: item)))")
 
-            // `loadItem` returns various types — could be a URL to the
-            // image file, the raw Data, or a UIImage. Handle all cases.
             // Use ImageIO-based downsampling to avoid decoding the full
             // bitmap of 48MP+ photos which would exceed memory limits.
             let downscaled: UIImage? = autoreleasepool {
                 if let img = item as? UIImage {
-                    shareLog.info("Item is UIImage directly")
                     return ReceiptStorage.downscaleForOCR(img)
                 }
                 if let url = item as? URL {
-                    shareLog.info("Item is URL: \(url.path)")
                     if let data = try? Data(contentsOf: url) {
-                        shareLog.info("Read \(data.count) bytes from URL")
-                        ShareCrashLog.write("Image data size: \(data.count) bytes")
                         // Use ImageIO to downsample at decode time — never loads full bitmap
                         if let img = downsampleImageData(data) {
-                            shareLog.info("ImageIO downsampled OK: \(Int(img.size.width))x\(Int(img.size.height))")
                             return img
                         }
-                        shareLog.warning("ImageIO downsample failed, trying UIImage fallback")
                         if let img = UIImage(data: data) {
                             return ReceiptStorage.downscaleForOCR(img)
                         }
-                    } else {
-                        shareLog.error("Failed to read data from URL")
-                        ShareCrashLog.write("Failed to read data from URL: \(url.path)")
                     }
                 }
                 if let data = item as? Data {
-                    shareLog.info("Item is Data: \(data.count) bytes")
-                    ShareCrashLog.write("Image data size: \(data.count) bytes")
                     // Use ImageIO to downsample at decode time
                     if let img = downsampleImageData(data) {
-                        shareLog.info("ImageIO downsampled OK: \(Int(img.size.width))x\(Int(img.size.height))")
                         return img
                     }
-                    shareLog.warning("ImageIO downsample failed, trying UIImage fallback")
                     if let img = UIImage(data: data) {
                         return ReceiptStorage.downscaleForOCR(img)
                     }
                 }
-                shareLog.error("Item is unrecognized type, returning nil")
-                ShareCrashLog.write("Unrecognized item type: \(String(describing: type(of: item)))")
                 return nil
             }
 
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 guard let downscaled else {
-                    shareLog.error("UIImage creation/downscale failed")
-                    ShareCrashLog.write("Final image nil — could not create UIImage from shared content.\ntypeID: \(typeID)")
-                    self.phase = .failed("Couldn't read the photo — see share_debug.log")
+                    self.phase = .failed("Couldn't read the photo")
                     return
                 }
-                shareLog.info("Image loaded: \(Int(downscaled.size.width))x\(Int(downscaled.size.height))")
                 self.content = .image(downscaled)
                 self.runImagePipeline(image: downscaled)
             }
@@ -328,18 +244,14 @@ final class ShareSession: ObservableObject {
     /// bill screenshots will blow past it if processed at full res.
     private func runImagePipeline(image: UIImage) {
         phase = .parsing
-        shareLog.info("runImagePipeline started")
         let isDirectImageMode = SmartExpenseParser.hasCloudVision
 
         Task.detached(priority: .userInitiated) { [weak self] in
             do {
                 try await self?.runImagePipelineInner(image: image, isDirectImageMode: isDirectImageMode)
             } catch {
-                let msg = "runImagePipeline crashed: \(error.localizedDescription)\n\(String(describing: error))"
-                shareLog.error("\(msg)")
-                ShareCrashLog.write(msg)
                 await MainActor.run {
-                    self?.phase = .failed("Parsing failed — check share_debug.log")
+                    self?.phase = .failed("Parsing failed")
                 }
             }
         }
@@ -354,13 +266,10 @@ final class ShareSession: ObservableObject {
         let regexResult: ReceiptStorage.ParseResult?
         if isDirectImageMode {
             regexResult = nil
-            shareLog.info("Skipping OCR — direct image mode active")
             await MainActor.run { [weak self] in self?.parsingStatus = "Analyzing receipt…" }
         } else {
             await MainActor.run { [weak self] in self?.parsingStatus = "Reading text from image…" }
-            shareLog.info("Running OCR via ReceiptStorage.parse...")
             let result = await ReceiptStorage.parse(image)
-            shareLog.info("OCR done. rawText length=\(result.rawText.count), amount=\(String(describing: result.amount)), merchant=\(String(describing: result.merchant))")
             regexResult = result
             await MainActor.run { [weak self] in self?.parsingStatus = "Extracting details…" }
         }
@@ -392,12 +301,7 @@ final class ShareSession: ObservableObject {
             return first
         }
 
-        if smartResult == nil {
-            shareLog.error("smartResult is nil — Gemini call failed or timed out")
-            ShareCrashLog.write("Smart parse returned nil.\nisAvailable=\(SmartExpenseParser.isAvailable)\nisDirectImage=\(isDirectImageMode)\nregexResult rawText length=\(regexResult?.rawText.count ?? -1)")
-        } else {
-            shareLog.info("smartResult: amount=\(smartResult!.amount), merchant=\(smartResult?.merchant ?? "nil"), items=\(smartResult!.items.count)")
-        }
+
 
         await MainActor.run { [weak self] in self?.parsingStatus = "Finishing up…" }
 
