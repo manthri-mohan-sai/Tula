@@ -100,7 +100,14 @@ final class ShareSession: ObservableObject {
     /// Load image bytes from the item provider, decode to UIImage,
     /// then run the OCR + smart parser pipeline.
     private func loadImage(from provider: NSItemProvider) {
-        provider.loadItem(forTypeIdentifier: UTType.image.identifier, options: nil) { [weak self] item, error in
+        // Camera photos (HEIC/JPEG) may not respond to generic "public.image"
+        // on all devices. Try the provider's first registered type that
+        // conforms to public.image — this covers HEIC, JPEG, PNG, etc.
+        let typeID = provider.registeredTypeIdentifiers.first(where: {
+            UTType($0)?.conforms(to: .image) == true
+        }) ?? UTType.image.identifier
+
+        provider.loadItem(forTypeIdentifier: typeID, options: nil) { [weak self] item, error in
             // `loadItem` returns various types — could be a URL to the
             // image file, the raw Data, or a UIImage. Handle all cases.
             let image: UIImage? = {
