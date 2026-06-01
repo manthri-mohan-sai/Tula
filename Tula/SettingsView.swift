@@ -21,7 +21,7 @@ struct SettingsView: View {
     @AppStorage("budgetAlertsEnabled") private var budgetAlertsEnabled: Bool = false
     @AppStorage("launchAnimationEnabled") private var launchAnimationEnabled: Bool = true
     @AppStorage("smartParsingEnabled") private var smartParsingEnabled: Bool = true
-    @AppStorage("selectedAIProvider", store: UserDefaults(suiteName: "group.com.app.alpha.Tula"))
+    @AppStorage("selectedAIProvider", store: UserDefaults(suiteName: "group.com.app.Tula"))
     private var selectedProviderRaw: String = AIProvider.gemini.rawValue
 
     /// Result of the most recent "Test smart parsing" tap in Settings —
@@ -42,9 +42,7 @@ struct SettingsView: View {
     @State private var geminiModel: String = ""
     @State private var showingGeminiConfig: Bool = false
 
-    // Receipt parsing mode
-    @AppStorage("receiptParsingMode", store: UserDefaults(suiteName: "group.com.app.alpha.Tula"))
-    private var receiptParsingModeRaw: String = ReceiptParsingMode.directImage.rawValue
+    @State private var configVersion: Int = 0
 
     @State private var showingAccounts = false
     @State private var showingCategories = false
@@ -53,7 +51,6 @@ struct SettingsView: View {
     @State private var showingReminders = false
     @State private var showingBackup = false
     @State private var showingExport = false
-    @State private var showingOCRDebug = false
     @State private var showingNotificationDeniedAlert = false
 
     /// Pretty-printed status for the daily reminder row trailing label.
@@ -92,7 +89,6 @@ struct SettingsView: View {
             .sheet(isPresented: $showingReminders) { RemindersView() }
             .sheet(isPresented: $showingBackup) { BackupRestoreView() }
             .sheet(isPresented: $showingExport) { ExportView() }
-            .sheet(isPresented: $showingOCRDebug) { OCRDebugView() }
             .sheet(isPresented: $showingCurrencyPicker) {
                 CurrencyPickerView(selectedCode: $primaryCurrencyCode)
             }
@@ -219,9 +215,9 @@ struct SettingsView: View {
             }
             .tint(Color.tulaBrandFallback)
 
-            // Provider picker — shown when smart parsing is enabled
             if smartParsingEnabled {
                 providerPickerSection
+                    .id(configVersion)
             }
 
             // Test row: actually fires the selected provider with a
@@ -317,10 +313,6 @@ struct SettingsView: View {
                 geminiConfigRow
             }
 
-            // Receipt parsing mode — only for cloud providers
-            if selectedProvider != .appleFM {
-                receiptParsingModePicker
-            }
         }
     }
 
@@ -329,53 +321,6 @@ struct SettingsView: View {
             return provider.icon
         }
         return provider.iconFallback
-    }
-
-    // MARK: - Receipt Parsing Mode
-
-    private var receiptParsingModePicker: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Receipt Parsing")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .padding(.top, 4)
-
-            ForEach(ReceiptParsingMode.allCases) { mode in
-                Button {
-                    withAnimation(.snappy(duration: 0.2)) {
-                        receiptParsingModeRaw = mode.rawValue
-                        ReceiptParsingModeStorage.selected = mode
-                    }
-                } label: {
-                    HStack(spacing: 10) {
-                        Image(systemName: mode.icon)
-                            .font(.subheadline)
-                            .foregroundStyle(mode.rawValue == receiptParsingModeRaw ? Color.tulaBrandFallback : .secondary)
-                            .frame(width: 22)
-
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(mode.displayName)
-                                .font(.caption.weight(.medium))
-                                .foregroundStyle(.primary)
-                            Text(mode.subtitle)
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                        }
-
-                        Spacer()
-
-                        if mode.rawValue == receiptParsingModeRaw {
-                            Image(systemName: "checkmark")
-                                .foregroundStyle(Color.tulaBrandFallback)
-                                .font(.caption.weight(.bold))
-                        }
-                    }
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-            }
-        }
     }
 
     // MARK: - Cloud Config
@@ -474,6 +419,7 @@ struct SettingsView: View {
                         config.save()
                         showingCloudConfig = false
                         smartTestResult = nil
+                        configVersion += 1
                     }
                     .fontWeight(.semibold)
                     .disabled(cloudAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
@@ -581,6 +527,7 @@ struct SettingsView: View {
                         config.saveAsGemini()
                         showingGeminiConfig = false
                         smartTestResult = nil
+                        configVersion += 1
                     }
                     .fontWeight(.semibold)
                     .disabled(geminiAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
@@ -706,9 +653,6 @@ struct SettingsView: View {
         Section {
             settingsLinkRow(title: "Export", icon: "square.and.arrow.up.fill", color: .teal) {
                 showingExport = true
-            }
-            settingsLinkRow(title: "OCR Debug", icon: "doc.text.viewfinder", color: .orange) {
-                showingOCRDebug = true
             }
         } header: {
             Text("Tools")

@@ -60,6 +60,8 @@ final class ShareSession: ObservableObject {
     /// parsing phase based on `ParseResult.confidenceReason`.
     /// Nil = high confidence = no banner.
     @Published var parseWarning: String?
+    @Published var items: [ReceiptLineItem] = []
+    @Published var parsingStatus: String = ""
 
     // MARK: - Wiring
 
@@ -166,25 +168,21 @@ final class ShareSession: ObservableObject {
                 return nil
             }()
 
-            // Downscale BEFORE handing off to MainActor — the raw image
-            // can fall out of scope as soon as the downscaled copy is
-            // produced. autoreleasepool helps any Objective-C
-            // intermediates inside the renderer release promptly.
-            let image: UIImage? = autoreleasepool {
-                guard let rawImage else { return nil }
-                return ReceiptStorage.downscaleForOCR(rawImage)
+            let downscaled: UIImage? = autoreleasepool {
+                guard let image else { return nil }
+                return ReceiptStorage.downscaleForOCR(image)
             }
 
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                guard let image else {
+                guard let downscaled else {
                     shareLog.error("UIImage creation failed")
                     self.phase = .failed("Couldn't read the photo")
                     return
                 }
-                shareLog.info("Image loaded: \(Int(image.size.width))x\(Int(image.size.height))")
-                self.content = .image(image)
-                self.runImagePipeline(image: image)
+                shareLog.info("Image loaded: \(Int(downscaled.size.width))x\(Int(downscaled.size.height))")
+                self.content = .image(downscaled)
+                self.runImagePipeline(image: downscaled)
             }
         }
     }
@@ -226,39 +224,38 @@ final class ShareSession: ObservableObject {
     private func runImagePipeline(image: UIImage) {
         phase = .parsing
         shareLog.info("runImagePipeline started")
+        let isDirectImageMode = SmartExpenseParser.hasCloudVision
+
         Task.detached(priority: .userInitiated) { [weak self] in
-            shareLog.info("Running OCR via ReceiptStorage.parse...")
-            let regexResult = await ReceiptStorage.parse(image)
-            shareLog.info("OCR done. rawText length=\(regexResult.rawText.count), amount=\(String(describing: regexResult.amount)), merchant=\(String(describing: regexResult.merchant))")
+            await MainActor.run { self?.parsingStatus = "Preparing image…" }
 
-            // Load the user's actual categories from the shared store
-            // so the FM prompt gets icon-derived hints. Falls back to
-            // a hardcoded set if the container can't be opened (rare,
-            // but the extension must keep working).
             let categoryEntries = await Self.loadCategoryEntries()
+            let fmContext = await Self.loadFMContext()
 
-            // Build a TIME-ONLY context block. The share extension
-            // doesn't have a live ModelContext on the right actor for
-            // the DB fetches, but the time/period-of-day awareness
-            // still meaningfully improves FM accuracy. `buildTimeOnly`
-            // is nonisolated — no MainActor hop needed.
-            let fmContext = FMContextBuilder.buildTimeOnly()
+            let regexResult: ReceiptStorage.ParseResult?
+            if isDirectImageMode {
+                regexResult = nil
+                shareLog.info("Skipping OCR — direct image mode active")
+                await MainActor.run { self?.parsingStatus = "Analyzing receipt…" }
+            } else {
+                await MainActor.run { self?.parsingStatus = "Reading text from image…" }
+                shareLog.info("Running OCR via ReceiptStorage.parse...")
+                let result = await ReceiptStorage.parse(image)
+                shareLog.info("OCR done. rawText length=\(result.rawText.count), amount=\(String(describing: result.amount)), merchant=\(String(describing: result.merchant))")
+                regexResult = result
+                await MainActor.run { self?.parsingStatus = "Extracting details…" }
+            }
 
-            // FM is optional. Race against a 4s timeout so the extension
-            // doesn't sit indefinitely waiting for Apple Intelligence.
-            // Shorter than the main app's 6s because we have less runway.
             let smartResult: ReceiptSmartParseResult? = await withTaskGroup(of: ReceiptSmartParseResult?.self) { group in
                 group.addTask {
-                    guard #available(iOS 26.0, *), SmartExpenseParser.isAvailable else { return nil }
+                    guard SmartExpenseParser.isAvailable else { return nil }
 
-                    // Direct image mode: send photo to cloud AI (skips OCR text)
-                    if ReceiptParsingModeStorage.selected == .directImage,
-                       AIProviderStorage.selected != .appleFM,
-                       let jpegData = image.jpegData(compressionQuality: 0.8) {
-                        return await SmartExpenseParser.parseReceiptImage(jpegData, categories: categoryEntries)
+                    if isDirectImageMode,
+                       let jpegData = image.jpegData(compressionQuality: 0.85) {
+                        return await SmartExpenseParser.parseReceiptImage(jpegData, categories: categoryEntries, contextBlock: fmContext)
                     }
 
-                    // OCR text mode (default for Apple FM)
+                    guard let regexResult else { return nil }
                     return await SmartExpenseParser.parseReceipt(
                         regexResult.rawText,
                         categories: categoryEntries,
@@ -267,9 +264,7 @@ final class ShareSession: ObservableObject {
                     )
                 }
                 group.addTask {
-                    let timeout: Duration = (ReceiptParsingModeStorage.selected == .directImage && AIProviderStorage.selected != .appleFM)
-                        ? .seconds(30)
-                        : .seconds(4)
+                    let timeout: Duration = isDirectImageMode ? .seconds(30) : .seconds(4)
                     try? await Task.sleep(for: timeout)
                     return nil
                 }
@@ -278,68 +273,65 @@ final class ShareSession: ObservableObject {
                 return first
             }
 
-            // Merge strategy: regex wins for structured/labelled docs
-            // (UPI, order summaries), FM wins for unstructured.
-            let isStructuredDoc = regexResult.documentType == .upi
-                || regexResult.documentType == .orderSummary
+            if smartResult == nil {
+                shareLog.error("smartResult is nil — Gemini call failed or timed out")
+            } else {
+                shareLog.info("smartResult: amount=\(smartResult!.amount), merchant=\(smartResult?.merchant ?? "nil"), items=\(smartResult!.items.count)")
+            }
+
+            await MainActor.run { self?.parsingStatus = "Finishing up…" }
 
             let mergedAmount: Double
-            if isStructuredDoc, let rgx = regexResult.amount, rgx > 0 {
-                mergedAmount = rgx
-            } else if let smart = smartResult?.amount, let rgx = regexResult.amount,
-                      smart > 0, rgx > 0, abs(smart - 2 * rgx) < 2 {
-                // FM doubled — trust regex.
-                mergedAmount = rgx
-            } else {
-                mergedAmount = smartResult?.amount ?? regexResult.amount ?? 0
-            }
-
             let mergedMerchant: String
-            if isStructuredDoc, let rgx = regexResult.merchant, !rgx.isEmpty {
-                mergedMerchant = rgx
-            } else {
-                mergedMerchant = smartResult?.merchant ?? regexResult.merchant ?? ""
-            }
-            let resolvedDate = regexResult.date ?? Self.parseISODate(smartResult?.date) ?? .now
-
-            // Build note text from items if available. Long lists
-            // get truncated to "first 5 · and N more" to keep the note
-            // readable — full inventory is still in the attached receipt
-            // photo for the user to review.
+            let resolvedDate: Date
             let noteText: String
-            if let smart = smartResult, !smart.items.isEmpty {
-                let parts = smart.items.map { "\($0.name) ₹\(Int($0.price))" }
-                let maxInline = 5
-                if parts.count > maxInline {
-                    let visible = parts.prefix(maxInline).joined(separator: " · ")
-                    let remaining = parts.count - maxInline
-                    noteText = "\(visible) · and \(remaining) more item\(remaining == 1 ? "" : "s")"
-                } else {
-                    noteText = parts.joined(separator: " · ")
-                }
+            let extractedItems: [ReceiptLineItem]
+
+            if isDirectImageMode {
+                mergedAmount = smartResult?.amount ?? 0
+                mergedMerchant = smartResult?.merchant ?? ""
+                resolvedDate = Self.parseISODate(smartResult?.date) ?? .now
             } else {
-                noteText = regexResult.formattedNote(currencyCode: "INR") ?? ""
+                let isStructuredDoc = regexResult?.documentType == .upi
+                    || regexResult?.documentType == .orderSummary
+                if isStructuredDoc, let rgx = regexResult?.amount, rgx > 0 {
+                    mergedAmount = rgx
+                } else {
+                    mergedAmount = smartResult?.amount ?? regexResult?.amount ?? 0
+                }
+                if isStructuredDoc, let rgx = regexResult?.merchant, !rgx.isEmpty {
+                    mergedMerchant = rgx
+                } else {
+                    mergedMerchant = smartResult?.merchant ?? regexResult?.merchant ?? ""
+                }
+                resolvedDate = regexResult?.date ?? Self.parseISODate(smartResult?.date) ?? .now
             }
 
-            // Resolve category with same precedence as the main app:
-            // 1. MerchantRule pre-check (deterministic, uses learned mappings)
-            // 2. FM suggestion (when no rule matched)
-            // The MainActor hop is necessary because MerchantRuleResolver
-            // requires a ModelContext.
+            if let smart = smartResult, !smart.items.isEmpty {
+                extractedItems = smart.items
+                let parts = smart.items.map { "\($0.name) ₹\(Int($0.price))" }
+                noteText = parts.joined(separator: " · ")
+            } else if !isDirectImageMode {
+                extractedItems = []
+                noteText = regexResult?.formattedNote(currencyCode: "INR") ?? ""
+            } else {
+                extractedItems = []
+                noteText = ""
+            }
+
             let resolvedCategoryName: String? = await Self.resolveCategoryName(
                 merchant: mergedMerchant,
                 fmSuggestion: smartResult?.category
             )
 
-            // Surface confidence to the UI. If the regex extractor's
-            // confidence is medium-or-low AND FM didn't compensate
-            // (no FM merchant, no FM amount), warn the user. If FM
-            // came through with strong values, trust it and skip the
-            // warning even when regex was shaky.
             let warning: String? = {
+                if smartResult == nil {
+                    return "Could not read receipt — check your connection or try again."
+                }
+                if isDirectImageMode { return nil }
                 let fmHelped = smartResult?.amount != nil && smartResult?.merchant != nil
                 if fmHelped { return nil }
-                return regexResult.confidenceReason
+                return regexResult?.confidenceReason
             }()
 
             await MainActor.run { [weak self] in
@@ -348,9 +340,11 @@ final class ShareSession: ObservableObject {
                 self.merchant = mergedMerchant
                 self.date = resolvedDate
                 self.note = noteText
+                self.items = extractedItems
                 self.categoryName = resolvedCategoryName
                 self.usedSmartParser = smartResult != nil
                 self.parseWarning = warning
+                self.parsingStatus = ""
                 self.phase = .preview
             }
         }
@@ -367,8 +361,7 @@ final class ShareSession: ObservableObject {
             // the image pipeline.
             let categoryEntries = await Self.loadCategoryEntries()
 
-            // Time-only FM context — same rationale as image path.
-            let fmContext = FMContextBuilder.buildTimeOnly()
+            let fmContext = await Self.loadFMContext()
 
             var parsedAmount: Double = 0
             var parsedMerchant: String = ""
@@ -552,6 +545,21 @@ final class ShareSession: ObservableObject {
             return categories.map {
                 CategoryEntry(name: $0.name, iconKey: $0.iconKey)
             }
+        }
+    }
+
+    /// Build FM context including merchant history from the shared DB.
+    /// Falls back to time-only context if the shared container can't be
+    /// opened. Uses the same `FMContextBuilder.build(modelContext:)` as
+    /// the main app so the Gemini prompt includes frequent merchants,
+    /// category patterns, and recent activity.
+    private static func loadFMContext() async -> String {
+        return await MainActor.run {
+            guard let container = SharedStorage.makeSharedContainer() else {
+                return FMContextBuilder.buildTimeOnly()
+            }
+            let context = ModelContext(container)
+            return FMContextBuilder.build(modelContext: context)
         }
     }
 

@@ -84,19 +84,26 @@ struct ShareRootView: View {
     /// this is the visible moment where Tula's AI is "thinking" and
     /// the user is judging trust.
     private var loadingView: some View {
-        VStack(spacing: 20) {
-            BreathingDotsView(color: brand)
-            Text(loadingText)
-                .font(.subheadline.weight(.medium))
-                .foregroundStyle(.secondary)
-                .contentTransition(.opacity)
-                .id(loadingText)
+        VStack(spacing: 28) {
+            ReceiptScanAnimation(color: brand)
+            VStack(spacing: 8) {
+                Text(loadingText)
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .contentTransition(.opacity)
+                    .animation(.easeInOut(duration: 0.3), value: loadingText)
+                    .id(loadingText)
+                BreathingDotsView(color: brand)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(.bottom, 60)
     }
 
     private var loadingText: String {
+        if !session.parsingStatus.isEmpty {
+            return session.parsingStatus
+        }
         switch session.phase {
         case .loading: return "Reading what you shared…"
         case .parsing: return "Understanding the receipt…"
@@ -195,6 +202,8 @@ struct ShareRootView: View {
     /// Metadata card. Icon + label + value rows with dividers.
     /// Category row uses its actual category icon (mapped from name)
     /// for at-a-glance recognition.
+    @State private var showAllItems = false
+
     private var metadataCard: some View {
         VStack(spacing: 0) {
             metadataRow(
@@ -205,12 +214,15 @@ struct ShareRootView: View {
             )
             Divider().padding(.leading, 44)
             categoryRow
-            if !session.note.isEmpty {
+            if !session.items.isEmpty {
+                Divider().padding(.leading, 44)
+                itemsSection
+            } else if !session.note.isEmpty {
                 Divider().padding(.leading, 44)
                 metadataRow(
                     icon: "text.alignleft",
                     iconColor: .secondary,
-                    label: "Items",
+                    label: "Note",
                     value: session.note
                 )
             }
@@ -226,6 +238,61 @@ struct ShareRootView: View {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .fill(Color(.secondarySystemBackground))
         )
+    }
+
+    private var itemsSection: some View {
+        let visibleItems = showAllItems ? session.items : Array(session.items.prefix(3))
+        let hasMore = session.items.count > 3
+
+        return VStack(spacing: 0) {
+            HStack(spacing: 14) {
+                Image(systemName: "list.bullet")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .frame(width: 22)
+                Text("Items")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text("\(session.items.count) item\(session.items.count == 1 ? "" : "s")")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+
+            ForEach(Array(visibleItems.enumerated()), id: \.offset) { _, item in
+                HStack {
+                    Text(item.name)
+                        .font(.caption)
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                    Spacer()
+                    Text("₹\(Int(item.price))")
+                        .font(.caption.weight(.medium).monospacedDigit())
+                        .foregroundStyle(.primary)
+                }
+                .padding(.horizontal, 16)
+                .padding(.leading, 36)
+                .padding(.vertical, 4)
+            }
+
+            if hasMore {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.25)) {
+                        showAllItems.toggle()
+                    }
+                } label: {
+                    Text(showAllItems ? "Show less" : "Show all \(session.items.count) items")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(brand)
+                }
+                .padding(.top, 4)
+                .padding(.bottom, 6)
+            } else {
+                Spacer().frame(height: 6)
+            }
+        }
     }
 
     /// Category gets a richer treatment than other rows: when a category
@@ -447,6 +514,68 @@ struct ShareRootView: View {
         if cal.isDateInToday(session.date) { return "Today" }
         if cal.isDateInYesterday(session.date) { return "Yesterday" }
         return session.date.formatted(.dateTime.day().month(.abbreviated).year())
+    }
+}
+
+// MARK: - Receipt Scan Animation
+
+private struct ReceiptScanAnimation: View {
+    let color: Color
+    @State private var scanOffset: CGFloat = 0
+    @State private var appeared = false
+
+    private let receiptWidth: CGFloat = 80
+    private let receiptHeight: CGFloat = 100
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color(.tertiarySystemBackground))
+                .frame(width: receiptWidth, height: receiptHeight)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .strokeBorder(color.opacity(0.3), lineWidth: 1)
+                )
+                .overlay(receiptLines)
+
+            RoundedRectangle(cornerRadius: 1)
+                .fill(color.opacity(0.6))
+                .frame(width: receiptWidth - 8, height: 2)
+                .shadow(color: color.opacity(0.5), radius: 6, y: 0)
+                .offset(y: scanOffset)
+        }
+        .frame(width: receiptWidth, height: receiptHeight)
+        .clipped()
+        .onAppear {
+            withAnimation(.easeInOut(duration: 1.5).repeatForever(autoreverses: true)) {
+                scanOffset = (receiptHeight / 2) - 8
+            }
+        }
+    }
+
+    private var receiptLines: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            RoundedRectangle(cornerRadius: 1)
+                .fill(Color.secondary.opacity(0.15))
+                .frame(width: 40, height: 4)
+            RoundedRectangle(cornerRadius: 1)
+                .fill(Color.secondary.opacity(0.1))
+                .frame(width: 55, height: 3)
+            RoundedRectangle(cornerRadius: 1)
+                .fill(Color.secondary.opacity(0.1))
+                .frame(width: 48, height: 3)
+            RoundedRectangle(cornerRadius: 1)
+                .fill(Color.secondary.opacity(0.1))
+                .frame(width: 52, height: 3)
+            Spacer()
+            HStack {
+                Spacer()
+                RoundedRectangle(cornerRadius: 1)
+                    .fill(Color.secondary.opacity(0.15))
+                    .frame(width: 30, height: 4)
+            }
+        }
+        .padding(12)
     }
 }
 

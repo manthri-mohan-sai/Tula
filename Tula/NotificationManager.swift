@@ -13,30 +13,6 @@ enum NotificationManager {
     private static let reminderID = "tula.daily.reminder"
     private static let budgetAlertPrefix = "tula.budget."
 
-    // MARK: - Notification Icon Attachment
-
-    /// Attaches the custom NotificationIcon image to the given content
-    /// so the icon appears reliably on all devices in the notification
-    /// center. Falls back silently if the image can't be written.
-    private static func attachIcon(to content: UNMutableNotificationContent) {
-        guard let image = UIImage(named: "NotificationIcon"),
-              let data = image.pngData() else { return }
-
-        let tempDir = FileManager.default.temporaryDirectory
-        let fileURL = tempDir.appendingPathComponent("NotificationIcon.png")
-        do {
-            try data.write(to: fileURL)
-            let attachment = try UNNotificationAttachment(
-                identifier: "icon",
-                url: fileURL,
-                options: [UNNotificationAttachmentOptionsTypeHintKey: "public.png"]
-            )
-            content.attachments = [attachment]
-        } catch {
-            // Best-effort — notification still fires without custom icon.
-        }
-    }
-
     // MARK: - Authorization
 
     /// Requests notification permission. Idempotent — safe to call multiple
@@ -68,7 +44,7 @@ enum NotificationManager {
 
         let content = UNMutableNotificationContent()
         content.sound = .default
-        attachIcon(to: content)
+
 
         // Build dynamic body from today's expenses (if context available).
         if let context = context {
@@ -239,7 +215,7 @@ enum NotificationManager {
             ? "You've spent \(percent)% of your \(budget.period.shortLabel) budget."
             : "You've spent \(percent)% — keep an eye on \(budget.displayName.lowercased()) spend."
         content.sound = level.sound
-        attachIcon(to: content)
+
 
         // Fire-immediately style notification — no trigger means it
         // delivers as soon as the system can dispatch it (~seconds).
@@ -316,7 +292,7 @@ enum NotificationManager {
         content.body = "\(amountStr) · Did you have this?"
         content.sound = .default
         content.categoryIdentifier = confirmCategoryID
-        attachIcon(to: content)
+
         content.userInfo = [
             "ruleID": ruleID.uuidString,
             "dueDate": dueDate.timeIntervalSince1970

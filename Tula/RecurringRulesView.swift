@@ -14,15 +14,35 @@ struct RecurringRulesView: View {
 
     @State private var showingAdd = false
     @State private var editingRule: RecurringRule?
+    @State private var ruleToDelete: RecurringRule?
+    @State private var showingDeleteConfirm = false
+
+    let showOnlyOverdue: Bool
+
+    init(showOnlyOverdue: Bool = false) {
+        self.showOnlyOverdue = showOnlyOverdue
+    }
 
     private var activeRules: [RecurringRule] { allRules.filter { !$0.isPaused } }
     private var pausedRules: [RecurringRule] { allRules.filter { $0.isPaused } }
+
+    private var overdueRules: [RecurringRule] {
+        allRules.filter { rule in
+            !rule.isPaused && !RecurringEngine.overdueDates(for: rule).isEmpty
+        }
+    }
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: Spacing.md) {
-                    if allRules.isEmpty {
+                    if showOnlyOverdue {
+                        if overdueRules.isEmpty {
+                            emptyState
+                        } else {
+                            section(title: "Overdue", rules: overdueRules)
+                        }
+                    } else if allRules.isEmpty {
                         emptyState
                     } else {
                         if !activeRules.isEmpty {
@@ -37,18 +57,20 @@ struct RecurringRulesView: View {
                 .padding(.vertical, Spacing.sm)
             }
             .background(Color(uiColor: .systemGroupedBackground))
-            .navigationTitle("Recurring")
+            .navigationTitle(showOnlyOverdue ? "Overdue" : "Recurring")
             .navigationBarTitleDisplayMode(.large)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button("Done") { dismiss() }
                 }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        Haptics.tap()
-                        showingAdd = true
-                    } label: {
-                        Image(systemName: "plus")
+                if !showOnlyOverdue {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button {
+                            Haptics.tap()
+                            showingAdd = true
+                        } label: {
+                            Image(systemName: "plus")
+                        }
                     }
                 }
             }
@@ -57,6 +79,20 @@ struct RecurringRulesView: View {
             }
             .sheet(item: $editingRule) { rule in
                 RecurringRuleFormView(rule: rule)
+            }
+            .confirmationDialog(
+                "Delete \(ruleToDelete?.name ?? "rule")?",
+                isPresented: $showingDeleteConfirm,
+                titleVisibility: .visible
+            ) {
+                Button("Delete", role: .destructive) {
+                    if let rule = ruleToDelete {
+                        deleteRule(rule)
+                    }
+                }
+                Button("Cancel", role: .cancel) { }
+            } message: {
+                Text("This recurring rule will be permanently removed.")
             }
         }
     }
@@ -67,14 +103,19 @@ struct RecurringRulesView: View {
             Card(padding: 0, cornerRadius: CornerRadius.medium) {
                 VStack(spacing: 0) {
                     ForEach(rules) { rule in
-                        Button {
-                            Haptics.tap()
-                            editingRule = rule
-                        } label: {
-                            RuleRow(rule: rule)
-                                .padding(.horizontal, Spacing.md)
+                        SwipeToDeleteRow {
+                            ruleToDelete = rule
+                            showingDeleteConfirm = true
+                        } content: {
+                            Button {
+                                Haptics.tap()
+                                editingRule = rule
+                            } label: {
+                                RuleRow(rule: rule)
+                                    .padding(.horizontal, Spacing.md)
+                            }
+                            .buttonStyle(PlainRowButtonStyle())
                         }
-                        .buttonStyle(PlainRowButtonStyle())
 
                         if rule.id != rules.last?.id {
                             Divider().padding(.leading, 64)
@@ -83,6 +124,16 @@ struct RecurringRulesView: View {
                 }
             }
         }
+    }
+
+    private func deleteRule(_ rule: RecurringRule) {
+        NotificationManager.cancelConfirmations(for: rule.id)
+        withAnimation(AppAnimation.snappy) {
+            context.delete(rule)
+            try? context.save()
+            WidgetRefresh.refresh(using: context)
+        }
+        Haptics.success()
     }
 
     private var emptyState: some View {
@@ -851,5 +902,80 @@ struct RecurringRuleFormView: View {
         try? context.save(); WidgetRefresh.refresh(using: context)
         Haptics.success()
         dismiss()
+    }
+}
+
+// MARK: - Swipe To Delete Row
+
+private struct SwipeToDeleteRow<Content: View>: View {
+    let onDelete: () -> Void
+    @ViewBuilder let content: () -> Content
+
+    @State private var offset: CGFloat = 0
+    @State private var hapticFired = false
+
+    private let deleteWidth: CGFloat = 80
+    private let commitThreshold: CGFloat = 90
+
+    var body: some View {
+        ZStack(alignment: .trailing) {
+            HStack {
+                Spacer()
+                Button {
+                    onDelete()
+                    withAnimation(.snappy(duration: 0.25)) { offset = 0 }
+                } label: {
+                    VStack(spacing: 2) {
+                        Image(systemName: "trash")
+                            .font(.subheadline.weight(.semibold))
+                        Text("Delete")
+                            .font(.caption2.weight(.medium))
+                    }
+                    .foregroundStyle(.white)
+                    .frame(width: deleteWidth)
+                    .frame(maxHeight: .infinity)
+                    .background(Color.red)
+                }
+                .buttonStyle(.plain)
+            }
+            .opacity(offset < -1 ? 1 : 0)
+
+            content()
+                .offset(x: offset)
+                .gesture(
+                    DragGesture(minimumDistance: 12)
+                        .onChanged { value in
+                            let raw = value.translation.width
+                            if raw > 0 {
+                                offset = raw * 0.15
+                            } else if abs(raw) > 130 {
+                                let excess = abs(raw) - 130
+                                offset = -(130 + excess * 0.3)
+                            } else {
+                                offset = raw
+                            }
+
+                            if abs(raw) > commitThreshold && !hapticFired {
+                                Haptics.tap()
+                                hapticFired = true
+                            } else if abs(raw) < commitThreshold {
+                                hapticFired = false
+                            }
+                        }
+                        .onEnded { value in
+                            let raw = value.translation.width
+                            if raw < -commitThreshold {
+                                withAnimation(.snappy(duration: 0.25)) {
+                                    offset = -deleteWidth
+                                }
+                            } else {
+                                withAnimation(.snappy(duration: 0.25)) {
+                                    offset = 0
+                                }
+                            }
+                        }
+                )
+        }
+        .clipped()
     }
 }

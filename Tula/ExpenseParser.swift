@@ -529,6 +529,10 @@ enum ExpenseParser {
     /// **Caveat:** "two and a half" becomes "2 and a half". Fractions
     /// aren't supported. Acceptable since expense amounts are almost
     /// always integers in this app.
+    static func normalizeIndianNumbers(in text: String) -> String {
+        SmartExpenseParser.normalizeIndianNumbers(in: text)
+    }
+
     static func normalizeNumberWords(in text: String) -> String {
         let tokens = text.components(separatedBy: .whitespaces)
         var output: [String] = []

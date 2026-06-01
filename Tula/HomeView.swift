@@ -30,6 +30,13 @@ struct HomeView: View {
     @State private var allExpensesFilter: ExpenseFilter?
     @State private var showingSettings = false
     @State private var showingRecurring = false
+    @State private var showingOverdueOnly = false
+    @State private var confirmLogRule: RecurringRule?
+    @State private var confirmLogDate: Date?
+    @State private var showingLogConfirm = false
+    @State private var confirmSkipRule: RecurringRule?
+    @State private var confirmSkipDate: Date?
+    @State private var showingSkipConfirm = false
     @State private var navPath = NavigationPath()
     @State private var toastMessage: String?
     @State private var toastToken: UUID = UUID()
@@ -392,6 +399,39 @@ struct HomeView: View {
             .sheet(isPresented: $showingRecurring) {
                 RecurringRulesView()
             }
+            .sheet(isPresented: $showingOverdueOnly) {
+                RecurringRulesView(showOnlyOverdue: true)
+            }
+            .confirmationDialog(
+                "Log \(confirmLogRule?.name ?? "expense")?",
+                isPresented: $showingLogConfirm,
+                titleVisibility: .visible
+            ) {
+                Button("Log") {
+                    if let rule = confirmLogRule, let date = confirmLogDate {
+                        logUpcoming(rule: rule, date: date)
+                    }
+                }
+                Button("Cancel", role: .cancel) { }
+            } message: {
+                if let rule = confirmLogRule {
+                    Text("This will record \(Currency.format(rule.amount, code: currencyCode)) as an expense.")
+                }
+            }
+            .confirmationDialog(
+                "Skip \(confirmSkipRule?.name ?? "expense")?",
+                isPresented: $showingSkipConfirm,
+                titleVisibility: .visible
+            ) {
+                Button("Skip", role: .destructive) {
+                    if let rule = confirmSkipRule, let date = confirmSkipDate {
+                        skipUpcoming(rule: rule, date: date)
+                    }
+                }
+                Button("Cancel", role: .cancel) { }
+            } message: {
+                Text("This occurrence will be marked as skipped.")
+            }
             .overlay(alignment: .top) {
                 if let toast = toastMessage {
                     Toast(message: toast)
@@ -670,8 +710,10 @@ struct HomeView: View {
 
         if isVoice, !isMultiExpense {
             if SmartExpenseParser.isAvailable {
-                handleVoiceQuickLog(rawInput: rawInput, ruleFallback: parsedExpenses)
-                return
+                if #available(iOS 26.0, *) {
+                    handleVoiceQuickLog(rawInput: rawInput, ruleFallback: parsedExpenses)
+                    return
+                }
             }
         }
         // Typed input, multi-expense voice, or no-FM device: rule path.
@@ -1177,11 +1219,11 @@ struct HomeView: View {
                 leadingLabel: "Log",
                 leadingIcon: "checkmark.circle.fill",
                 leadingColor: Color.tulaBrandFallback,
-                leadingAction: { logUpcoming(rule: rule, date: date) },
+                leadingAction: { confirmLog(rule: rule, date: date) },
                 trailingLabel: "Skip",
                 trailingIcon: "forward.fill",
                 trailingColor: Color.secondary,
-                trailingAction: { skipUpcoming(rule: rule, date: date) },
+                trailingAction: { confirmSkip(rule: rule, date: date) },
                 onTap: {
                     Haptics.tap()
                     handleContextTap(context)
@@ -1194,11 +1236,11 @@ struct HomeView: View {
                 leadingLabel: "Log",
                 leadingIcon: "checkmark.circle.fill",
                 leadingColor: Color.tulaBrandFallback,
-                leadingAction: { logUpcoming(rule: rule, date: date) },
+                leadingAction: { confirmLog(rule: rule, date: date) },
                 trailingLabel: "Skip",
                 trailingIcon: "forward.fill",
                 trailingColor: Color.secondary,
-                trailingAction: { skipUpcoming(rule: rule, date: date) },
+                trailingAction: { confirmSkip(rule: rule, date: date) },
                 onTap: {
                     Haptics.tap()
                     handleContextTap(context)
@@ -1290,11 +1332,18 @@ struct HomeView: View {
         }
     }
 
-    /// Skip a single upcoming occurrence from the home row. Mirrors the
-    /// notification Skip action — sets the rule's last-handled marker so
-    /// the indicator clears and the next occurrence surfaces. Cancels
-    /// any pending notification for this specific date so it doesn't
-    /// re-prompt the user a few hours later.
+    private func confirmLog(rule: RecurringRule, date: Date) {
+        confirmLogRule = rule
+        confirmLogDate = date
+        showingLogConfirm = true
+    }
+
+    private func confirmSkip(rule: RecurringRule, date: Date) {
+        confirmSkipRule = rule
+        confirmSkipDate = date
+        showingSkipConfirm = true
+    }
+
     private func skipUpcoming(rule: RecurringRule, date: Date) {
         Haptics.tap()
         withAnimation(AppAnimation.snappy) {
@@ -1400,8 +1449,10 @@ struct HomeView: View {
         switch context {
         case .review:
             navPath.append(HomeDestination.reviewQueue)
-        case .upcoming, .recurringOverflow, .overdue, .overdueOverflow:
+        case .upcoming, .recurringOverflow, .overdue:
             showingRecurring = true
+        case .overdueOverflow:
+            showingOverdueOnly = true
         case .insight(let insight):
             switch insight.kind {
             case .todayTotal, .biggestToday, .quietToday:

@@ -38,22 +38,28 @@ enum SmartExpenseParser {
     /// - Foundation Models is available on this device, OR
     /// - The user has a cloud AI provider configured with a valid API key
     static var isAvailable: Bool {
-        switch AIProviderStorage.selected {
-        case .openAI:
-            return !CloudAIConfig.load().apiKey.isEmpty
-        case .gemini:
-            return !CloudAIConfig.loadGemini().apiKey.isEmpty
-        case .appleFM:
-            #if canImport(FoundationModels)
-            guard #available(iOS 26.0, *) else { return false }
-            if case .available = SystemLanguageModel.default.availability {
-                return true
-            }
-            return false
-            #else
-            return false
-            #endif
+        if hasCloudVision { return true }
+        #if canImport(FoundationModels)
+        guard #available(iOS 26.0, *) else { return false }
+        if case .available = SystemLanguageModel.default.availability {
+            return true
         }
+        return false
+        #else
+        return false
+        #endif
+    }
+
+    /// Best provider — prefers Gemini when configured.
+    private static var bestProvider: AIProvider {
+        if !CloudAIConfig.loadGemini().apiKey.isEmpty { return .gemini }
+        if !CloudAIConfig.load().apiKey.isEmpty { return .openAI }
+        return AIProviderStorage.selected
+    }
+
+    /// Whether any cloud vision-capable provider is configured.
+    static var hasCloudVision: Bool {
+        !CloudAIConfig.loadGemini().apiKey.isEmpty || !CloudAIConfig.load().apiKey.isEmpty
     }
 
     /// Whether Foundation Models specifically is available on-device.
@@ -113,15 +119,15 @@ enum SmartExpenseParser {
     /// the call site falls back to rules. If FM hiccups, the user still
     /// gets a working save flow.
     static func parse(_ input: String,
-                      categories: [CategoryEntry]) async -> SmartParseResult? {
-        // Route to cloud if user selected a cloud provider
-        switch AIProviderStorage.selected {
-        case .openAI:
-            return await CloudAIParser.parse(input, categories: categories, accountNames: [], isVoice: false)
+                      categories: [CategoryEntry],
+                      contextBlock: String = "") async -> SmartParseResult? {
+        switch bestProvider {
         case .gemini:
-            return await CloudAIParser.parse(input, categories: categories, accountNames: [], isVoice: false, config: .loadGemini())
+            return await CloudAIParser.parse(input, categories: categories, accountNames: [], isVoice: false, contextBlock: contextBlock, config: .loadGemini())
+        case .openAI:
+            return await CloudAIParser.parse(input, categories: categories, accountNames: [], isVoice: false, contextBlock: contextBlock)
         case .appleFM:
-            return await parse(input, categories: categories, accountNames: [], isVoice: false)
+            return await parse(input, categories: categories, accountNames: [], contextBlock: contextBlock, isVoice: false)
         }
     }
 
@@ -142,15 +148,16 @@ enum SmartExpenseParser {
     ///     mentioned in the transcript ("paid from HDFC", "in cash", etc.).
     static func parseVoice(_ input: String,
                             categories: [CategoryEntry],
-                            accountNames: [String]) async -> SmartParseResult? {
-        switch AIProviderStorage.selected {
-        case .openAI:
-            return await CloudAIParser.parse(input, categories: categories, accountNames: accountNames, isVoice: true)
+                            accountNames: [String],
+                            contextBlock: String = "") async -> SmartParseResult? {
+        switch bestProvider {
         case .gemini:
-            return await CloudAIParser.parse(input, categories: categories, accountNames: accountNames, isVoice: true, config: .loadGemini())
+            return await CloudAIParser.parse(input, categories: categories, accountNames: accountNames, isVoice: true, contextBlock: contextBlock, config: .loadGemini())
+        case .openAI:
+            return await CloudAIParser.parse(input, categories: categories, accountNames: accountNames, isVoice: true, contextBlock: contextBlock)
         case .appleFM:
             return await parse(input, categories: categories,
-                        accountNames: accountNames, isVoice: true)
+                        accountNames: accountNames, contextBlock: contextBlock, isVoice: true)
         }
     }
 
@@ -173,17 +180,17 @@ enum SmartExpenseParser {
     /// or empty input. Caller falls back to regex-only result.
     static func parseReceipt(_ rawText: String,
                               categories: [CategoryEntry],
-                              documentType: ReceiptStorage.DocumentType = .generic) async -> ReceiptSmartParseResult? {
-        // Route to cloud AI if selected
-        switch AIProviderStorage.selected {
-        case .openAI:
-            let trimmed = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty, !categories.isEmpty else { return nil }
-            return await CloudAIParser.parseReceipt(trimmed, categories: categories)
+                              documentType: ReceiptStorage.DocumentType = .generic,
+                              contextBlock: String = "") async -> ReceiptSmartParseResult? {
+        switch bestProvider {
         case .gemini:
             let trimmed = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty, !categories.isEmpty else { return nil }
-            return await CloudAIParser.parseReceipt(trimmed, categories: categories, config: .loadGemini())
+            return await CloudAIParser.parseReceipt(trimmed, categories: categories, documentType: documentType, contextBlock: contextBlock, config: .loadGemini())
+        case .openAI:
+            let trimmed = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, !categories.isEmpty else { return nil }
+            return await CloudAIParser.parseReceipt(trimmed, categories: categories, documentType: documentType, contextBlock: contextBlock)
         case .appleFM:
             break
         }
@@ -313,7 +320,7 @@ enum SmartExpenseParser {
         carefully; the actual receipt was clear, only the recognition \
         is noisy.
         """
-        let contextSection = contextBlock.isEmpty ? "" : "\n\n\(contextBlock)\n"
+        let contextSection = ""
 
         let instructions = """
         \(rolePreamble)
@@ -427,16 +434,16 @@ enum SmartExpenseParser {
     /// Only used when `ReceiptParsingModeStorage.selected == .directImage`
     /// and a cloud provider is active. Apple FM always uses OCR text.
     static func parseReceiptImage(_ imageData: Data,
-                                   categories: [CategoryEntry]) async -> ReceiptSmartParseResult? {
+                                   categories: [CategoryEntry],
+                                   contextBlock: String = "") async -> ReceiptSmartParseResult? {
         guard !categories.isEmpty, !imageData.isEmpty else { return nil }
 
-        switch AIProviderStorage.selected {
-        case .openAI:
-            return await CloudAIParser.parseReceiptImage(imageData, categories: categories)
+        switch bestProvider {
         case .gemini:
-            return await CloudAIParser.parseReceiptImage(imageData, categories: categories, config: .loadGemini())
+            return await CloudAIParser.parseReceiptImage(imageData, categories: categories, contextBlock: contextBlock, config: .loadGemini())
+        case .openAI:
+            return await CloudAIParser.parseReceiptImage(imageData, categories: categories, contextBlock: contextBlock)
         case .appleFM:
-            // Apple FM doesn't support image input — caller should use parseReceipt with OCR text
             return nil
         }
     }
@@ -459,7 +466,7 @@ enum SmartExpenseParser {
         #if canImport(FoundationModels)
         guard #available(iOS 26.0, *), isAvailable else { return nil }
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
+        guard !trimmed.isEmpty else  { return nil }
 
         let instructions = """
         You correct speech-recognition errors in voice transcripts from \
@@ -473,6 +480,7 @@ enum SmartExpenseParser {
           word means ones×100+tens. Apply these EVERY time you see them:
             - "two fifty" → "250"
             - "three fifty" → "350"
+            - "two eighty" → "280"
             - "three twenty" → "320"
             - "four eighty" → "480"
             - "five fifteen" → "515"
@@ -480,8 +488,9 @@ enum SmartExpenseParser {
             - "one fifty" → "150"
             - "nine ninety" → "990"
           Same applies if the digit is already numeric: "3 50" → "350", \
-          "2 75" → "275", "1 20" → "120".
-        - "Two hundred fifty" → "250", "three hundred" → "300", etc.
+          "2 75" → "275", "2 80" → "280", "1 20" → "120".
+        - "Two hundred fifty" → "250", "two hundred eighty" → "280", \
+          "three hundred" → "300", etc.
         - Obvious word doubling artifacts from speech recognition
 
         DO NOT:
@@ -491,7 +500,11 @@ enum SmartExpenseParser {
           to "Waffle" unless context strongly suggests it's a food item).
         - "Improve" grammar or punctuation.
         - Add currency symbols, units, or commentary.
-        - **Drop the hundreds component of a number.** "Three fifty" \
+        - **NEVER split or reinterpret plain numbers.** If the transcript \
+          says "280", leave it as "280" — do NOT change it to "80" or \
+          anything else.
+        - **Drop the hundreds component of a number.** "Two eighty" \
+          becomes "280", never "eighty" or "80". "Three fifty" \
           becomes "350", never "fifty" or "50".
 
         If you're unsure whether something is an error, leave it. \
@@ -531,7 +544,8 @@ enum SmartExpenseParser {
                                isVoice: Bool) async -> SmartParseResult? {
         #if canImport(FoundationModels)
         guard #available(iOS 26.0, *), isAvailable else { return nil }
-        guard !input.trimmingCharacters(in: .whitespaces).isEmpty else { return nil }
+        let normalizedInput = Self.normalizeIndianNumbers(in: input)
+        guard !normalizedInput.trimmingCharacters(in: .whitespaces).isEmpty else { return nil }
         guard !categories.isEmpty else { return nil }
 
         // Rich category list with icon-derived hints — same as parseReceipt.
@@ -750,7 +764,7 @@ enum SmartExpenseParser {
         do {
             let session = LanguageModelSession(instructions: instructions)
             let response = try await session.respond(
-                to: input,
+                to: normalizedInput,
                 generating: _FMSmartParseResult.self
             )
             let fm = response.content
@@ -767,6 +781,47 @@ enum SmartExpenseParser {
         #else
         return nil
         #endif
+    }
+
+    // MARK: - Indian English Number Normalizer
+
+    static func normalizeIndianNumbers(in text: String) -> String {
+        let onesWords: [String: Int] = [
+            "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+            "six": 6, "seven": 7, "eight": 8, "nine": 9,
+            "to": 2, "too": 2
+        ]
+        let tensWords: [String: Int] = [
+            "twenty": 20, "thirty": 30, "forty": 40, "fifty": 50,
+            "sixty": 60, "seventy": 70, "eighty": 80, "ninety": 90
+        ]
+        let tensDigits: Set<String> = ["20", "30", "40", "50", "60", "70", "80", "90"]
+
+        var tokens = text.components(separatedBy: .whitespaces).filter { !$0.isEmpty }
+        var i = 0
+
+        while i < tokens.count - 1 {
+            let current = tokens[i].lowercased().trimmingCharacters(in: .punctuationCharacters)
+            let next = tokens[i + 1].lowercased().trimmingCharacters(in: .punctuationCharacters)
+
+            var ones: Int?
+            var tens: Int?
+
+            if let o = onesWords[current] { ones = o }
+            else if let d = Int(current), d >= 1, d <= 9 { ones = d }
+
+            if let t = tensWords[next] { tens = t }
+            else if tensDigits.contains(next), let d = Int(next) { tens = d }
+
+            if let o = ones, let t = tens {
+                tokens[i] = String(o * 100 + t)
+                tokens.remove(at: i + 1)
+            } else {
+                i += 1
+            }
+        }
+
+        return tokens.joined(separator: " ")
     }
 }
 

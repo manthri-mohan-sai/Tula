@@ -848,28 +848,29 @@ struct AddExpenseView: View {
         // Sendable so the actor hop is safe.
         let contextBlock = FMContextBuilder.build(modelContext: context)
 
-        Task.detached(priority: .userInitiated) {
-            // Pass 1: regex-based extraction — deterministic, ~500ms,
-            // always runs. Provides amount + merchant + items + date
-            // for the common case of clean printed receipts.
-            let regexResult = await ReceiptStorage.parse(image)
+        let isDirectImageMode = SmartExpenseParser.hasCloudVision
 
-            // Pass 2: smart parser — runs if AI is available.
-            // If user chose "direct image" mode and a cloud provider is active,
-            // send the image directly instead of OCR text.
-            // Race-limited to 6s so a stalled call doesn't block UI.
+        Task.detached(priority: .userInitiated) {
+            // For cloud AI with direct image mode: send the photo straight
+            // to the AI — no OCR needed. The AI reads the image itself.
+            // For Apple FM: run OCR first, then send the text to FM.
+            let regexResult: ReceiptStorage.ParseResult?
+            if isDirectImageMode {
+                regexResult = nil
+            } else {
+                regexResult = await ReceiptStorage.parse(image)
+            }
+
             let smartResult: ReceiptSmartParseResult? = await withTaskGroup(of: ReceiptSmartParseResult?.self) { group in
                 group.addTask {
                     guard SmartExpenseParser.isAvailable else { return nil }
 
-                    // Direct image mode: send photo to cloud AI (skips OCR text)
-                    if ReceiptParsingModeStorage.selected == .directImage,
-                       AIProviderStorage.selected != .appleFM,
-                       let jpegData = image.jpegData(compressionQuality: 0.8) {
-                        return await SmartExpenseParser.parseReceiptImage(jpegData, categories: categoryEntries)
+                    if isDirectImageMode,
+                       let jpegData = image.jpegData(compressionQuality: 0.85) {
+                        return await SmartExpenseParser.parseReceiptImage(jpegData, categories: categoryEntries, contextBlock: contextBlock)
                     }
 
-                    // OCR text mode (default for Apple FM)
+                    guard let regexResult else { return nil }
                     return await SmartExpenseParser.parseReceipt(
                         regexResult.rawText,
                         categories: categoryEntries,
@@ -878,10 +879,7 @@ struct AddExpenseView: View {
                     )
                 }
                 group.addTask {
-                    // Vision/image requests need more time than text-only OCR parsing
-                    let timeout: Duration = (ReceiptParsingModeStorage.selected == .directImage && AIProviderStorage.selected != .appleFM)
-                        ? .seconds(30)
-                        : .seconds(6)
+                    let timeout: Duration = isDirectImageMode ? .seconds(30) : .seconds(6)
                     try? await Task.sleep(for: timeout)
                     return nil
                 }
@@ -893,35 +891,18 @@ struct AddExpenseView: View {
             await MainActor.run {
                 receiptOCRInFlight = false
 
-                // **Merge strategy** — priority depends on document type.
-                //
-                // For STRUCTURED documents (UPI, order summaries): regex
-                // wins. These layouts have labelled fields ("Paid to:",
-                // "Bill Total:") that our extractors match with high
-                // confidence. FM adding "context" here often introduces
-                // errors by misreading a merchant name or re-interpreting
-                // a subtotal as the grand total.
-                //
-                // For UNSTRUCTURED documents (restaurant bills, generic):
-                // FM wins. Regex struggles with varied layouts; FM reads
-                // the full text and applies reasoning about what the
-                // "grand total" label means in context.
-                let isStructuredDoc = regexResult.documentType == .upi
-                    || regexResult.documentType == .orderSummary
-
                 // AMOUNT
                 let mergedAmount: Double?
-                if isStructuredDoc, let rgx = regexResult.amount, rgx > 0 {
-                    // Regex found an amount in a labelled field — trust it.
-                    mergedAmount = rgx
-                } else if let smart = smartResult?.amount, let rgx = regexResult.amount,
-                          smart > 0, rgx > 0, abs(smart - 2 * rgx) < 2 {
-                    // FM doubled (summed subtotal + grand total that are the
-                    // same value printed twice) — trust regex instead.
-                    mergedAmount = rgx
+                if isDirectImageMode {
+                    mergedAmount = smartResult?.amount
                 } else {
-                    // Unstructured: FM first, regex fallback.
-                    mergedAmount = smartResult?.amount ?? regexResult.amount
+                    let isStructuredDoc = regexResult?.documentType == .upi
+                        || regexResult?.documentType == .orderSummary
+                    if isStructuredDoc, let rgx = regexResult?.amount, rgx > 0 {
+                        mergedAmount = rgx
+                    } else {
+                        mergedAmount = smartResult?.amount ?? regexResult?.amount
+                    }
                 }
                 if let parsedAmount = mergedAmount, parsedAmount > 0,
                    amount == beforeAmount, amount == 0 {
@@ -931,14 +912,17 @@ struct AddExpenseView: View {
                     }
                 }
 
-                // MERCHANT: regex wins for structured docs (labelled
-                // "Paid to:" / "Transferred to:" fields are exact).
-                // FM wins for unstructured where merchant is ambiguous.
                 let mergedMerchant: String?
-                if isStructuredDoc, let rgx = regexResult.merchant, !rgx.isEmpty {
-                    mergedMerchant = rgx
+                if isDirectImageMode {
+                    mergedMerchant = smartResult?.merchant
                 } else {
-                    mergedMerchant = smartResult?.merchant ?? regexResult.merchant
+                    let isStructuredDoc = regexResult?.documentType == .upi
+                        || regexResult?.documentType == .orderSummary
+                    if isStructuredDoc, let rgx = regexResult?.merchant, !rgx.isEmpty {
+                        mergedMerchant = rgx
+                    } else {
+                        mergedMerchant = smartResult?.merchant ?? regexResult?.merchant
+                    }
                 }
                 if let m = mergedMerchant, !m.isEmpty,
                    merchant == beforeMerchant, merchant.isEmpty {
@@ -948,10 +932,12 @@ struct AddExpenseView: View {
                     }
                 }
 
-                // DATE: prefer regex's typed Date (no string parsing
-                // round-trip). FM provides YYYY-MM-DD which we parse
-                // when regex didn't find one.
-                let resolvedDate: Date? = regexResult.date ?? parseFMDate(smartResult?.date)
+                let resolvedDate: Date?
+                if isDirectImageMode {
+                    resolvedDate = parseFMDate(smartResult?.date)
+                } else {
+                    resolvedDate = regexResult?.date ?? parseFMDate(smartResult?.date)
+                }
                 if let parsedDate = resolvedDate, date == beforeDate,
                    Calendar.current.isDateInToday(date) {
                     // Only override if the form date is still "today"
@@ -986,13 +972,13 @@ struct AddExpenseView: View {
                     }
                 }
 
-                // ITEMS / NOTE: prefer FM's structured items (cleaner
-                // names, better filtering) over regex's heuristic list.
                 let itemsForNote: String?
                 if let smart = smartResult, !smart.items.isEmpty {
                     itemsForNote = formatSmartItems(smart.items, total: amount)
+                } else if !isDirectImageMode {
+                    itemsForNote = regexResult?.formattedNote(currencyCode: currencyCode)
                 } else {
-                    itemsForNote = regexResult.formattedNote(currencyCode: currencyCode)
+                    itemsForNote = nil
                 }
                 if let formatted = itemsForNote, note == beforeNote, note.isEmpty {
                     withAnimation(.snappy(duration: 0.25)) {
@@ -1094,20 +1080,8 @@ struct AddExpenseView: View {
     /// Users who want to see every line can review the original receipt
     /// photo (which we save attached to the expense).
     private func formatSmartItems(_ items: [ReceiptLineItem], total: Double) -> String {
-        /// Show this many items inline before truncating. Empirically
-        /// 5 items reads naturally on one line in the expense row;
-        /// beyond that it wraps and clutters the list view.
-        let maxInline = 5
-
         let parts = items.map { "\($0.name) \(Currency.format($0.price, code: currencyCode))" }
-        let body: String
-        if parts.count > maxInline {
-            let visible = parts.prefix(maxInline).joined(separator: " · ")
-            let remaining = parts.count - maxInline
-            body = "\(visible) · and \(remaining) more item\(remaining == 1 ? "" : "s")"
-        } else {
-            body = parts.joined(separator: " · ")
-        }
+        let body = parts.joined(separator: " · ")
 
         if total > 0 {
             return "\(body) (Total \(Currency.format(total, code: currencyCode)))"
