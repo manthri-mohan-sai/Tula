@@ -4,35 +4,22 @@ import SwiftUI
 // MARK: - Setup
 //
 // Widget Extension target. Required setup:
-//   1. File → New → Target → Widget Extension named "TulaWidget"
-//   2. Replace generated file with this one
-//   3. Add these files to TulaWidget target membership:
-//        - WidgetSnapshot.swift
-//        - Currency.swift
-//        - SharedAppearance.swift
-//   4. Both targets need App Group `group.com.app.Tula` (Signing & Capabilities)
+//   1. Add these files to Widget target membership:
+//        - WidgetSnapshot.swift, Currency.swift, SharedAppearance.swift
+//   2. Both targets need App Group `group.com.app.Tula`
 //
-// Widget gallery (v2):
+// Widget gallery:
 //   Home screen
-//     • Today (small)        — today's spend + sparkline + month progress
-//     • Budgets (medium)     — top 3 budgets with progress bars
-//     • Upcoming (medium)    — next 3 recurring expenses due
-//     • Quick Actions (small) — Add / Voice deep-link buttons
+//     • Today (small)               — today's spend + sparkline + month progress
+//     • Category Breakdown (medium) — top 4 categories with proportional bars
+//     • Monthly Comparison (small)  — this month vs last, directional change
 //   Lock screen
-//     • Today Inline         — one-line banner
-//     • Today Circular       — budget burn ring
-//     • Today Rectangular    — today + sparkline + month %
-//
-// Removed in v2:
-//   • Quick Log (medium) — past-3-expenses was not actionable; replaced
-//     by Upcoming which surfaces what's coming due (proactive value).
+//     • Today Inline                — one-line banner
+//     • Today Circular              — budget burn ring
+//     • Today Rectangular           — today + sparkline + month %
 
 // MARK: - Provider
 
-/// Reads the shared snapshot for every timeline refresh. Schedules a
-/// fresh update every 30 minutes. The snapshot itself is refreshed by
-/// the main app on foreground transitions; this just makes sure widgets
-/// pick up changes if the user hasn't opened the app in a while.
 struct TulaWidgetProvider: TimelineProvider {
 
     func placeholder(in context: Context) -> TulaWidgetEntry {
@@ -57,17 +44,12 @@ struct TulaWidgetProvider: TimelineProvider {
 
         var entries: [TulaWidgetEntry] = [nowEntry]
 
-        // Hourly entries so the widget re-renders with updated
-        // relative labels ("due in 3h" → "due in 2h") and picks up
-        // any snapshot the main app wrote in the background.
-        for hoursAhead in 1...4 {
-            if let future = cal.date(byAdding: .hour, value: hoursAhead, to: now) {
+        for offset in 1...8 {
+            if let future = cal.date(byAdding: .minute, value: offset * 30, to: now) {
                 entries.append(TulaWidgetEntry(date: future, snapshot: snapshot))
             }
         }
 
-        // Midnight entry: zero today's total so the widget doesn't
-        // carry yesterday's spend into the new day.
         if let nextMidnight = cal.nextDate(
             after: now,
             matching: DateComponents(hour: 0, minute: 0, second: 0),
@@ -80,10 +62,7 @@ struct TulaWidgetProvider: TimelineProvider {
                                             snapshot: midnightSnapshot))
         }
 
-        // Ask iOS for a fresh timeline in ~1 hour. Combined with
-        // reloadAllTimelines() on every save in the main app, this
-        // keeps the widget reasonably fresh even without app opens.
-        let refreshDate = cal.date(byAdding: .hour, value: 1, to: now) ?? now
+        let refreshDate = cal.date(byAdding: .minute, value: 30, to: now) ?? now
         let timeline = Timeline(entries: entries, policy: .after(refreshDate))
         completion(timeline)
     }
@@ -100,23 +79,14 @@ struct TulaWidgetEntry: TimelineEntry {
 struct TulaWidgetBundle: WidgetBundle {
     var body: some Widget {
         TulaTodayWidget()
-        TulaBudgetsWidget()
-        TulaUpcomingWidget()
-        TulaQuickActionsWidget()
+        TulaCategoryWidget()
+        TulaMonthCompareWidget()
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════
 // MARK: - Today Widget
-//
-// One Widget supporting four families:
-//   • .systemSmall    → home screen (sparkline + amount + progress)
-//   • .accessoryInline → lockscreen top line
-//   • .accessoryCircular → lockscreen circular slot (budget burn ring)
-//   • .accessoryRectangular → lockscreen rectangular slot (today + spark)
-//
-// Each family renders a distinct view but all draw from the same Today
-// snapshot data. Consolidating into one Widget keeps the gallery clean:
-// the user picks "Tula Today" once, then chooses size per surface.
+// ═══════════════════════════════════════════════════════════════════
 
 struct TulaTodayWidget: Widget {
     let kind: String = "TulaTodayWidget"
@@ -140,8 +110,6 @@ struct TulaTodayWidget: Widget {
     }
 }
 
-/// Dispatches to the right view based on the active widget family.
-/// SwiftUI's `@Environment(\.widgetFamily)` tells us which one we're in.
 struct TodayWidgetEntryView: View {
     @Environment(\.widgetFamily) private var family
     let snapshot: WidgetSnapshot
@@ -151,32 +119,13 @@ struct TodayWidgetEntryView: View {
         case .accessoryInline:      InlineTodayView(snapshot: snapshot)
         case .accessoryCircular:    CircularTodayView(snapshot: snapshot)
         case .accessoryRectangular: RectangularTodayView(snapshot: snapshot)
-        default:                    HomeTodayView(
-            snapshot: snapshot
-        )   // .systemSmall
+        default:                    HomeTodayView(snapshot: snapshot)
         }
     }
 }
 
 // MARK: - Today: home screen (small)
 
-/// Compact home-screen widget with subtle brand presence and an
-/// information-rich trend chart. Layout layers (back to front):
-///
-///   1. **तु backdrop** — large faded glyph in the top-right corner,
-///      bleeding off the edge. Reads as a watermark / brand presence
-///      without competing with the data. Same treatment as the home
-///      view's hero card.
-///   2. Content stack: "Today" label, amount, trend chart with
-///      day-of-week labels, month progress bar.
-///
-/// The trend chart now includes:
-///   • Line + faint fill (the sparkline shape)
-///   • Small dot at each data point (3pt) — gives "this is real data,
-///     not just a decorative curve"
-///   • Today's dot is larger and brand-colored — anchors the eye
-///   • M T W T F S S day labels along the bottom, relative to today
-///     so the chart is *legible* not just decorative
 struct HomeTodayView: View {
     let snapshot: WidgetSnapshot
 
@@ -190,14 +139,11 @@ struct HomeTodayView: View {
         && snapshot.monthTotal > snapshot.monthlyBudgetCap
     }
 
-    /// Narrow day-of-week initials for the last 7 days, oldest-first,
-    /// aligned to `snapshot.dailyTotals`. Computed against the current
-    /// date so "today" is always the last column.
     private var dayLabels: [String] {
         let cal = Calendar.current
         let now = Date.now
         let f = DateFormatter()
-        f.dateFormat = "EEEEE"  // M, T, W (single-letter narrow form)
+        f.dateFormat = "EEEEE"
         return (0..<7).map { i in
             let date = cal.date(byAdding: .day, value: -(6 - i), to: now) ?? now
             return f.string(from: date)
@@ -206,14 +152,6 @@ struct HomeTodayView: View {
 
     var body: some View {
         ZStack(alignment: .topLeading) {
-            // तु backdrop — large faded glyph anchored to the top-
-            // right, offset partly off-screen so it reads as a
-            // watermark rather than a label. Opacity 0.22 (was 0.10)
-            // gives the glyph real presence against the widget's
-            // tertiary-fill background; 10% disappeared in normal
-            // lighting. Size bumped to 130pt and offset reduced so
-            // more of the glyph stays in the visible area — earlier
-            // version had ~60% of the character clipped off-screen.
             Text("तु")
                 .font(.system(size: 130, weight: .bold))
                 .foregroundStyle(Color.tulaBrandFallback.opacity(0.15))
@@ -243,13 +181,6 @@ struct HomeTodayView: View {
                 .lineLimit(1)
                 .foregroundStyle(.primary)
                 .monospacedDigit()
-                // No contentTransition here — widgets render each
-                // timeline snapshot as a discrete image, so SwiftUI
-                // has no continuous view tree to interpolate against.
-                // The modifier appears to do nothing in this context
-                // even when the value is a valid Double. Apple's
-                // own widgets (Wallet, Stocks, Health) all hard-cut
-                // between refresh values for the same reason.
 
                 Spacer(minLength: 0)
 
@@ -296,10 +227,6 @@ struct HomeTodayView: View {
 
 // MARK: - Today: lockscreen inline
 
-/// Single-line banner that sits at the top of the lockscreen, above the
-/// clock. Monochrome — system applies tint. Format: "Today: ₹350" or
-/// when budgeted, includes the remaining budget percentage to give one
-/// pacing signal in the available width.
 struct InlineTodayView: View {
     let snapshot: WidgetSnapshot
 
@@ -324,10 +251,6 @@ struct InlineTodayView: View {
 
 // MARK: - Today: lockscreen circular
 
-/// Small circle on the lockscreen, used in the per-side accessory slots.
-/// Shows budget-burn as an open ring with the percentage in the center.
-/// `widgetAccentable()` lets the user-chosen tint color paint the ring.
-/// When no budget is set, falls back to today's amount as a stat label.
 struct CircularTodayView: View {
     let snapshot: WidgetSnapshot
 
@@ -352,7 +275,6 @@ struct CircularTodayView: View {
                     .monospacedDigit()
             }
         } else {
-            // No budget cap → show today's amount in a static circle.
             VStack(spacing: 0) {
                 Text("Today")
                     .font(.system(size: 9, weight: .medium))
@@ -374,10 +296,6 @@ struct CircularTodayView: View {
 
 // MARK: - Today: lockscreen rectangular
 
-/// The richest lockscreen surface: today amount + 7-day sparkline + a
-/// thin month-progress trail. Roughly 144x72 pt of space, so we keep
-/// everything tight. Monochrome / accentable — adapts to the lockscreen
-/// tint chosen by the user.
 struct RectangularTodayView: View {
     let snapshot: WidgetSnapshot
 
@@ -434,180 +352,61 @@ struct RectangularTodayView: View {
     }
 }
 
-// MARK: - Budgets Widget
+// ═══════════════════════════════════════════════════════════════════
+// MARK: - Category Breakdown Widget (medium)
+// ═══════════════════════════════════════════════════════════════════
 
-struct TulaBudgetsWidget: Widget {
-    let kind: String = "TulaBudgetsWidget"
+struct TulaCategoryWidget: Widget {
+    let kind: String = "TulaCategoryWidget"
 
     var body: some WidgetConfiguration {
         StaticConfiguration(
             kind: kind,
             provider: TulaWidgetProvider()
         ) { entry in
-            BudgetsWidgetView(snapshot: entry.snapshot)
+            CategoryWidgetView(snapshot: entry.snapshot)
                 .containerBackground(.fill.tertiary, for: .widget)
         }
-        .configurationDisplayName("Budgets")
-        .description("Your top monthly budgets at a glance.")
+        .configurationDisplayName("Spending")
+        .description("This month's spending by category.")
         .supportedFamilies([.systemMedium])
     }
 }
 
-/// Medium widget — title row + up to 3 budget rows showing name, spent,
-/// and a horizontal progress bar. Most-used budget rises to the top
-/// (sorted by % used in the snapshot generation step).
-struct BudgetsWidgetView: View {
+struct CategoryWidgetView: View {
     let snapshot: WidgetSnapshot
 
+    private var monthName: String {
+        Date.now.formatted(.dateTime.month(.wide))
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("Budgets")
+        VStack(alignment: .leading, spacing: 0) {
+            // Header
+            HStack(alignment: .firstTextBaseline) {
+                Text("Spending")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
                 Spacer()
-                if !snapshot.topBudgets.isEmpty {
-                    Text("This month")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                }
-            }
-
-            if snapshot.topBudgets.isEmpty {
-                emptyView
-            } else {
-                ForEach(Array(snapshot.topBudgets.prefix(3))) { entry in
-                    BudgetWidgetRow(
-                        entry: entry,
-                        currencyCode: snapshot.currencyCode
-                    )
-                }
-            }
-
-            Spacer(minLength: 0)
-        }
-        .frame(
-            maxWidth: .infinity,
-            maxHeight: .infinity,
-            alignment: .topLeading
-        )
-    }
-
-    private var emptyView: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("No budgets yet")
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.primary)
-            Text("Open Tula to add one.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-    }
-}
-
-private struct BudgetWidgetRow: View {
-    let entry: WidgetSnapshot.Entry
-    let currencyCode: String
-
-    private var color: Color {
-        entry.isOverall ? Color.tulaBrandFallback : Color(hex: entry.colorHex)
-    }
-
-    private var isOver: Bool { entry.spent > entry.amount }
-
-    var body: some View {
-        VStack(spacing: 3) {
-            HStack(spacing: 6) {
-                Image(systemName: entry.iconKey)
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(color)
-                Text(entry.name)
+                Text(Currency.format(snapshot.monthTotal, code: snapshot.currencyCode))
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.primary)
-                    .lineLimit(1)
-                Spacer(minLength: 4)
-                Text(
-                    "\(Currency.compact(entry.spent, code: currencyCode)) / \(Currency.compact(entry.amount, code: currencyCode))"
-                )
-                .font(.caption2.weight(.medium))
-                .foregroundStyle(isOver ? .red : .secondary)
-                .monospacedDigit()
-            }
-            GeometryReader { geo in
-                ZStack(alignment: .leading) {
-                    Capsule().fill(.quaternary)
-                    Capsule()
-                        .fill(isOver ? Color.red : color)
-                        .frame(width: geo.size.width * min(entry.progress, 1.0))
-                }
-            }
-            .frame(height: 4)
-        }
-    }
-}
-
-// MARK: - Upcoming Widget (medium)
-//
-// Replaces the v1 Quick Log widget. Surfaces what's COMING due in the
-// next several days — proactive, plan-ahead value. Tap-to-add deep link
-// brings the user into Tula's Recurring section.
-
-struct TulaUpcomingWidget: Widget {
-    let kind: String = "TulaUpcomingWidget"
-
-    var body: some WidgetConfiguration {
-        StaticConfiguration(
-            kind: kind,
-            provider: TulaWidgetProvider()
-        ) { entry in
-            UpcomingWidgetView(snapshot: entry.snapshot)
-                .containerBackground(.fill.tertiary, for: .widget)
-        }
-        .configurationDisplayName("Upcoming")
-        .description("Recurring expenses due soon.")
-        .supportedFamilies([.systemMedium])
-    }
-}
-
-struct UpcomingWidgetView: View {
-    let snapshot: WidgetSnapshot
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("Upcoming")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                Spacer()
-                if !snapshot.upcomingRecurrings.isEmpty {
-                    Text(totalLabel)
-                        .font(.caption2.weight(.medium))
-                        .foregroundStyle(.tertiary)
-                        .monospacedDigit()
-                }
+                    .monospacedDigit()
             }
 
-            if snapshot.upcomingRecurrings.isEmpty {
-                emptyView
+            Spacer(minLength: 6)
+
+            if snapshot.categoryBreakdown.isEmpty {
+                categoryEmptyView
             } else {
-                VStack(spacing: 0) {
-                    ForEach(
-                        Array(
-                            snapshot.upcomingRecurrings.prefix(3).enumerated()
-                        ),
-                        id: \.element.id
-                    ) {
- index,
-                        item in
-                        UpcomingRow(
-                            item: item,
+                let maxAmount = snapshot.categoryBreakdown.first?.amount ?? 1
+                VStack(spacing: 6) {
+                    ForEach(Array(snapshot.categoryBreakdown.prefix(4))) { cat in
+                        CategoryWidgetRow(
+                            entry: cat,
+                            maxAmount: maxAmount,
                             currencyCode: snapshot.currencyCode
                         )
-                        .padding(.vertical, 4)
-                        if index < min(snapshot.upcomingRecurrings.count, 3) - 1 {
-                            Divider().opacity(0.5)
-                        }
                     }
                 }
             }
@@ -621,20 +420,12 @@ struct UpcomingWidgetView: View {
         )
     }
 
-    /// Total of all upcoming amounts in the snapshot — sits as a small
-    /// trailing label in the header. Gives one-glance "how much is
-    /// coming." A trailing visual anchor like Apple Calendar uses.
-    private var totalLabel: String {
-        let total = snapshot.upcomingRecurrings.reduce(0) { $0 + $1.amount }
-        return Currency.compact(total, code: snapshot.currencyCode)
-    }
-
-    private var emptyView: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text("Nothing recurring")
+    private var categoryEmptyView: some View {
+        VStack(spacing: 4) {
+            Text("No expenses yet")
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.primary)
-            Text("Set up rules in Tula → Recurring.")
+            Text("Start logging in Tula.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -642,98 +433,169 @@ struct UpcomingWidgetView: View {
     }
 }
 
-private struct UpcomingRow: View {
-    let item: WidgetSnapshot.UpcomingRecurring
+private struct CategoryWidgetRow: View {
+    let entry: WidgetSnapshot.CategorySpend
+    let maxAmount: Double
     let currencyCode: String
 
-    /// Human-friendly due-date label. "Tomorrow" and "Today" are
-    /// special-cased because they read better than "in 1 day" / "in
-    /// 0 days." Beyond a week, we drop the relative phrasing and just
-    /// show the absolute date so the user can plan further out.
-    private var dueLabel: String {
-        let cal = Calendar.current
-        let days = cal.dateComponents([.day], from: cal.startOfDay(for: .now),
-                                      to: cal
-            .startOfDay(for: item.dueDate)).day ?? 0
-        switch days {
-        case ..<0:  return "overdue"
-        case 0:     return "today"
-        case 1:     return "tomorrow"
-        case 2...6: return "in \(days) days"
-        default:    return item.dueDate
-                .formatted(.dateTime.day().month(.abbreviated))
-        }
+    private var color: Color { Color(hex: entry.colorHex) }
+
+    private var barFraction: Double {
+        guard maxAmount > 0 else { return 0 }
+        return entry.amount / maxAmount
     }
 
-    private var color: Color { Color(hex: item.colorHex) }
-    private var isOverdue: Bool { item.dueDate < Date.now }
-
     var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: item.iconKey)
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(color)
-                .frame(width: 22, height: 22)
-                .background(color.opacity(0.15), in: Circle())
+        VStack(spacing: 3) {
+            HStack(spacing: 8) {
+                Image(systemName: entry.iconKey)
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(width: 18, height: 18)
+                    .background(color, in: RoundedRectangle(cornerRadius: 4, style: .continuous))
 
-            VStack(alignment: .leading, spacing: 1) {
-                Text(item.name)
-                    .font(.caption.weight(.semibold))
+                Text(entry.name)
+                    .font(.caption.weight(.medium))
                     .foregroundStyle(.primary)
                     .lineLimit(1)
-                Text(dueLabel)
-                    .font(.caption2)
-                    .foregroundStyle(isOverdue ? .red : .secondary)
+
+                Spacer(minLength: 4)
+
+                Text("\(Int(entry.percentage * 100))%")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.tertiary)
+                    .monospacedDigit()
+
+                Text(Currency.compact(entry.amount, code: currencyCode))
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.primary)
+                    .monospacedDigit()
             }
 
-            Spacer(minLength: 4)
-
-            Text(Currency.format(item.amount, code: currencyCode))
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.primary)
-                .monospacedDigit()
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(.quaternary)
+                    Capsule()
+                        .fill(color)
+                        .frame(width: max(geo.size.width * barFraction, 2))
+                }
+            }
+            .frame(height: 3)
         }
     }
 }
 
-// MARK: - Quick Actions Widget (small)
+// ═══════════════════════════════════════════════════════════════════
+// MARK: - Monthly Comparison Widget (small)
+// ═══════════════════════════════════════════════════════════════════
 
-/// Two large tap targets stacked horizontally — Add (typed) on the left,
-/// Voice on the right. Each is wrapped in a `Link` so taps route to
-/// distinct deep links rather than the whole widget opening to the same
-/// destination.
-struct TulaQuickActionsWidget: Widget {
-    let kind: String = "TulaQuickActionsWidget"
+struct TulaMonthCompareWidget: Widget {
+    let kind: String = "TulaMonthCompareWidget"
 
     var body: some WidgetConfiguration {
-        StaticConfiguration(kind: kind, provider: TulaWidgetProvider()) { _ in
-            QuickActionsWidgetView()
+        StaticConfiguration(
+            kind: kind,
+            provider: TulaWidgetProvider()
+        ) { entry in
+            MonthCompareWidgetView(snapshot: entry.snapshot)
                 .containerBackground(.fill.tertiary, for: .widget)
         }
-        .configurationDisplayName("Quick Actions")
-        .description("Tap to log by typing or by voice.")
+        .configurationDisplayName("Monthly")
+        .description("This month vs last month at a glance.")
         .supportedFamilies([.systemSmall])
     }
 }
 
-struct QuickActionsWidgetView: View {
+struct MonthCompareWidgetView: View {
+    let snapshot: WidgetSnapshot
+
+    private var monthName: String {
+        Date.now.formatted(.dateTime.month(.abbreviated))
+    }
+
+    private var lastMonthName: String {
+        let cal = Calendar.current
+        let lastMonth = cal.date(byAdding: .month, value: -1, to: .now) ?? .now
+        return lastMonth.formatted(.dateTime.month(.abbreviated))
+    }
+
+    private var changePercent: Double? {
+        guard snapshot.lastMonthTotal > 0 else { return nil }
+        return (snapshot.monthTotal - snapshot.lastMonthTotal) / snapshot.lastMonthTotal
+    }
+
+    private var isSpendingMore: Bool {
+        snapshot.monthTotal > snapshot.lastMonthTotal
+    }
+
     var body: some View {
-        VStack(spacing: 0) {
-            Text("Log expense")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
+        ZStack(alignment: .topLeading) {
+            // Brand watermark
+            Text("तु")
+                .font(.system(size: 110, weight: .bold))
+                .foregroundStyle(Color.tulaBrandFallback.opacity(0.10))
+                .offset(x: 30, y: -25)
+                .frame(
+                    maxWidth: .infinity,
+                    maxHeight: .infinity,
+                    alignment: .topTrailing
+                )
+                .allowsHitTesting(false)
 
-            Spacer(minLength: 6)
+            VStack(alignment: .leading, spacing: 0) {
+                Text(monthName)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .padding(.top, 6)
 
-            HStack(spacing: 8) {
-                Link(destination: URL(string: "tula://add")!) {
-                    actionButton(icon: "plus", label: "Add",
-                                 tint: Color.tulaBrandFallback)
+                Spacer(minLength: 4)
+
+                // Hero amount
+                Text(
+                    Currency.format(
+                        snapshot.monthTotal,
+                        code: snapshot.currencyCode
+                    )
+                )
+                .font(.system(size: 28, weight: .semibold, design: .rounded))
+                .minimumScaleFactor(0.5)
+                .lineLimit(1)
+                .foregroundStyle(.primary)
+                .monospacedDigit()
+
+                Spacer(minLength: 6)
+
+                // Change indicator
+                if let pct = changePercent {
+                    HStack(spacing: 3) {
+                        Image(systemName: isSpendingMore ? "arrow.up.right" : "arrow.down.right")
+                            .font(.system(size: 11, weight: .bold))
+                        Text("\(Int(abs(pct * 100)))%")
+                            .font(.system(size: 13, weight: .semibold))
+                            .monospacedDigit()
+                    }
+                    .foregroundStyle(isSpendingMore ? .red : .green)
+
+                    HStack(spacing: 3) {
+                        Text("vs")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(.tertiary)
+                        Text(Currency.compact(snapshot.lastMonthTotal, code: snapshot.currencyCode))
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
+                        Text(lastMonthName)
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(.tertiary)
+                    }
+                    .padding(.top, 1)
+                } else {
+                    Text("No prior month data")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
                 }
-                Link(destination: URL(string: "tula://voice")!) {
-                    actionButton(icon: "mic.fill", label: "Voice", tint: .red)
-                }
+
+                Spacer(minLength: 0)
             }
         }
         .frame(
@@ -742,33 +604,12 @@ struct QuickActionsWidgetView: View {
             alignment: .topLeading
         )
     }
-
-    private func actionButton(icon: String, label: String, tint: Color) -> some View {
-        VStack(spacing: 4) {
-            Spacer(minLength: 0)
-            Image(systemName: icon)
-                .font(.system(size: 22, weight: .bold))
-                .foregroundStyle(.white)
-                .frame(width: 38, height: 38)
-                .background(tint, in: Circle())
-            Text(label)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.primary)
-            Spacer(minLength: 0)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(tint.opacity(0.12))
-        )
-    }
 }
 
+// ═══════════════════════════════════════════════════════════════════
 // MARK: - Sparkline
+// ═══════════════════════════════════════════════════════════════════
 
-/// Minimal line chart for tight surfaces (lockscreen rectangular).
-/// Pure SwiftUI `Path` — no Charts framework dependency (lighter at
-/// widget refresh). Renders a thin stroked line + a faint fill under it.
 struct SparklineView: View {
     let values: [Double]
     let color: Color
@@ -825,20 +666,8 @@ struct SparklineView: View {
     }
 }
 
-// MARK: - Trend chart (with day labels)
+// MARK: - Trend Chart (with day labels)
 
-/// Richer chart for the home-screen Today widget. Same fill + line as
-/// SparklineView, plus:
-///   • Small dot at every data point (3pt) — communicates "discrete
-///     daily data," not a smooth interpolation
-///   • Today's dot is bigger (6pt) and brand-filled — anchors the eye
-///     to "where you are right now in the week"
-///   • Day-of-week labels along the bottom — chart is actually readable
-///     ("looks like I spent more Wednesday and Friday") instead of a
-///     decorative squiggle
-///
-/// Separated from `SparklineView` because the lockscreen rectangular
-/// surface needs the simpler version (monochrome, very tight space).
 struct TrendChartView: View {
     let values: [Double]
     let dayLabels: [String]
@@ -849,7 +678,6 @@ struct TrendChartView: View {
             let maxValue = values.max() ?? 0
             let safeMax = maxValue > 0 ? maxValue : 1
             let normalized = values.map { $0 / safeMax }
-            // Reserve 9pt at the bottom for day labels.
             let labelHeight: CGFloat = 9
             let chartHeight = max(0, geo.size.height - labelHeight - 2)
             let stepX = values.count > 1
@@ -857,7 +685,6 @@ struct TrendChartView: View {
             : 0
 
             ZStack(alignment: .topLeading) {
-                // Soft fill under the line.
                 Path { path in
                     guard !values.isEmpty else { return }
                     for (i, v) in normalized.enumerated() {
@@ -878,7 +705,6 @@ struct TrendChartView: View {
                 }
                 .fill(color.opacity(0.16))
 
-                // Connecting line.
                 Path { path in
                     guard !values.isEmpty else { return }
                     for (i, v) in normalized.enumerated() {
@@ -897,9 +723,6 @@ struct TrendChartView: View {
                     lineJoin: .round
                 ))
 
-                // Dots at each data point. Today's (last index) gets
-                // emphasis: brand-filled, 6pt; the rest are 3pt with a
-                // muted fill so the eye reads them as supporting marks.
                 ForEach(0..<values.count, id: \.self) { i in
                     let v = normalized[i]
                     let x = CGFloat(i) * stepX
@@ -915,7 +738,6 @@ struct TrendChartView: View {
                         .position(x: x, y: y)
                 }
 
-                // Day-of-week labels along the bottom.
                 ForEach(
                     0..<min(dayLabels.count, values.count),
                     id: \.self

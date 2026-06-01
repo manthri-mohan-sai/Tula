@@ -661,7 +661,7 @@ enum CloudAIParser {
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .replacingOccurrences(of: "models/", with: "")
         let fallback = "gemini-2.5-flash"
-        if m.isEmpty || !m.hasPrefix("gemini") {
+        if m.isEmpty || !(m.hasPrefix("gemini") || m.hasPrefix("gemma")) {
             aiLog.info("Gemini model: raw=\"\(raw)\" is invalid, using \(fallback)")
             return fallback
         }
@@ -678,8 +678,9 @@ enum CloudAIParser {
 
     private static let geminiFallbackModels = [
         "gemini-2.5-flash",
-        "gemini-2.0-flash",
-        "gemini-1.5-flash",
+        "gemini-3.5-flash",
+        "gemini-2.5-flash-lite",
+        "gemini-3.1-flash-lite",
     ]
 
     // MARK: - JSON Schemas for Gemini Native API
