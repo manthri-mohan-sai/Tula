@@ -114,6 +114,9 @@ struct ShareRootView: View {
             ScrollView {
                 VStack(spacing: 24) {
                     hero
+                    if let warning = session.parseWarning {
+                        warningBanner(warning)
+                    }
                     metadataCard
                     if case .image(let image) = session.content {
                         receiptPreview(image)
@@ -125,6 +128,38 @@ struct ShareRootView: View {
             }
             actionBar
         }
+    }
+
+    /// Soft warning banner shown when the parse confidence is medium
+    /// or low. Color: amber (matches Tula brand) but at low saturation —
+    /// not alarming, just attention-getting. Icon: exclamation-tinted-
+    /// triangle. Text comes from `ParseResult.confidenceReason` so the
+    /// user knows specifically what looked off.
+    ///
+    /// We deliberately don't BLOCK saving here — the user might know
+    /// the parsed values are correct even when our heuristics are
+    /// uncertain. The banner is a heads-up, not a gate.
+    private func warningBanner(_ text: String) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.subheadline)
+                .foregroundStyle(.orange)
+            Text(text)
+                .font(.footnote)
+                .foregroundStyle(.primary)
+                .multilineTextAlignment(.leading)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color.orange.opacity(0.12))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(Color.orange.opacity(0.25), lineWidth: 0.5)
+        )
     }
 
     /// Hero amount block. 68pt rounded — bigger than the main app's

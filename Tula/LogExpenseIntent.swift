@@ -183,6 +183,10 @@ struct LogExpenseIntent: AppIntent {
         let accountByName = Dictionary(uniqueKeysWithValues:
             usableAccounts.map { ($0.name.lowercased(), $0) })
 
+        // Build situational + DB context for FM. Pass into both parse
+        // call so the model has full awareness of the user's history.
+        let fmContext = await FMContextBuilder.build(modelContext: context)
+
         // Race FM against a 4s timeout. Siri's overall intent budget is
         // ~10s; reserving ~6s for save + dialog rendering leaves headroom.
         let result = await withTaskGroup(of: SmartParseResult?.self) { group in
@@ -190,7 +194,8 @@ struct LogExpenseIntent: AppIntent {
                 await SmartExpenseParser.parseVoice(
                     input,
                     categories: categoryEntries,
-                    accountNames: accountNames
+                    accountNames: accountNames,
+                    contextBlock: fmContext
                 )
             }
             group.addTask {

@@ -132,6 +132,96 @@ enum ReceiptStorage {
         /// and so the smart parser can use it as a prompt hint.
         let documentType: DocumentType
 
+        /// Confidence assessment of the parse result. UI uses this to
+        /// decide whether to surface a "please verify" warning. We
+        /// can't reliably KNOW we got the right answer — but we can
+        /// detect signals that suggest we got the wrong one:
+        ///
+        ///   - **No merchant extracted** — the receipt's structure was
+        ///     unrecognizable, probably bad OCR.
+        ///   - **No amount** — same.
+        ///   - **Very small amount** (< ₹10) — almost always wrong;
+        ///     real receipts rarely total under ₹10.
+        ///   - **Very short OCR text** (< 50 chars) — image was too
+        ///     blurry/dark to extract meaningful text.
+        ///   - **Generic document type** — couldn't classify into
+        ///     UPI/restaurant/hospital/etc; only happens when keyword
+        ///     density is low (= unclear receipt).
+        ///
+        /// Multiple soft-fail signals → low confidence. One hard fail
+        /// (no amount) → low confidence regardless of other signals.
+        enum Confidence {
+            case high      // looks solid — show no warning
+            case medium    // some signals soft-failed — quiet hint OK
+            case low       // multiple signals failed — show warning
+        }
+
+        var confidence: Confidence {
+            // Hard failures override everything else
+            if amount == nil || (amount ?? 0) < 10 {
+                return .low
+            }
+
+            // Count soft-fail signals
+            var softFails = 0
+            if merchant == nil || (merchant?.isEmpty ?? true) {
+                softFails += 1
+            }
+            if rawText.count < 50 {
+                softFails += 1
+            }
+            if documentType == .generic && rawText.count < 200 {
+                // Generic + very short text = couldn't classify because
+                // OCR returned almost nothing structured
+                softFails += 1
+            }
+            // Suspicious round-number amount on a receipt (₹100, ₹500,
+            // ₹1000 with no decimal) — could be a real round number,
+            // could be the amount extractor picking a header value.
+            // Weak signal, only counts when other things look off too.
+            if let amt = amount,
+               amt.truncatingRemainder(dividingBy: 100) == 0,
+               amt < 2000,
+               rawText.count > 200 {
+                // Big receipt with text but the only amount we found is
+                // a clean ₹100/200/500 — suspicious. Don't flag if the
+                // amount is large (₹2000+ round numbers are common).
+                softFails += 1
+            }
+
+            switch softFails {
+            case 0:    return .high
+            case 1:    return .medium
+            default:   return .low
+            }
+        }
+
+        /// Human-readable explanation of why confidence is low. Used by
+        /// the UI to tell the user what specifically looked off, so
+        /// they know what to verify.
+        var confidenceReason: String? {
+            switch confidence {
+            case .high:
+                return nil
+            case .medium:
+                if merchant == nil || (merchant?.isEmpty ?? true) {
+                    return "Couldn't find a merchant name. Please verify."
+                }
+                return "Some details may need a quick check."
+            case .low:
+                if amount == nil {
+                    return "Couldn't extract an amount — please enter it manually."
+                }
+                if (amount ?? 0) < 10 {
+                    return "The amount we read looks too low. Please verify."
+                }
+                if rawText.count < 50 {
+                    return "We couldn't read this receipt clearly. Please verify all fields."
+                }
+                return "Several details look uncertain — please verify before saving."
+            }
+        }
+
         /// Render a structured note from the items + amount. Returns nil
         /// when there's nothing meaningful to render (no items). Format:
         /// "Masala Dosa ₹80 · Idli ₹40 · Sambar ₹20 (Total ₹140)"
@@ -271,6 +361,190 @@ enum ReceiptStorage {
         return UIImage(cgImage: cgOutput, scale: image.scale, orientation: image.imageOrientation)
     }
 
+    /// Aggressively downscale an image to keep memory usage bounded.
+    /// Used by the share extension where the process memory ceiling is
+    /// ~120MB and a single high-res screenshot can blow through that.
+    ///
+    /// **Sizing**: max 2500px on the longest edge. Vision OCR works
+    /// best at this resolution for photographed paper documents —
+    /// hospital bills and dense receipts have small digits in narrow
+    /// columns that need real pixels. The original 1500px ceiling
+    /// destroyed accuracy on photographed hospital bills (7-digit
+    /// amounts in the right-hand column became unreadable). 2500px
+    /// is the sweet spot: accurate enough for paper photos, memory-
+    /// safe for the share extension (~25MB peak for a square image,
+    /// well under iOS's ~120MB extension budget).
+    /// Quick heuristic to decide whether an OCR result looks plausible
+    /// or like noise. Receipts ALWAYS contain at least one currency-shaped
+    /// number; if zero such numbers come back, something is wrong — the
+    /// model may not be warmed up yet (common in share-extension cold
+    /// starts), the image may be unreadable, or VisionKit may have
+    /// returned a partial result.
+    ///
+    /// **Returns true if the lines look "real enough"** — at least one
+    /// number with 2+ digits is present somewhere. This is intentionally
+    /// permissive; real receipts ALWAYS have prices/amounts. The check
+    /// only catches outright garbage from a cold/failed OCR pass.
+    ///
+    /// Used by `parse(_:)` and `parseForExtension(_:)` to decide whether
+    /// to trust VisionKit's output or fall back to Vision. On a cold
+    /// share-extension launch VisionKit sometimes returns garbled
+    /// alphabetic noise with no numbers — that's the signal to fall back.
+    private static func ocrResultLooksValid(_ lines: [String]) -> Bool {
+        guard !lines.isEmpty else { return false }
+        // Look for at least ONE line with a multi-digit number. Even
+        // the simplest UPI screenshot has the amount; restaurant bills
+        // have prices; hospital bills have dozens of numbers.
+        let hasNumber = lines.contains { line in
+            // Two or more consecutive digits anywhere in the line.
+            line.range(of: #"\d{2,}"#, options: .regularExpression) != nil
+        }
+        return hasNumber
+    }
+
+    static func downscaleForOCR(_ image: UIImage, maxDimension: CGFloat = 2500) -> UIImage {
+        let size = image.size
+        let largest = max(size.width, size.height)
+        guard largest > maxDimension else { return image }
+
+        let scale = maxDimension / largest
+        let newSize = CGSize(width: size.width * scale, height: size.height * scale)
+
+        // Use UIGraphicsImageRenderer (modern, color-managed). format
+        // explicitly opaque + scale 1 — we don't want @2x/@3x density
+        // multipliers blowing memory back up.
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        format.opaque = true
+        let renderer = UIGraphicsImageRenderer(size: newSize, format: format)
+        return renderer.image { _ in
+            image.draw(in: CGRect(origin: .zero, size: newSize))
+        }
+    }
+
+    /// VisionKit-based OCR lives in a separate file (`VisionKitRecognizer.swift`)
+    /// that is intentionally NOT included in the TulaShare target. Reason:
+    /// `import VisionKit` causes the framework to be linked into the
+    /// extension at launch, and on cold-start that pushes the share
+    /// extension's process memory close to iOS's ~120MB cap. Symptom: the
+    /// extension UI never appeared and the process was killed before our
+    /// code ran.
+    ///
+    /// **Injection pattern**: the main app installs the recognizer hook
+    /// at app launch (`ReceiptStorage.visionKitRecognizer = recognizeTextWithVisionKit`).
+    /// The share extension never sets this — so it stays nil and the
+    /// shared `parse(_:)` falls through to Vision-only. This avoids
+    /// having to ship the `recognizeTextWithVisionKit` symbol to the
+    /// extension target.
+    ///
+    /// **Type signature**: async closure that takes a UIImage and returns
+    /// optional [String] lines. The closure is `@MainActor` because
+    /// ImageAnalyzer requires it; declared @Sendable so it can be
+    /// captured across actor boundaries safely.
+    nonisolated(unsafe) static var visionKitRecognizer: (@MainActor (UIImage) async -> [String]?)?
+
+    /// Memory-conservative variant of `parse(_:)` for use inside the
+    /// share extension. Share extensions on iOS have a ~120MB memory
+    /// ceiling — exceeding it gets the extension silently killed by
+    /// iOS, with no crash log, no error, just the share UI vanishing.
+    ///
+    /// Differences from `parse(_:)`:
+    ///   - **Downscales the input** to max 2500px on the longest edge
+    ///     before doing anything else.
+    ///   - **Skips CoreImage preprocessing** entirely. The CIFilter
+    ///     chain holds multiple intermediate CIImages live at once,
+    ///     which is the single largest peak-memory contributor.
+    ///   - **Wraps the work in autoreleasepool** so any Objective-C
+    ///     temporaries (Vision's internal allocations, UIImage
+    ///     redraws) are released ASAP instead of waiting for the
+    ///     run loop.
+    ///   - **VisionKit first, Vision fallback**: tries VisionKit's
+    ///     ImageAnalyzer for better accuracy on paper photos, falls
+    ///     back to VNRecognizeTextRequest if VisionKit fails.
+    ///
+    /// Returns the same `ParseResult` shape as `parse(_:)` so callers
+    /// can swap them transparently.
+    static func parseForExtension(_ image: UIImage) async -> ParseResult {
+        // Downscale BEFORE anything else — the renderer's own
+        // allocations need to fall out of scope before OCR starts.
+        let scaled = downscaleForOCR(image)
+
+        // Share extension uses Vision-only (NOT VisionKit). VisionKit's
+        // framework load at extension launch was pushing the process
+        // memory past iOS's ~120MB cap, causing the extension to be
+        // killed before its UI appeared. The main app's `parse(_:)`
+        // uses VisionKit for higher accuracy; the share extension
+        // sacrifices that accuracy for a memory-safe cold start.
+        guard let cgImage = scaled.cgImage else {
+            return ParseResult(amount: nil, merchant: nil, items: [], date: nil, rawText: "", documentType: .generic)
+        }
+        let observations: [VNRecognizedTextObservation] = await withCheckedContinuation { continuation in
+            autoreleasepool {
+                let request = VNRecognizeTextRequest { request, _ in
+                    let results = request.results as? [VNRecognizedTextObservation] ?? []
+                    continuation.resume(returning: results)
+                }
+                request.recognitionLevel = .accurate
+                request.usesLanguageCorrection = true
+                let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
+                do {
+                    try handler.perform([request])
+                } catch {
+                    continuation.resume(returning: [])
+                }
+            }
+        }
+        let lines = observations.compactMap { $0.topCandidates(1).first?.string }
+
+        let documentType = classifyDocument(from: lines)
+
+        let amount: Double?
+        let merchant: String?
+        let items: [(name: String, price: Double)]
+        let date: Date?
+
+        switch documentType {
+        case .upi:
+            amount = extractUPIAmount(from: lines)
+            merchant = extractUPIMerchant(from: lines)
+            date = extractDate(from: lines)
+            items = []
+        case .orderSummary:
+            amount = extractOrderSummaryAmount(from: lines)
+            merchant = extractOrderSummaryMerchant(from: lines)
+            date = extractDate(from: lines)
+            items = extractLineItems(from: lines, total: amount)
+        case .hospitalBill:
+            amount = extractHospitalAmount(from: lines)
+            // No observations array when we went through VisionKit —
+            // pass empty since extractMerchant uses observations only
+            // for fallback positional logic (largest font line), which
+            // VisionKit doesn't expose in the same way.
+            merchant = extractMerchant(from: lines, observations: [])
+            date = extractDate(from: lines)
+            items = extractLineItems(from: lines, total: amount)
+        case .utilityBill:
+            amount = extractUtilityAmount(from: lines)
+            merchant = extractMerchant(from: lines, observations: [])
+            date = extractDate(from: lines)
+            items = []
+        case .restaurantBill, .generic:
+            amount = extractAmount(from: lines)
+            merchant = extractMerchant(from: lines, observations: [])
+            date = extractDate(from: lines)
+            items = extractLineItems(from: lines, total: amount)
+        }
+
+        return ParseResult(
+            amount: amount,
+            merchant: merchant,
+            items: items,
+            date: date,
+            rawText: lines.joined(separator: "\n"),
+            documentType: documentType
+        )
+    }
+
     /// Run Vision OCR on the given image and best-effort extract amount
     /// and merchant. Async because Vision text recognition is a
     /// nontrivial workload (~200-500ms on a typical receipt photo).
@@ -280,19 +554,11 @@ enum ReceiptStorage {
     /// the caller treats this as "no signal, user fills the form
     /// manually." Never throws to the caller; failure is silent.
     static func parse(_ image: UIImage) async -> ParseResult {
-        // Run a quick first-pass OCR to detect if this is a digital
-        // screenshot (UPI, order summary). Digital images have perfect
-        // contrast and sharpness — preprocessing would over-correct them.
-        // We classify first on a fast OCR pass, then decide whether to
-        // preprocess for the accurate pass.
-        let rawCGImage = image.cgImage
-        let quickType = await quickClassify(image: image)
-        let isDigitalScreenshot = quickType == .upi || quickType == .orderSummary
-
-        // Preprocess before the accurate OCR pass — boosts accuracy on
-        // dim/faded physical receipts while skipping digital screenshots.
-        let prepared = isDigitalScreenshot ? image : preprocessImage(image)
-        guard let cgImage = prepared.cgImage ?? rawCGImage else {
+        // Preprocess before OCR — boosts accuracy on dim/faded photos
+        // while leaving good photos alone. See `preprocessImage` docs
+        // for the heuristic.
+        let prepared = preprocessImage(image)
+        guard let cgImage = prepared.cgImage ?? image.cgImage else {
             return ParseResult(amount: nil, merchant: nil, items: [], date: nil, rawText: "", documentType: .generic)
         }
 
@@ -307,18 +573,13 @@ enum ReceiptStorage {
             // `.accurate` is slower than `.fast` (~2x) but markedly better
             // on small/noisy text — typical for thermal-printed receipts.
             request.recognitionLevel = .accurate
-            // Language correction ON for English-only receipts — fixes
-            // common OCR errors where thermal-print characters are
-            // misread ('l' for '1', 'O' for '0' in word context).
-            // We keep it OFF only for numeric-heavy fields handled by
-            // our own regex extractors which don't need word correction.
-            request.usesLanguageCorrection = true
+            // Receipts often contain numbers that look like words ("O0O")
+            // and words that look like garbage ("CGST"). Setting language
+            // correction off avoids "MASALA" being autocorrected to "MASALA"
+            // or numeric totals being miscategorized as text. Empirically
+            // produces cleaner extraction on Indian receipts.
+            request.usesLanguageCorrection = false
             request.recognitionLanguages = ["en-IN", "en-US"]
-            // Minimum text height filter — ignore text smaller than 1.5%
-            // of the image height. Tiny text is usually footer fine-print,
-            // barcode digits, or thermal-noise artefacts that pollute
-            // extraction without contributing useful information.
-            request.minimumTextHeight = 0.015
 
             let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
             do {
@@ -328,17 +589,8 @@ enum ReceiptStorage {
             }
         }
 
-        // Filter by recognition confidence. Low-confidence candidates are
-        // where most OCR noise originates — garbled characters from
-        // thermal-print artefacts, shadows, paper creases, and partial
-        // text at image edges. Threshold 0.25 drops obvious garbage while
-        // keeping faded but legible text (which typically scores 0.3-0.6).
         let lines = observations
-            .compactMap { obs -> String? in
-                guard let candidate = obs.topCandidates(1).first,
-                      candidate.confidence >= 0.25 else { return nil }
-                return candidate.string
-            }
+            .compactMap { $0.topCandidates(1).first?.string }
             .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 
         // Clean noise lines before classification and FM parsing.
@@ -500,54 +752,6 @@ enum ReceiptStorage {
     /// UPI-app keyword set. Lines containing any of these strongly
     /// suggest a UPI confirmation screenshot. Single-word matches
     /// like "upi" alone aren't sufficient — restaurant bills sometimes
-    /// say "Payment: UPI" too. We require co-occurrence of multiple
-    /// hints (see `classifyDocument`).
-    private static let upiKeywords: Set<String> = [
-        "upi ref", "upi transaction", "transaction id", "transaction reference",
-        "paid successfully", "payment successful", "paid to", "money transferred",
-        "rrn", "utr no", "utr reference",
-        "phonepe", "google pay", "gpay", "paytm", "bhim",
-        "@oksbi", "@okhdfcbank", "@okicici", "@okaxis", "@paytm", "@ybl", "@axl"
-    ]
-
-    /// Food / grocery delivery keyword set. Co-occurrence of these
-    /// with line-item-like content classifies as `.orderSummary`.
-    private static let orderSummaryKeywords: Set<String> = [
-        "swiggy", "zomato", "blinkit", "zepto", "instamart", "dunzo",
-        "bigbasket", "country delight", "licious",
-        "order id", "order #", "order placed", "order confirmation",
-        "delivery address", "delivery partner", "delivered to",
-        "bill total", "total paid", "to pay", "item total"
-    ]
-
-    /// Restaurant-bill markers — printed at the top of most table
-    /// service / cafe / kirana bills.
-    private static let restaurantKeywords: Set<String> = [
-        "bill no", "table no", "table :", "floor :",
-        "cash bill", "tax invoice", "kot no", "captain", "steward",
-        "service charge", "cgst", "sgst"
-    ]
-
-    /// Hospital / clinic / diagnostics bill markers.
-    private static let hospitalKeywords: Set<String> = [
-        "patient name", "patient id", "mrd no", "mrd number",
-        "diagnosis", "consultation", "consultant", "discharge",
-        "admission", "ward", "bed no", "ipd", "opd",
-        "procedure", "lab test", "investigation",
-        "net payable", "amount payable", "final amount",
-        "advance paid", "balance due"
-    ]
-
-    /// Utility bill markers — electricity, water, gas, broadband.
-    private static let utilityKeywords: Set<String> = [
-        "consumer no", "consumer number", "account no", "service no",
-        "units consumed", "kwh", "billing period", "billing month",
-        "due date", "previous reading", "current reading",
-        "electricity", "water board", "gas connection",
-        "broadband", "fiber", "internet plan", "mobile recharge",
-        "amount due", "total payable"
-    ]
-
     /// Classify the OCR'd document into one of four buckets. Algorithm:
     /// score each candidate type by how many of its keywords appear in
     /// the text; pick the highest-scoring type if it crosses a confidence
@@ -575,15 +779,19 @@ enum ReceiptStorage {
     /// **Why score-based instead of single-keyword?** Each individual
     /// keyword is noisy (a restaurant might mention "UPI" once; a UPI
     /// screen might mention a merchant that's also a restaurant chain).
+    ///
+    /// **Keyword sets** live in `ReceiptMeta` (see ReceiptParsingMeta.swift)
+    /// — a centralized file lets us grow keyword coverage aggressively
+    /// without spreading the data across parser code.
     /// Requiring multiple hits reduces false positives.
     private static func classifyDocument(from lines: [String]) -> DocumentType {
         let combinedText = lines.joined(separator: " ").lowercased()
 
-        let upiScore = upiKeywords.filter { combinedText.contains($0) }.count
-        let orderScore = orderSummaryKeywords.filter { combinedText.contains($0) }.count
-        let restaurantScore = restaurantKeywords.filter { combinedText.contains($0) }.count
-        let hospitalScore = hospitalKeywords.filter { combinedText.contains($0) }.count
-        let utilityScore = utilityKeywords.filter { combinedText.contains($0) }.count
+        let upiScore = ReceiptMeta.upiKeywords.filter { combinedText.contains($0) }.count
+        let orderScore = ReceiptMeta.orderSummaryKeywords.filter { combinedText.contains($0) }.count
+        let restaurantScore = ReceiptMeta.restaurantKeywords.filter { combinedText.contains($0) }.count
+        let hospitalScore = ReceiptMeta.hospitalKeywords.filter { combinedText.contains($0) }.count
+        let utilityScore = ReceiptMeta.utilityKeywords.filter { combinedText.contains($0) }.count
 
         // Confidence threshold: need at least 2 keyword hits to commit
         // to a type. Lone hits are too easily produced by coincidence.
@@ -704,22 +912,16 @@ enum ReceiptStorage {
     // ("Bill Total", "Total Paid", "Amount Charged") at the bottom.
 
     /// Bill-total label set for order summaries. These labels are
-    /// VERY specific to delivery apps — they reliably mark the final
-    /// charge including delivery fees and platform fees.
-    private static let orderTotalKeywords = [
-        "bill total", "total paid", "amount paid", "total amount",
-        "amount charged", "you paid", "order total"
-    ]
-
     /// Pull the total from an order summary. Strategy: scan for one
     /// of the order-summary-specific total keywords (which are highly
     /// reliable), take its associated value. Fall back to the generic
     /// largest-total heuristic if no specific keyword found.
+    /// Keywords sourced from `ReceiptMeta.orderTotalKeywords`.
     private static func extractOrderSummaryAmount(from lines: [String]) -> Double? {
         for (index, line) in lines.enumerated() {
             guard !isPaymentMethodLine(line) else { continue }
             let lower = line.lowercased()
-            guard orderTotalKeywords.contains(where: { lower.contains($0) }) else { continue }
+            guard ReceiptMeta.orderTotalKeywords.contains(where: { lower.contains($0) }) else { continue }
             if let amount = currencyValue(in: line) { return amount }
             // Peek both directions — same as generic extractor.
             if index > 0, !isPaymentMethodLine(lines[index - 1]),
@@ -766,10 +968,12 @@ enum ReceiptStorage {
 
         // Last resort: skip the brand header (Swiggy/Zomato/etc) at the
         // top and find the first merchant-looking line below it.
-        let brandSet: Set<String> = ["swiggy", "zomato", "blinkit", "zepto", "instamart", "dunzo"]
+        // Skip aggregator/delivery brand headers — they're the APP
+        // name, not the merchant. Centralized list in ReceiptMeta so
+        // adding new delivery apps doesn't require touching extractors.
         for line in lines.dropFirst(3) {  // skip first 3 lines (brand headers)
             let lower = line.lowercased()
-            if brandSet.contains(where: { lower.contains($0) }) { continue }
+            if ReceiptMeta.deliveryBrands.contains(where: { lower.contains($0) }) { continue }
             if looksLikeMerchantName(line) {
                 return titleCased(line)
             }
@@ -786,19 +990,12 @@ enum ReceiptStorage {
     // label. We anchor on that label, falling back to the generic
     // largest-wins approach if labels are missing.
 
-    /// Hospital-specific final-total labels. These are very strong
-    /// signals — when one appears in a hospital bill it IS the amount.
-    private static let hospitalTotalKeywords = [
-        "net payable", "amount payable", "final amount",
-        "net amount payable", "total payable", "amount due",
-        "balance due", "balance payable"
-    ]
-
     /// Pull the final payable amount from a hospital bill. Strategy:
     /// scan in REVERSE order (from bottom of document up) so we hit
     /// the bottommost total first — hospitals print the final amount
     /// last after listing all components. Look for hospital-specific
     /// labels with look-back + look-forward like the generic extractor.
+    /// Keywords sourced from `ReceiptMeta.hospitalTotalKeywords`.
     private static func extractHospitalAmount(from lines: [String]) -> Double? {
         // Reverse iteration — the final payable is the LAST matching
         // total, never an earlier sub-total.
@@ -806,7 +1003,7 @@ enum ReceiptStorage {
             let realIdx = lines.count - 1 - revIdx
             guard !isPaymentMethodLine(line) else { continue }
             let lower = line.lowercased()
-            guard hospitalTotalKeywords.contains(where: { lower.contains($0) }) else { continue }
+            guard ReceiptMeta.hospitalTotalKeywords.contains(where: { lower.contains($0) }) else { continue }
             if let amount = currencyValue(in: line) { return amount }
             if realIdx > 0,
                !isPaymentMethodLine(lines[realIdx - 1]),
@@ -828,13 +1025,8 @@ enum ReceiptStorage {
     // Utility bills are well-structured but vary across providers
     // (electricity boards, water boards, telcos). The amount is almost
     // always labeled "Amount Due", "Total Payable", "Amount to Pay",
-    // accompanied by a due date.
-
-    private static let utilityTotalKeywords = [
-        "amount due", "total payable", "amount payable",
-        "total amount due", "bill amount", "amount to pay",
-        "net amount", "current bill amount"
-    ]
+    // accompanied by a due date. Keywords sourced from
+    // `ReceiptMeta.utilityTotalKeywords`.
 
     /// Pull the payable amount from a utility bill. Utility totals are
     /// straightforward — single explicit label, single value. We scan
@@ -844,7 +1036,7 @@ enum ReceiptStorage {
         for (idx, line) in lines.enumerated() {
             guard !isPaymentMethodLine(line) else { continue }
             let lower = line.lowercased()
-            guard utilityTotalKeywords.contains(where: { lower.contains($0) }) else { continue }
+            guard ReceiptMeta.utilityTotalKeywords.contains(where: { lower.contains($0) }) else { continue }
             if let amount = currencyValue(in: line) { return amount }
             if idx > 0, !isPaymentMethodLine(lines[idx - 1]),
                let amount = currencyValue(in: lines[idx - 1]) {
@@ -897,31 +1089,26 @@ enum ReceiptStorage {
     ]
 
     /// Payment-method markers — lines like "Cash 280" / "Tendered 200" /
-    /// "Change 60". These are NOT bill totals;
+    /// "Change 60" / "Card payment 140". These are NOT bill totals;
     /// confusing them with totals doubles the amount (the bill plus the
     /// cash tendered ≠ the actual bill). We aggressively exclude any
     /// line containing these keywords from amount extraction.
     ///
-    /// **Note**: "paid" and "credit" are intentionally EXCLUDED from this
-    /// list because they appear in legitimate total labels: "Amount Paid",
-    /// "Total Paid", "You Paid", "Credit Card". Those lines carry the
-    /// actual total. The `finalTotalKeywords` list takes priority (it
-    /// includes "amount paid", "you paid", etc.) so we won't miss them.
-    ///
     /// Real bug encountered: a receipt with "Total 140 / Cash 280 /
     /// Change 140" was parsed as ₹280 because cash > bill > change.
     private static let paymentMethodKeywords = [
-        "cash", "tendered", "tender", "received",
+        "cash", "tendered", "tender", "received", "paid",
         "change", "balance due", "return", "card payment",
-        "wallet"
+        "credit", "debit", "upi", "wallet"
     ]
 
     /// True when the line is a payment-method/cash-flow line that should
     /// be ignored when scanning for the bill's grand total. Used as a
-    /// filter in extractAmount and extractLineItems.
+    /// filter in extractAmount and extractLineItems. Keywords sourced
+    /// from `ReceiptMeta.paymentMethodKeywords`.
     private static func isPaymentMethodLine(_ line: String) -> Bool {
         let lower = line.lowercased()
-        return paymentMethodKeywords.contains(where: { lower.contains($0) })
+        return ReceiptMeta.paymentMethodKeywords.contains(where: { lower.contains($0) })
     }
 
     private static func extractAmount(from lines: [String]) -> Double? {
@@ -938,7 +1125,7 @@ enum ReceiptStorage {
         for (index, line) in lines.enumerated() {
             guard !isPaymentMethodLine(line) else { continue }
             let lower = line.lowercased()
-            guard finalTotalKeywords.contains(where: { lower.contains($0) }) else { continue }
+            guard ReceiptMeta.finalTotalKeywords.contains(where: { lower.contains($0) }) else { continue }
             if let amount = currencyValue(in: line) { return amount }
             // Peek backward — fixes column receipts where the value
             // visually sits above its label.
@@ -992,7 +1179,7 @@ enum ReceiptStorage {
         for (index, line) in lines.enumerated() {
             guard !isPaymentMethodLine(line) else { continue }
             let lower = line.lowercased()
-            guard ambiguousTotalKeywords.contains(where: { lower.contains($0) }) else { continue }
+            guard ReceiptMeta.ambiguousTotalKeywords.contains(where: { lower.contains($0) }) else { continue }
             if let amount = currencyValue(in: line) {
                 totalMarkedAmounts.append(amount)
             }
@@ -1079,7 +1266,7 @@ enum ReceiptStorage {
     /// because we only use it for ratio comparison with a 25% tolerance.
     private static func estimateItemSum(from lines: [String],
                                          excluding totalCandidates: [Double]) -> Double {
-        let totalMarkerKeywords = ambiguousTotalKeywords + finalTotalKeywords
+        let totalMarkerKeywords = ReceiptMeta.ambiguousTotalKeywords + ReceiptMeta.finalTotalKeywords
         var sum: Double = 0
         var count: Int = 0
         for line in lines {
@@ -1141,12 +1328,13 @@ enum ReceiptStorage {
             var out = ""
             out.reserveCapacity(str.count)
             for ch in str {
-                switch ch {
-                case "I", "l", "|": out.append("1")
-                case "O": out.append("0")
-                case "S": out.append("5")
-                case "B": out.append("8")
-                default:  out.append(ch)
+                // Look up the character in the centralized substitution
+                // map. Keeps the substitution rules in one place
+                // (ReceiptParsingMeta.swift) for easier tuning.
+                if let replacement = ReceiptMeta.ocrDigitSubstitutions[ch] {
+                    out.append(replacement)
+                } else {
+                    out.append(ch)
                 }
             }
             return out
@@ -1289,29 +1477,39 @@ enum ReceiptStorage {
     //     the grand total it sums to — useful sanity check)
     //   - Item name doesn't contain noise words (GSTIN, Phone, etc.)
 
+    /// Patterns that match document metadata, not line items. Lines
+    /// containing these phrases never represent purchased items even
+    /// when they include numeric tokens — "Page 1 of 4", "Bed No 304",
+    /// "Ward 3rd Floor", "Bill No INT1330711". Without this filter,
+    /// our line-item extractor pulls them in as fake items with
+    /// nonsensical prices. Keywords sourced from
+    /// `ReceiptMeta.metadataLineKeywords` (centralized for easier tuning).
+
+    /// **Line-item extraction is INTENTIONALLY disabled.**
+    ///
+    /// We tried heuristic item extraction from OCR text and it was a
+    /// game of whack-a-mole — every receipt format had different junk
+    /// (address numbers, tax-summary rows, discount lines, reference
+    /// IDs) that slipped through the filters. Each fix surfaced new
+    /// false positives elsewhere.
+    ///
+    /// The decision: **Apple Foundation Models handles items, regex
+    /// handles structural fields** (amount, merchant, date). FM
+    /// actually understands receipt structure rather than pattern-
+    /// matching against keyword lists. It's much better at items.
+    ///
+    /// **What happens when FM is unavailable / fails / times out**:
+    /// the user sees an expense with the correct amount/merchant/date
+    /// but no items in the note. That's strictly better than the
+    /// previous behavior (garbage items extracted from address lines,
+    /// discount rows, payment refs).
+    ///
+    /// We keep this function so callers don't need to change. It
+    /// always returns an empty array. The function signature is also
+    /// kept so we can re-enable a smarter version (or different
+    /// algorithm) in the future without touching call sites.
     private static func extractLineItems(from lines: [String], total: Double?) -> [(name: String, price: Double)] {
-        var items: [(name: String, price: Double)] = []
-
-        for line in lines {
-            // Skip lines that contain final-total keywords — those are
-            // summary lines, not line items. Without this, "Grand Total ₹140"
-            // would get parsed as an item named "Grand Total".
-            let lower = line.lowercased()
-            if finalTotalKeywords.contains(where: { lower.contains($0) }) { continue }
-            if ambiguousTotalKeywords.contains(where: { lower.contains($0) }) { continue }
-
-            guard let price = currencyValue(in: line) else { continue }
-            // Skip line where the price would exceed the receipt total —
-            // can't be a line item. Defensive against OCR noise.
-            if let total, price > total { continue }
-
-            let name = extractItemName(from: line)
-            guard !name.isEmpty else { continue }
-
-            items.append((name: name, price: price))
-        }
-
-        return Array(items.prefix(20))
+        return []
     }
 
     /// Extract the human-readable item name from a line by stripping
@@ -1356,18 +1554,57 @@ enum ReceiptStorage {
         from lines: [String],
         observations: [VNRecognizedTextObservation]
     ) -> String? {
-        // Sort observations by Y position (top of image first). Vision's
+        // Path A: when we have Vision observations with bounding boxes,
+        // sort by Y position (top of image first). Vision's
         // boundingBox uses normalized coordinates with origin at bottom-
         // left, so "top of image" = highest Y value.
-        let sortedByPosition = observations
-            .filter { $0.topCandidates(1).first?.string.isEmpty == false }
-            .sorted { $0.boundingBox.maxY > $1.boundingBox.maxY }
-            .prefix(6)  // Look at top 6 lines max — merchant is always near top
+        if !observations.isEmpty {
+            let sortedByPosition = observations
+                .filter { $0.topCandidates(1).first?.string.isEmpty == false }
+                .sorted { $0.boundingBox.maxY > $1.boundingBox.maxY }
+                .prefix(6)  // Look at top 6 lines max — merchant is always near top
 
-        for obs in sortedByPosition {
-            guard let text = obs.topCandidates(1).first?.string else { continue }
-            if looksLikeMerchantName(text) {
-                return titleCased(text)
+            for obs in sortedByPosition {
+                guard let text = obs.topCandidates(1).first?.string else { continue }
+                if looksLikeMerchantName(text) {
+                    return titleCased(text)
+                }
+            }
+            return nil
+        }
+
+        // Path B: NO observations available (VisionKit path, or share
+        // extension where we don't pass observations). Fall back to
+        // scanning the first few lines of text — merchants are
+        // ALWAYS at the top. Without bounding boxes we have to
+        // trust line order, which is reasonable since both Vision
+        // and VisionKit produce top-to-bottom transcripts.
+        //
+        // Also check against known brand names — if any top-N line
+        // contains a brand we recognize, prefer that (handles cases
+        // like "RATNADEEP RETAIL PVT LTD" where the brand is on
+        // line 1 and our heuristics would accept it, but checking
+        // ReceiptMeta.knownMerchantCategories disambiguates among
+        // multiple plausible candidate names).
+        let topLines = Array(lines.prefix(8))
+
+        // First pass: look for a known brand in the top lines.
+        for line in topLines {
+            let lower = line.lowercased()
+            for brand in ReceiptMeta.knownMerchantCategories.keys {
+                if lower.contains(brand) {
+                    // Use the brand name title-cased rather than the
+                    // raw OCR line (which often has noise like "PVT LTD").
+                    return brand.capitalized
+                }
+            }
+        }
+
+        // Second pass: take the first line that looks like a merchant
+        // name (multi-word-ish, letter-dominant, no obvious noise).
+        for line in topLines {
+            if looksLikeMerchantName(line) {
+                return titleCased(line)
             }
         }
         return nil

@@ -103,25 +103,6 @@ enum InsightEngine {
             ))
         }
 
-        // MARK: Card outstandings
-
-        let creditCards = accounts.filter { $0.kind == .creditCard && !$0.isArchived }
-        let highestCC = creditCards
-            .filter { $0.derivedBalance > 0.01 }
-            .max(by: { $0.derivedBalance < $1.derivedBalance })
-
-        if let cc = highestCC, cc.derivedBalance > 1000 {
-            insights.append(Insight(
-                id: "cardDue-\(cc.id)",
-                kind: .cardDue,
-                title: Currency.format(cc.derivedBalance, code: currencyCode),
-                detail: "Outstanding on \(cc.name).",
-                icon: "creditcard.fill",
-                color: Color(hex: cc.colorHex),
-                priority: 4
-            ))
-        }
-
         // MARK: Monthly pace
 
         if let monthStart = calendar.dateInterval(of: .month, for: now)?.start,

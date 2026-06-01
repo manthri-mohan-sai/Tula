@@ -8,6 +8,18 @@ struct TulaApp: App {
     @AppStorage("primaryCurrencyCode") private var primaryCurrencyCode: String = "INR"
     @AppStorage("seedDataInstalled") private var seedDataInstalled: Bool = false
     @AppStorage("onboardingComplete") private var onboardingComplete: Bool = false
+
+    /// Install the VisionKit recognizer hook into ReceiptStorage. The
+    /// main app has VisionKit available (via VisionKitRecognizer.swift),
+    /// but the share extension intentionally doesn't compile that file
+    /// to avoid the framework's launch-time memory cost. ReceiptStorage
+    /// holds an optional closure that, when set, routes OCR through
+    /// VisionKit; when nil (share extension) it falls through to Vision.
+    init() {
+        ReceiptStorage.visionKitRecognizer = { image in
+            await recognizeTextWithVisionKit(image)
+        }
+    }
     /// User opt-out for the launch animation. Defaults true (animation
     /// shown). Users who've seen the तु calligraphy 200 times can flip
     /// this off in Settings → General.

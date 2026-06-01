@@ -286,6 +286,7 @@ final class RecurringRule {
     var fromAccount: Account? = nil
     var toAccount: Account? = nil
 
+    var merchant: String? = nil
     var note: String? = nil
     var createdAt: Date = Date()
 

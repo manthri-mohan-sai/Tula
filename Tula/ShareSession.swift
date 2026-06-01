@@ -51,6 +51,12 @@ final class ShareSession: ObservableObject {
     /// the smart parser returns a non-nil result during the parsing
     /// phase; stays false on FM-unavailable devices or pure regex paths.
     @Published var usedSmartParser: Bool = false
+    /// Non-nil when the parse result has medium-or-low confidence —
+    /// the UI surfaces this as a "please verify" banner so the user
+    /// knows to double-check before tapping Add. Set during the
+    /// parsing phase based on `ParseResult.confidenceReason`.
+    /// Nil = high confidence = no banner.
+    @Published var parseWarning: String?
 
     // MARK: - Wiring
 
@@ -98,12 +104,23 @@ final class ShareSession: ObservableObject {
     }
 
     /// Load image bytes from the item provider, decode to UIImage,
-    /// then run the OCR + smart parser pipeline.
+    /// downscale aggressively for memory safety, then run the OCR +
+    /// smart parser pipeline.
+    ///
+    /// **Why downscale immediately**: the full-res image gets stashed
+    /// in `self.content` for the entire share extension lifetime so
+    /// it can be displayed in the preview and used at save time.
+    /// A 1290×2796 hospital bill screenshot decoded is ~14MB ARGB.
+    /// Holding that for 30+ seconds while the user reviews can push
+    /// the extension's ~120MB memory ceiling and get the process
+    /// killed by iOS — manifests as "extension closes immediately".
+    /// Downscaling to 1500px max yields ~4MB held, plenty of headroom
+    /// for Vision OCR + FM model load.
     private func loadImage(from provider: NSItemProvider) {
         provider.loadItem(forTypeIdentifier: UTType.image.identifier, options: nil) { [weak self] item, error in
             // `loadItem` returns various types — could be a URL to the
             // image file, the raw Data, or a UIImage. Handle all cases.
-            let image: UIImage? = {
+            let rawImage: UIImage? = {
                 if let img = item as? UIImage { return img }
                 if let url = item as? URL, let data = try? Data(contentsOf: url) {
                     return UIImage(data: data)
@@ -111,6 +128,15 @@ final class ShareSession: ObservableObject {
                 if let data = item as? Data { return UIImage(data: data) }
                 return nil
             }()
+
+            // Downscale BEFORE handing off to MainActor — the raw image
+            // can fall out of scope as soon as the downscaled copy is
+            // produced. autoreleasepool helps any Objective-C
+            // intermediates inside the renderer release promptly.
+            let image: UIImage? = autoreleasepool {
+                guard let rawImage else { return nil }
+                return ReceiptStorage.downscaleForOCR(rawImage)
+            }
 
             Task { @MainActor [weak self] in
                 guard let self else { return }
@@ -153,16 +179,28 @@ final class ShareSession: ObservableObject {
     /// Same logic as the main app's AddExpenseView OCR path. Aggressive
     /// timeouts because the extension only has ~30s before iOS may kill
     /// it; we want save to complete with whatever we got.
+    ///
+    /// **Memory-bounded**: uses `ReceiptStorage.parseForExtension(_:)`
+    /// which downscales the image and skips CoreImage preprocessing.
+    /// Share extensions have a ~120MB memory ceiling; full-page hospital
+    /// bill screenshots will blow past it if processed at full res.
     private func runImagePipeline(image: UIImage) {
         phase = .parsing
         Task.detached(priority: .userInitiated) { [weak self] in
-            let regexResult = await ReceiptStorage.parse(image)
+            let regexResult = await ReceiptStorage.parseForExtension(image)
 
             // Load the user's actual categories from the shared store
             // so the FM prompt gets icon-derived hints. Falls back to
             // a hardcoded set if the container can't be opened (rare,
             // but the extension must keep working).
             let categoryEntries = await Self.loadCategoryEntries()
+
+            // Build a TIME-ONLY context block. The share extension
+            // doesn't have a live ModelContext on the right actor for
+            // the DB fetches, but the time/period-of-day awareness
+            // still meaningfully improves FM accuracy. `buildTimeOnly`
+            // is nonisolated — no MainActor hop needed.
+            let fmContext = FMContextBuilder.buildTimeOnly()
 
             // FM is optional. Race against a 4s timeout so the extension
             // doesn't sit indefinitely waiting for Apple Intelligence.
@@ -173,7 +211,8 @@ final class ShareSession: ObservableObject {
                     return await SmartExpenseParser.parseReceipt(
                         regexResult.rawText,
                         categories: categoryEntries,
-                        documentType: regexResult.documentType
+                        documentType: regexResult.documentType,
+                        contextBlock: fmContext
                     )
                 }
                 group.addTask {
@@ -238,6 +277,17 @@ final class ShareSession: ObservableObject {
                 fmSuggestion: smartResult?.category
             )
 
+            // Surface confidence to the UI. If the regex extractor's
+            // confidence is medium-or-low AND FM didn't compensate
+            // (no FM merchant, no FM amount), warn the user. If FM
+            // came through with strong values, trust it and skip the
+            // warning even when regex was shaky.
+            let warning: String? = {
+                let fmHelped = smartResult?.amount != nil && smartResult?.merchant != nil
+                if fmHelped { return nil }
+                return regexResult.confidenceReason
+            }()
+
             await MainActor.run { [weak self] in
                 guard let self else { return }
                 self.amount = mergedAmount
@@ -246,6 +296,7 @@ final class ShareSession: ObservableObject {
                 self.note = noteText
                 self.categoryName = resolvedCategoryName
                 self.usedSmartParser = smartResult != nil
+                self.parseWarning = warning
                 self.phase = .preview
             }
         }
@@ -262,6 +313,9 @@ final class ShareSession: ObservableObject {
             // the image pipeline.
             let categoryEntries = await Self.loadCategoryEntries()
 
+            // Time-only FM context — same rationale as image path.
+            let fmContext = FMContextBuilder.buildTimeOnly()
+
             var parsedAmount: Double = 0
             var parsedMerchant: String = ""
             var fmCategory: String? = nil
@@ -271,7 +325,8 @@ final class ShareSession: ObservableObject {
                 let smart = await SmartExpenseParser.parseVoice(
                     text,
                     categories: categoryEntries,
-                    accountNames: []
+                    accountNames: [],
+                    contextBlock: fmContext
                 )
                 if let smart {
                     parsedAmount = smart.amount

@@ -118,9 +118,12 @@ enum SmartExpenseParser {
     ///     mentioned in the transcript ("paid from HDFC", "in cash", etc.).
     static func parseVoice(_ input: String,
                             categories: [CategoryEntry],
-                            accountNames: [String]) async -> SmartParseResult? {
+                            accountNames: [String],
+                            contextBlock: String = "") async -> SmartParseResult? {
         await parse(input, categories: categories,
-                    accountNames: accountNames, isVoice: true)
+                    accountNames: accountNames,
+                    contextBlock: contextBlock,
+                    isVoice: true)
     }
 
     /// **Receipt parsing pass** — runs Foundation Models on the raw OCR'd
@@ -142,7 +145,8 @@ enum SmartExpenseParser {
     /// or empty input. Caller falls back to regex-only result.
     static func parseReceipt(_ rawText: String,
                               categories: [CategoryEntry],
-                              documentType: ReceiptStorage.DocumentType = .generic) async -> ReceiptSmartParseResult? {
+                              documentType: ReceiptStorage.DocumentType = .generic,
+                              contextBlock: String = "") async -> ReceiptSmartParseResult? {
         #if canImport(FoundationModels)
         guard #available(iOS 26.0, *), isAvailable else { return nil }
         let trimmed = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -159,6 +163,24 @@ enum SmartExpenseParser {
             categories.map { (name: $0.name, iconKey: $0.iconKey) }
         )
 
+        // **Known-merchant detection**: if the receipt text contains a
+        // brand name we recognize from `ReceiptMeta.knownMerchantCategories`,
+        // surface that as a strong hint to the FM. Even if the merchant
+        // extractor misses the brand (because it's mid-document, not in
+        // the header), the FM can use this signal to set the right
+        // category. Multiple matches → take the first (most specific
+        // brand wins because dictionary iteration order is unstable;
+        // good enough for hinting).
+        let lowerText = trimmed.lowercased()
+        let detectedBrandHint: String = {
+            for (brand, category) in ReceiptMeta.knownMerchantCategories {
+                if lowerText.contains(brand) {
+                    return "\n\nDETECTED BRAND: The text contains \"\(brand)\" — a known brand typically in category \"\(category)\". Use this as a STRONG hint when picking the category and merchant. If a more specific merchant name is also present, prefer that for the merchant field, but the category hint stands."
+                }
+            }
+            return ""
+        }()
+
         // Per-document-type hint added to the prompt. Tells the model
         // what layout to expect, which improves accuracy especially on
         // UPI screenshots and order summaries (where the "receipt"
@@ -167,12 +189,31 @@ enum SmartExpenseParser {
             switch documentType {
             case .upi:
                 return """
-                LAYOUT: This is a UPI payment confirmation screenshot. \
-                The amount is the prominent number near the top \
-                (often after "₹"). The merchant is the value after \
-                "Paid to" / "To" / "Transferred to". There are no \
-                line items — return items: []. Date is the transaction \
-                timestamp.
+                LAYOUT: This is a UPI payment confirmation screenshot \
+                (PhonePe / GPay / Paytm / bank app). The amount is the \
+                prominent number near the top (often after "₹"). The \
+                merchant is the value after "Paid to" / "To" / \
+                "Transferred to". There are no line items — return \
+                items: []. Date is the transaction timestamp.
+
+                CATEGORY GUIDANCE FOR UPI: items will be empty, so use \
+                EVERYTHING ELSE in the text to decide the category:
+                  - Transaction notes / payment messages ("for petrol", \
+                    "lunch", "auto fare") — these are STRONG signals
+                  - UPI handle / VPA domain (e.g., @paytm, @oksbi, \
+                    @ybl) — usually neutral, ignore
+                  - Merchant name patterns:
+                    * "stores", "kirana", "supermarket" → Groceries
+                    * "petrol", "fuel", "HP", "BPCL", "IOC" → Transport
+                    * "restaurant", "cafe", "kitchen", "biryani", \
+                      "dosa", food chain name → Food & Drinks
+                    * "pharmacy", "medical", "hospital", "clinic" → Health
+                    * "electricity", "BSES", "TSSPDCL" → Bills
+                    * Individual person's name (no business indicator) → \
+                      leave category nil/empty if no clear context
+                  - When the merchant is an individual's name with no \
+                    other context, it's BETTER to return no category \
+                    than guess wrong. The user can categorize it.
                 """
             case .orderSummary:
                 return """
@@ -216,7 +257,26 @@ enum SmartExpenseParser {
             }
         }()
 
+        // Role preamble + context for the receipt path (same pattern
+        // as the voice path, but tuned for OCR'd receipt text).
+        let rolePreamble = """
+        You are TULA's senior receipt parser. You have ONE job: extract \
+        precise, structured data from OCR'd receipt text. You are careful, \
+        deterministic, and willing to return nil rather than guess wrong.
+
+        Your output goes DIRECTLY into the user's expense database with \
+        no review. Wrong values create rework — the user must fix them \
+        manually. Aim to be RIGHT, not creative.
+
+        OCR is imperfect — characters may be garbled. Read the text \
+        carefully; the actual receipt was clear, only the recognition \
+        is noisy.
+        """
+        let contextSection = contextBlock.isEmpty ? "" : "\n\n\(contextBlock)\n"
+
         let instructions = """
+        \(rolePreamble)
+        \(contextSection)
         Parse this OCR'd receipt text into structured data. Fields:
 
         - **amount**: the GRAND TOTAL — the final amount billed. ONE \
@@ -231,6 +291,9 @@ enum SmartExpenseParser {
               TYPE from the items: "Restaurant", "Pharmacy", "Grocery \
               Store", "Hospital", "Petrol Pump", etc. A guess is more \
               useful than nil — the user can correct it.
+            * If a merchant in the FREQUENT MERCHANTS list (above) \
+              appears in the OCR text — even mangled — use the canonical \
+              spelling.
             * NEVER use a dish, product, or document-type label \
               ("Cash Bill", "Tax Invoice") as the merchant.
 
@@ -256,11 +319,18 @@ enum SmartExpenseParser {
             3. If ITEMS are unclear too, use ANY other signal in the \
                text (document headers, footer markers, payment app).
             4. NEVER invent a category not in this list.
+            5. **Prefer nil over a bad guess.** If after applying steps \
+               1-3 you're STILL guessing without solid evidence, return \
+               nil for category. A wrong category costs the user a \
+               correction; nil costs them a one-tap selection. Wrong \
+               is worse. Only commit to a category when at least one \
+               signal in the text clearly aligns with that category's \
+               hint keywords.
 
         Available categories (parenthesized keywords describe what fits):
         \(categoryList)
 
-        \(layoutHint)
+        \(layoutHint)\(detectedBrandHint)
 
         KEY RULES:
         1. **Same value appearing twice = one bill, not double.** If "140" \
@@ -396,6 +466,7 @@ enum SmartExpenseParser {
     private static func parse(_ input: String,
                                categories: [CategoryEntry],
                                accountNames: [String],
+                               contextBlock: String = "",
                                isVoice: Bool) async -> SmartParseResult? {
         #if canImport(FoundationModels)
         guard #available(iOS 26.0, *), isAvailable else { return nil }
@@ -412,6 +483,35 @@ enum SmartExpenseParser {
             ? "(no account list provided)"
             : accountNames.joined(separator: ", ")
 
+        // **Role preamble** — pasted at the top of every prompt.
+        // Establishes the FM's identity and the bar for output quality.
+        // Modeled on how senior systems-engineering models behave when
+        // given a strong role: precise, careful, willing to return
+        // structured nil rather than guess. The user mentioned wanting
+        // "Claude-level precision" — this preamble is the closest
+        // levers we have inside the on-device FM.
+        let rolePreamble = """
+        You are TULA's senior expense parser. You have ONE job and one \
+        job only: extract precise, structured expense data from the \
+        user's input. You are careful, deterministic, and willing to \
+        return nil rather than guess wrong.
+
+        Your output goes DIRECTLY into the user's expense database with \
+        no human review. A wrong amount, merchant, or category creates \
+        rework — the user has to manually fix it. Aim to be RIGHT, not \
+        creative.
+
+        Treat the user's input as authoritative when it's clear, and \
+        use the context blocks below when it's ambiguous. Never invent \
+        information that isn't in the input or context.
+        """
+
+        // Context block from the caller (situational + DB). Empty
+        // when the caller didn't build one (e.g. tests). The FM is
+        // told to use it as supporting information — not to invent
+        // facts not present in the input.
+        let contextSection = contextBlock.isEmpty ? "" : "\n\n\(contextBlock)\n"
+
         // Two prompt variants. The voice variant adds explicit guidance
         // about speech-recognition errors common in Indian English —
         // homophones (waffle/rahul, paneer/pune, hari/curry), split
@@ -420,10 +520,14 @@ enum SmartExpenseParser {
         let instructions: String
         if isVoice {
             instructions = """
+            \(rolePreamble)
+            \(contextSection)
             You parse expense entries from VOICE transcripts spoken by \
             Indian users. The transcript may contain speech-recognition \
             errors. Use the category and account lists as anchors to \
-            correct context errors.
+            correct context errors. When a merchant in the user's \
+            FREQUENT MERCHANTS list (above) phonetically matches what \
+            was transcribed, ALWAYS prefer the canonical spelling.
 
             Extract:
             - amount: the total spent, as a single integer in rupees. \
@@ -550,6 +654,8 @@ enum SmartExpenseParser {
             """
         } else {
             instructions = """
+            \(rolePreamble)
+            \(contextSection)
             You parse expense log entries from Indian users. Inputs are typically \
             short, casual, and may mix Hindi/English. Extract:
             - amount: total spent in rupees, as a number.

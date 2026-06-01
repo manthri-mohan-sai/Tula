@@ -76,8 +76,29 @@ enum MerchantRuleResolver {
     /// the share extension which doesn't have direct Category refs in
     /// its UI flow). Returns nil when no rule matches OR when the
     /// matched rule has no category (shouldn't happen but defensive).
+    ///
+    /// **Fallback chain**:
+    /// 1. User's MerchantRule table (handled by `category(for:in:)`)
+    /// 2. `ReceiptMeta.knownMerchantCategories` — the shipped brand
+    ///    knowledge base. Recognizes 250+ Indian merchant brands and
+    ///    maps them to common category names. Provides a deterministic
+    ///    fallback BEFORE we ask the FM. Useful for the share extension
+    ///    where FM availability + speed are not guaranteed.
     static func categoryName(for merchant: String?,
                               in context: ModelContext) -> String? {
-        category(for: merchant, in: context)?.name
+        // Phase 1: user's learned rules.
+        if let category = category(for: merchant, in: context) {
+            return category.name
+        }
+        // Phase 2: shipped brand knowledge base. Substring match in
+        // either direction — same loose semantics as MerchantRule.
+        guard let merchant, !merchant.isEmpty else { return nil }
+        let lowered = merchant.lowercased()
+        for (brand, category) in ReceiptMeta.knownMerchantCategories {
+            if lowered.contains(brand) || brand.contains(lowered) {
+                return category
+            }
+        }
+        return nil
     }
 }

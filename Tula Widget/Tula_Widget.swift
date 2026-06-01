@@ -50,38 +50,29 @@ struct TulaWidgetProvider: TimelineProvider {
         in context: Context,
         completion: @escaping (Timeline<TulaWidgetEntry>) -> Void
     ) {
-        // Two-entry timeline: now, plus the next midnight boundary.
-        // The midnight entry causes iOS to reload the widget at the
-        // start of the next day even if the host app never launched —
-        // crucial because the snapshot stores "today's total" as a
-        // pre-computed Double, which becomes wrong the moment midnight
-        // passes. Without this, a user who never opens the app
-        // overnight would see yesterday's spend labeled "Today".
-        //
-        // After the midnight entry, the policy `.atEnd` tells iOS to
-        // request a fresh timeline — by then the host app may have
-        // written a new snapshot or we'll re-emit another midnight
-        // entry for the day after.
         let snapshot = WidgetStorage.read()
         let now = Date.now
+        let cal = Calendar.current
         let nowEntry = TulaWidgetEntry(date: now, snapshot: snapshot)
 
         var entries: [TulaWidgetEntry] = [nowEntry]
 
-        // Add a midnight entry so the widget reloads exactly at the
-        // day boundary. iOS won't fire this if the system is asleep,
-        // but it'll catch up at the next wake — much better than the
-        // previous "30 minute polling" behavior, which iOS may have
-        // been ignoring entirely for battery reasons.
-        if let nextMidnight = Calendar.current.nextDate(
+        // Hourly entries so the widget re-renders with updated
+        // relative labels ("due in 3h" → "due in 2h") and picks up
+        // any snapshot the main app wrote in the background.
+        for hoursAhead in 1...4 {
+            if let future = cal.date(byAdding: .hour, value: hoursAhead, to: now) {
+                entries.append(TulaWidgetEntry(date: future, snapshot: snapshot))
+            }
+        }
+
+        // Midnight entry: zero today's total so the widget doesn't
+        // carry yesterday's spend into the new day.
+        if let nextMidnight = cal.nextDate(
             after: now,
             matching: DateComponents(hour: 0, minute: 0, second: 0),
             matchingPolicy: .nextTime
         ) {
-            // The snapshot's `todayTotal` is stale at midnight by
-            // definition; we emit a zeroed copy so the widget shows
-            // "₹0" for today rather than yesterday's amount. Real
-            // value will be filled by the next save or app launch.
             var midnightSnapshot = snapshot
             midnightSnapshot.todayTotal = 0
             midnightSnapshot.generatedAt = nextMidnight
@@ -89,7 +80,11 @@ struct TulaWidgetProvider: TimelineProvider {
                                             snapshot: midnightSnapshot))
         }
 
-        let timeline = Timeline(entries: entries, policy: .atEnd)
+        // Ask iOS for a fresh timeline in ~1 hour. Combined with
+        // reloadAllTimelines() on every save in the main app, this
+        // keeps the widget reasonably fresh even without app opens.
+        let refreshDate = cal.date(byAdding: .hour, value: 1, to: now) ?? now
+        let timeline = Timeline(entries: entries, policy: .after(refreshDate))
         completion(timeline)
     }
 }

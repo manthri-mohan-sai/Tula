@@ -91,14 +91,6 @@ struct ExpenseRow: View {
     @State private var showingItemsSheet: Bool = false
 
     var body: some View {
-        if isInvalidated {
-            EmptyView()
-        } else {
-            rowContent
-        }
-    }
-
-    private var rowContent: some View {
         HStack(spacing: Spacing.md) {
             ZStack {
                 Circle()
@@ -127,23 +119,12 @@ struct ExpenseRow: View {
                             .accessibilityLabel("Parsed by Apple Intelligence")
                     }
                     if expense.receiptImageData != nil {
-                        // Tiny paperclip indicator — signals "this expense
-                        // has a receipt attached" so users can spot which
-                        // entries are backed by photographic evidence vs
-                        // typed memory. Same caption2 weight as the other
-                        // metadata badges; doesn't compete for attention.
                         Image(systemName: "paperclip")
                             .font(.caption2.weight(.semibold))
                             .foregroundStyle(.secondary)
                             .accessibilityLabel("Receipt attached")
                     }
                     if hasItemsBreakdown {
-                        // Tappable items chip — opens the breakdown sheet
-                        // without conflicting with the row's main tap
-                        // target (which navigates to edit). SwiftUI
-                        // treats Button taps as distinct gestures inside
-                        // a List/NavigationLink row, so this works without
-                        // simultaneousGesture or buttonStyle gymnastics.
                         Button {
                             showingItemsSheet = true
                         } label: {
@@ -175,12 +156,6 @@ struct ExpenseRow: View {
                             .fixedSize()
                     }
                 }
-                // Subtitle stack — merchant (when title is the item),
-                // then category, then account. Each piece appears only
-                // when present; the centralized `subtitleParts` array
-                // decides what's shown so the layout adapts to whatever
-                // data exists (entries with no merchant skip that piece
-                // gracefully).
                 if !subtitleParts.isEmpty {
                     HStack(spacing: 4) {
                         ForEach(Array(subtitleParts.enumerated()), id: \.offset) { idx, part in
@@ -207,18 +182,14 @@ struct ExpenseRow: View {
                     .foregroundStyle(.secondary)
             }
         }
-        // Generous vertical padding so rows feel like distinct cards
-        // rather than crammed list lines. The 10pt + 64pt floor gives
-        // each row ~84pt of clear height, matching the "tappable tile"
-        // density people expect from a modern finance app.
         .padding(.vertical, Spacing.md)
         .frame(minHeight: 64)
         .sheet(isPresented: $showingItemsSheet) {
             ExpenseItemsSheet(
-                merchantName: expense.merchant,
+                merchantName: expense.merchant ?? primaryLabel,
                 amount: expense.amount,
                 date: expense.date,
-                categoryName: expense.category?.name,
+                categoryName: expense.category?.name ?? "Uncategorized",
                 receiptImageData: expense.receiptImageData,
                 items: parsedItems.items,
                 total: parsedItems.total
@@ -260,14 +231,6 @@ struct ExpenseContextPreview: View {
     }
 
     var body: some View {
-        if isInvalidated {
-            EmptyView()
-        } else {
-            previewContent
-        }
-    }
-
-    private var previewContent: some View {
         VStack(alignment: .leading, spacing: Spacing.md) {
             HStack(spacing: Spacing.md) {
                 ZStack {

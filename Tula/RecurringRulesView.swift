@@ -224,6 +224,7 @@ struct RecurringRuleFormView: View {
     @State private var account: Account?
     @State private var fromAccount: Account?
     @State private var toAccount: Account?
+    @State private var merchant: String
     @State private var note: String
     @State private var isPaused: Bool
     @State private var confirmationRequired: Bool
@@ -257,6 +258,7 @@ struct RecurringRuleFormView: View {
             _account = State(initialValue: r.account)
             _fromAccount = State(initialValue: r.fromAccount)
             _toAccount = State(initialValue: r.toAccount)
+            _merchant = State(initialValue: r.merchant ?? "")
             _note = State(initialValue: r.note ?? "")
             _isPaused = State(initialValue: r.isPaused)
             _confirmationRequired = State(initialValue: r.confirmationRequired)
@@ -284,6 +286,7 @@ struct RecurringRuleFormView: View {
             _account = State(initialValue: nil)
             _fromAccount = State(initialValue: nil)
             _toAccount = State(initialValue: nil)
+            _merchant = State(initialValue: "")
             _note = State(initialValue: "")
             _isPaused = State(initialValue: false)
             _confirmationRequired = State(initialValue: false)
@@ -363,8 +366,14 @@ struct RecurringRuleFormView: View {
                     placeholder: "0"
                 )
             }
+            TextField("Merchant (optional)", text: $merchant)
+                .textInputAutocapitalization(.words)
         } header: {
             Text("Details")
+        } footer: {
+            if !merchant.trimmingCharacters(in: .whitespaces).isEmpty {
+                Text("Expenses will be logged under \"\(merchant.trimmingCharacters(in: .whitespaces))\" as merchant.")
+            }
         }
     }
 
@@ -814,6 +823,7 @@ struct RecurringRuleFormView: View {
         rule.account = (kind == .expense) ? account : nil
         rule.fromAccount = (kind != .expense) ? fromAccount : nil
         rule.toAccount = (kind != .expense) ? toAccount : nil
+        rule.merchant = merchant.trimmingCharacters(in: .whitespaces).isEmpty ? nil : merchant.trimmingCharacters(in: .whitespaces)
         rule.note = note.isEmpty ? nil : note
         rule.isPaused = isPaused
         rule.confirmationRequired = confirmationRequired

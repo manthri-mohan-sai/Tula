@@ -842,6 +842,12 @@ struct AddExpenseView: View {
             CategoryEntry(name: $0.name, iconKey: $0.iconKey)
         }
 
+        // Build the situational + DB context block BEFORE the detached
+        // task so we can access the ModelContext on MainActor. Pass
+        // the resulting string into the detached task — strings are
+        // Sendable so the actor hop is safe.
+        let contextBlock = FMContextBuilder.build(modelContext: context)
+
         Task.detached(priority: .userInitiated) {
             // Pass 1: regex-based extraction — deterministic, ~500ms,
             // always runs. Provides amount + merchant + items + date
@@ -858,7 +864,8 @@ struct AddExpenseView: View {
                     return await SmartExpenseParser.parseReceipt(
                         regexResult.rawText,
                         categories: categoryEntries,
-                        documentType: regexResult.documentType
+                        documentType: regexResult.documentType,
+                        contextBlock: contextBlock
                     )
                 }
                 group.addTask {

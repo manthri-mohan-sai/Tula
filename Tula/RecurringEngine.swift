@@ -375,10 +375,12 @@ enum RecurringEngine {
     static func createTransaction(rule: RecurringRule, date: Date, in context: ModelContext) {
         switch rule.kind {
         case .expense:
+            let merchantName = (rule.merchant?.trimmingCharacters(in: .whitespaces).isEmpty == false)
+                ? rule.merchant! : rule.name
             let expense = Expense(
                 amount: rule.amount,
                 date: date,
-                merchant: rule.name,
+                merchant: merchantName,
                 note: rule.note,
                 source: .recurring,
                 category: rule.category,
@@ -403,6 +405,28 @@ enum RecurringEngine {
     }
 
     // MARK: - Public helpers
+
+    /// Returns all past-due, unhandled occurrence dates for a rule.
+    /// These are dates between lastGeneratedDate and now where the rule
+    /// should have fired but wasn't logged or skipped.
+    static func overdueDates(for rule: RecurringRule) -> [Date] {
+        if rule.isPaused { return [] }
+        if let endDate = rule.endDate, endDate < .now { return [] }
+        let calendar = Calendar.current
+        let now = Date.now
+        var from = rule.lastGeneratedDate ?? rule.startDate
+        var overdue: [Date] = []
+        var iterations = 0
+        while iterations < 366 {
+            let next = nextOccurrence(strictlyAfter: from, rule: rule, calendar: calendar)
+            if let endDate = rule.endDate, next > endDate { break }
+            if next > now { break }
+            overdue.append(next)
+            from = next
+            iterations += 1
+        }
+        return overdue
+    }
 
     /// Computes the next upcoming due date for a rule. Used by the UI to
     /// display "Next: 5 Jun".

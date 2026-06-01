@@ -27,6 +27,7 @@ struct HomeView: View {
 
     @State private var editingExpense: Expense?
     @State private var showingAllExpenses = false
+    @State private var allExpensesFilter: ExpenseFilter?
     @State private var showingSettings = false
     @State private var showingRecurring = false
     @State private var navPath = NavigationPath()
@@ -113,6 +114,23 @@ struct HomeView: View {
                 return (rule, next)
             }
             .sorted { $0.1 < $1.1 }
+    }
+
+    /// Overdue recurring items — past-due occurrences that were never
+    /// logged or skipped. Only surfaces items for confirmation-required
+    /// rules (auto-generate rules handle themselves). Capped at 5 to
+    /// avoid flooding the home screen if a rule was ignored for weeks.
+    private var overdueRecurring: [(rule: RecurringRule, date: Date)] {
+        var result: [(RecurringRule, Date)] = []
+        for rule in allRecurringRules where !rule.isPaused && rule.kind == .expense {
+            let dates = RecurringEngine.overdueDates(for: rule)
+            for date in dates {
+                if !isRuleFulfilled(rule, forDueDate: date, calendar: Calendar.current) {
+                    result.append((rule, date))
+                }
+            }
+        }
+        return result.sorted { $0.1 < $1.1 }
     }
 
     /// Checks whether the user has already logged an expense that fulfills
@@ -289,28 +307,7 @@ struct HomeView: View {
                                 removal: .opacity
                             ))
                     }
-                    // Active contexts. Previously this rendered exactly
-                    // ONE row (first upcoming OR review OR insight),
-                    // which hid the rest of the day's recurring items
-                    // behind the first one — users couldn't see "lunch
-                    // is due AND rent is due tomorrow" simultaneously.
-                    //
-                    // Now we render ALL pending upcoming items (capped
-                    // at 3 to keep the home screen scannable), plus at
-                    // most one review or insight callout below them.
-                    // When the user logs or skips the top item, the
-                    // SwiftData re-query naturally removes it from the
-                    // upcoming list and the next item slides into view.
-                    ForEach(activeContexts, id: \.identifier) { context in
-                        contextRow(for: context)
-                            // Animate in/out on lastGeneratedDate change
-                            // so log/skip feels like the card flowed away
-                            // and the next slid up to take its place.
-                            .transition(.asymmetric(
-                                insertion: .move(edge: .top).combined(with: .opacity),
-                                removal: .move(edge: .leading).combined(with: .opacity)
-                            ))
-                    }
+                    contextSections
                     recentSection
                 }
                 .padding(.horizontal, Spacing.xl)
@@ -385,8 +382,9 @@ struct HomeView: View {
             }
             .sheet(isPresented: $showingAllExpenses) {
                 NavigationStack {
-                    AllExpensesView()
+                    AllExpensesView(presetFilter: allExpensesFilter)
                 }
+                .onDisappear { allExpensesFilter = nil }
             }
             .sheet(isPresented: $showingSettings) {
                 SettingsView()
@@ -707,6 +705,11 @@ struct HomeView: View {
         let minPillVisible: TimeInterval = 0.8
         let timeout: TimeInterval = 6.0
 
+        // Build the situational + DB context block BEFORE the detached
+        // task so MainActor access to ModelContext works. The string is
+        // Sendable and crosses the actor boundary safely.
+        let contextBlock = FMContextBuilder.build(modelContext: context)
+
         Task.detached(priority: .userInitiated) {
             // Race the FM call against a timeout so a hung model doesn't
             // freeze the save flow indefinitely.
@@ -715,7 +718,8 @@ struct HomeView: View {
                     await SmartExpenseParser.parseVoice(
                         rawInput,
                         categories: categoryEntries,
-                        accountNames: accountNames
+                        accountNames: accountNames,
+                        contextBlock: contextBlock
                     )
                 }
                 group.addTask {
@@ -996,25 +1000,27 @@ struct HomeView: View {
     private enum HomeContext {
         case review(count: Int)
         case upcoming(rule: RecurringRule, date: Date)
+        case overdue(rule: RecurringRule, date: Date)
         /// "+N more recurring due today" — compact summary line shown
         /// when the user has more than 2 general recurring items due,
         /// so we don't clutter the home with every one. Tap to expand
         /// (drills into the recurring rules sheet).
         case recurringOverflow(count: Int)
+        case overdueOverflow(count: Int)
         case insight(Insight)
 
-        /// Stable identity for ForEach. The upcoming case keys on both
-        /// rule ID and date so two occurrences of the same rule (today's
-        /// lunch + tomorrow's lunch) get distinct IDs and animate
-        /// independently when one is logged.
         var identifier: String {
             switch self {
             case .review(let count):
                 return "review-\(count)"
             case .upcoming(let rule, let date):
                 return "upcoming-\(rule.id.uuidString)-\(Int(date.timeIntervalSince1970))"
+            case .overdue(let rule, let date):
+                return "overdue-\(rule.id.uuidString)-\(Int(date.timeIntervalSince1970))"
             case .recurringOverflow(let count):
                 return "overflow-\(count)"
+            case .overdueOverflow(let count):
+                return "overdue-overflow-\(count)"
             case .insight(let insight):
                 return "insight-\(insight.id)"
             }
@@ -1024,6 +1030,81 @@ struct HomeView: View {
     /// Returns the single most important context item to show, or nil
     /// when nothing urgent applies. The order here defines the priority:
     /// reviews → upcoming bills → insights → nothing.
+    @ViewBuilder
+    private var contextSections: some View {
+        let overdue = overdueContexts
+        let upcoming = upcomingContexts
+        let other = otherContexts
+
+        if !overdue.isEmpty {
+            contextGroup(title: "Overdue", contexts: overdue)
+        }
+        if !upcoming.isEmpty {
+            contextGroup(title: "Upcoming", contexts: upcoming)
+        }
+        ForEach(other, id: \.identifier) { context in
+            contextRow(for: context)
+                .transition(.asymmetric(
+                    insertion: .move(edge: .top).combined(with: .opacity),
+                    removal: .move(edge: .leading).combined(with: .opacity)
+                ))
+        }
+    }
+
+    private func contextGroup(title: String, contexts: [HomeContext]) -> some View {
+        VStack(alignment: .leading, spacing: Spacing.sm) {
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .textCase(.uppercase)
+            ForEach(contexts, id: \.identifier) { context in
+                contextRow(for: context)
+                    .transition(.asymmetric(
+                        insertion: .move(edge: .top).combined(with: .opacity),
+                        removal: .move(edge: .leading).combined(with: .opacity)
+                    ))
+            }
+        }
+    }
+
+    private var overdueContexts: [HomeContext] {
+        let overdue = overdueRecurring
+        var contexts: [HomeContext] = []
+        for item in overdue.prefix(3) {
+            contexts.append(.overdue(rule: item.rule, date: item.date))
+        }
+        if overdue.count > 3 {
+            contexts.append(.overdueOverflow(count: overdue.count - 3))
+        }
+        return contexts
+    }
+
+    private var upcomingContexts: [HomeContext] {
+        let grouped = groupedUpcoming
+        var contexts: [HomeContext] = []
+        if let scheduled = grouped.scheduled {
+            contexts.append(.upcoming(rule: scheduled.rule, date: scheduled.date))
+        }
+        for item in grouped.general {
+            contexts.append(.upcoming(rule: item.rule, date: item.date))
+        }
+        if grouped.overflowCount > 0 {
+            contexts.append(.recurringOverflow(count: grouped.overflowCount))
+        }
+        return contexts
+    }
+
+    private var otherContexts: [HomeContext] {
+        var contexts: [HomeContext] = []
+        if reviewCount > 0 {
+            contexts.append(.review(count: reviewCount))
+        }
+        if let topInsight = insights.first {
+            contexts.append(.insight(topInsight))
+        }
+        return contexts
+    }
+
     /// Ordered list of context callouts to render above the Recent section.
     ///
     /// **Ordering** matches user attention: one nearest time-scheduled
@@ -1037,21 +1118,30 @@ struct HomeView: View {
     /// the next item slides up to take its place.
     private var activeContexts: [HomeContext] {
         var contexts: [HomeContext] = []
-        let grouped = groupedUpcoming
 
-        // 1. Nearest time-scheduled item (single).
+        // 1. Overdue items first — highest priority.
+        let overdue = overdueRecurring
+        let visibleOverdue = overdue.prefix(3)
+        for item in visibleOverdue {
+            contexts.append(.overdue(rule: item.rule, date: item.date))
+        }
+        if overdue.count > visibleOverdue.count {
+            contexts.append(.overdueOverflow(count: overdue.count - visibleOverdue.count))
+        }
+
+        // 2. Upcoming items.
+        let grouped = groupedUpcoming
         if let scheduled = grouped.scheduled {
             contexts.append(.upcoming(rule: scheduled.rule, date: scheduled.date))
         }
-        // 2. General items stacked.
         for item in grouped.general {
             contexts.append(.upcoming(rule: item.rule, date: item.date))
         }
-        // 3. Overflow callout — "+N more recurring due today".
         if grouped.overflowCount > 0 {
             contexts.append(.recurringOverflow(count: grouped.overflowCount))
         }
-        // 4. Review and insight stay at the bottom.
+
+        // 3. Review and insight stay at the bottom.
         if reviewCount > 0 {
             contexts.append(.review(count: reviewCount))
         }
@@ -1101,7 +1191,24 @@ struct HomeView: View {
             ) {
                 contextRowBody(for: context, showHint: true)
             }
-        case .review, .insight, .recurringOverflow:
+        case .overdue(let rule, let date):
+            SwipeableContextRow(
+                leadingLabel: "Log",
+                leadingIcon: "checkmark.circle.fill",
+                leadingColor: Color.tulaBrandFallback,
+                leadingAction: { logUpcoming(rule: rule, date: date) },
+                trailingLabel: "Skip",
+                trailingIcon: "forward.fill",
+                trailingColor: Color.secondary,
+                trailingAction: { skipUpcoming(rule: rule, date: date) },
+                onTap: {
+                    Haptics.tap()
+                    handleContextTap(context)
+                }
+            ) {
+                contextRowBody(for: context, showHint: true)
+            }
+        case .review, .insight, .recurringOverflow, .overdueOverflow:
             Button {
                 Haptics.tap()
                 handleContextTap(context)
@@ -1180,9 +1287,7 @@ struct HomeView: View {
     @ViewBuilder
     private func contextTrailingActions(for context: HomeContext) -> some View {
         switch context {
-        case .upcoming, .review, .insight, .recurringOverflow:
-            // Intentional no-op — actions are now handled inline by
-            // `contextRowBody` (chevron) or `SwipeableContextRow` (swipe).
+        case .upcoming, .review, .insight, .recurringOverflow, .overdue, .overdueOverflow:
             EmptyView()
         }
     }
@@ -1221,7 +1326,9 @@ struct HomeView: View {
         switch context {
         case .review:                return "tag.slash"
         case .upcoming(let rule, _): return rule.category?.iconKey ?? "arrow.clockwise.circle.fill"
+        case .overdue(let rule, _):  return rule.category?.iconKey ?? "exclamationmark.circle.fill"
         case .recurringOverflow:     return "ellipsis.circle.fill"
+        case .overdueOverflow:       return "exclamationmark.circle.fill"
         case .insight(let i):        return i.icon
         }
     }
@@ -1230,7 +1337,9 @@ struct HomeView: View {
         switch context {
         case .review:                return Color.tulaBrandFallback
         case .upcoming(let rule, _): return Color(hex: rule.category?.colorHex ?? "#D97706")
+        case .overdue:               return .red
         case .recurringOverflow:     return .secondary
+        case .overdueOverflow:       return .red
         case .insight(let i):        return i.color
         }
     }
@@ -1241,8 +1350,12 @@ struct HomeView: View {
             return count == 1 ? "1 expense to review" : "\(count) expenses to review"
         case .upcoming(let rule, _):
             return rule.name
+        case .overdue(let rule, _):
+            return rule.name
         case .recurringOverflow(let count):
             return count == 1 ? "1 more recurring due" : "\(count) more recurring due"
+        case .overdueOverflow(let count):
+            return count == 1 ? "1 more overdue" : "\(count) more overdue"
         case .insight(let i):
             return i.title
         }
@@ -1254,7 +1367,11 @@ struct HomeView: View {
             return "Tap to categorize"
         case .upcoming(_, let date):
             return upcomingRelativeLabel(for: date)
+        case .overdue(_, let date):
+            return overdueRelativeLabel(for: date)
         case .recurringOverflow:
+            return "Tap to see all"
+        case .overdueOverflow:
             return "Tap to see all"
         case .insight(let i):
             return i.detail
@@ -1272,16 +1389,35 @@ struct HomeView: View {
         return "Due \(date.formatted(.dateTime.day().month(.abbreviated)))"
     }
 
+    private func overdueRelativeLabel(for date: Date) -> String {
+        let cal = Calendar.current
+        if cal.isDateInYesterday(date) { return "Overdue · yesterday" }
+        if cal.isDateInToday(date) { return "Overdue · earlier today" }
+        let days = cal.dateComponents([.day], from: date, to: .now).day ?? 0
+        if days <= 7 { return "Overdue · \(days) days ago" }
+        return "Overdue · \(date.formatted(.dateTime.day().month(.abbreviated)))"
+    }
+
     private func handleContextTap(_ context: HomeContext) {
         switch context {
         case .review:
             navPath.append(HomeDestination.reviewQueue)
-        case .upcoming, .recurringOverflow:
+        case .upcoming, .recurringOverflow, .overdue, .overdueOverflow:
             showingRecurring = true
-        case .insight:
-            // No destination for insights — they're informational. Tapping
-            // is a no-op but the haptic acknowledges the gesture.
-            break
+        case .insight(let insight):
+            switch insight.kind {
+            case .todayTotal, .biggestToday, .quietToday:
+                let cal = Calendar.current
+                let start = cal.startOfDay(for: .now)
+                let end = cal.date(bySettingHour: 23, minute: 59, second: 59, of: .now) ?? .now
+                allExpensesFilter = ExpenseFilter(dateRange: .custom(start: start, end: end))
+                showingAllExpenses = true
+            case .monthPace, .bigSpender, .categoryAlert:
+                allExpensesFilter = ExpenseFilter(dateRange: .thisMonth)
+                showingAllExpenses = true
+            default:
+                break
+            }
         }
     }
 
