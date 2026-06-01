@@ -668,6 +668,20 @@ enum CloudAIParser {
         return m
     }
 
+    // MARK: - Model Fallback
+
+    private enum GeminiOutcome {
+        case success([String: Any])
+        case rateLimited
+        case failed
+    }
+
+    private static let geminiFallbackModels = [
+        "gemini-2.5-flash",
+        "gemini-2.0-flash",
+        "gemini-1.5-flash",
+    ]
+
     // MARK: - JSON Schemas for Gemini Native API
 
     private static let expenseSchema: [String: Any] = [
@@ -846,8 +860,6 @@ enum CloudAIParser {
         userMessage: String,
         schema: [String: Any]
     ) async -> [String: Any]? {
-        guard let url = geminiNativeURL(config: config) else { return nil }
-
         let body: [String: Any] = [
             "systemInstruction": ["parts": [["text": systemPrompt]]],
             "contents": [[
@@ -861,7 +873,7 @@ enum CloudAIParser {
             ]
         ]
 
-        return await executeGeminiRequest(url: url, body: body, label: "Text")
+        return await executeWithModelFallback(config: config, body: body, label: "Text")
     }
 
     private static func callGeminiNativeImage(
@@ -871,8 +883,6 @@ enum CloudAIParser {
         mimeType: String,
         schema: [String: Any]
     ) async -> [String: Any]? {
-        guard let url = geminiNativeURL(config: config) else { return nil }
-
         let body: [String: Any] = [
             "systemInstruction": ["parts": [["text": systemPrompt]]],
             "contents": [[
@@ -889,7 +899,7 @@ enum CloudAIParser {
             ]
         ]
 
-        return await executeGeminiRequest(url: url, body: body, label: "Image")
+        return await executeWithModelFallback(config: config, body: body, label: "Image")
     }
 
     private static let imageUserMessage = """
@@ -899,24 +909,49 @@ enum CloudAIParser {
     Do not skip any items or leave any field empty.
     """
 
-    private static func geminiNativeURL(config: CloudAIConfig) -> URL? {
-        let model = sanitizedGeminiModel(config.model)
-        let urlString = "https://generativelanguage.googleapis.com/v1beta/models/\(model):generateContent?key=\(config.apiKey)"
-        guard let url = URL(string: urlString) else {
-            aiLog.error("Invalid native URL for model: \(model)")
-            return nil
+    // MARK: - Model Fallback Execution
+
+    private static func executeWithModelFallback(
+        config: CloudAIConfig,
+        body: [String: Any],
+        label: String
+    ) async -> [String: Any]? {
+        let primaryModel = sanitizedGeminiModel(config.model)
+        var modelsToTry = [primaryModel]
+        for model in geminiFallbackModels where model != primaryModel {
+            modelsToTry.append(model)
         }
-        return url
+
+        for (index, model) in modelsToTry.enumerated() {
+            let urlString = "https://generativelanguage.googleapis.com/v1beta/models/\(model):generateContent?key=\(config.apiKey)"
+            guard let url = URL(string: urlString) else { continue }
+
+            let tag = "\(label)/\(model)"
+            switch await executeGeminiRequest(url: url, body: body, label: tag) {
+            case .success(let json):
+                if index > 0 {
+                    aiLog.info("[\(label)] Succeeded with fallback model \(model)")
+                }
+                return json
+            case .rateLimited:
+                aiLog.warning("[\(label)] \(model) rate-limited, trying next model")
+                continue
+            case .failed:
+                return nil
+            }
+        }
+        aiLog.error("[\(label)] All \(modelsToTry.count) models rate-limited")
+        return nil
     }
 
     private static func executeGeminiRequest(
         url: URL,
         body: [String: Any],
         label: String
-    ) async -> [String: Any]? {
+    ) async -> GeminiOutcome {
         guard let jsonData = try? JSONSerialization.data(withJSONObject: body) else {
             aiLog.error("[\(label)] Failed to serialize request body")
-            return nil
+            return .failed
         }
 
         aiLog.info("[\(label)] Sending request, bodySize=\(jsonData.count / 1024)KB")
@@ -931,21 +966,30 @@ enum CloudAIParser {
             let (data, response) = try await URLSession.shared.data(for: request)
             guard let httpResponse = response as? HTTPURLResponse else {
                 aiLog.error("[\(label)] Response is not HTTP")
-                return nil
+                return .failed
             }
 
             aiLog.info("[\(label)] HTTP \(httpResponse.statusCode), responseSize=\(data.count)")
 
+            if httpResponse.statusCode == 429 || httpResponse.statusCode == 503 {
+                let errorBody = String(data: data, encoding: .utf8) ?? ""
+                aiLog.warning("[\(label)] Rate limited (\(httpResponse.statusCode)): \(errorBody.prefix(200))")
+                return .rateLimited
+            }
+
             guard httpResponse.statusCode == 200 else {
                 let errorBody = String(data: data, encoding: .utf8) ?? "(no body)"
                 aiLog.error("[\(label)] HTTP \(httpResponse.statusCode): \(errorBody.prefix(500))")
-                return nil
+                return .failed
             }
 
-            return parseGeminiResponse(data, label: label)
+            if let parsed = parseGeminiResponse(data, label: label) {
+                return .success(parsed)
+            }
+            return .failed
         } catch {
             aiLog.error("[\(label)] Network error: \(error.localizedDescription)")
-            return nil
+            return .failed
         }
     }
 
