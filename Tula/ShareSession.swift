@@ -8,6 +8,48 @@ import os.log
 
 private let shareLog = Logger(subsystem: "com.app.alpha.Tula.TulaShare", category: "ShareSession")
 
+// MARK: - Crash Log Writer
+
+/// Writes diagnostic info to a log file in the shared App Group container
+/// so the user can find it in Files app. Each share attempt appends to the
+/// same file with a timestamp separator.
+private enum ShareCrashLog {
+    static func write(_ message: String) {
+        let groupID = "group.com.app.alpha.Tula"
+        guard let containerURL = FileManager.default.containerURL(
+            forSecurityApplicationGroupIdentifier: groupID
+        ) else {
+            shareLog.error("Cannot write crash log — no App Group container")
+            return
+        }
+
+        let logDir = containerURL.appendingPathComponent("ShareLogs", isDirectory: true)
+        try? FileManager.default.createDirectory(at: logDir, withIntermediateDirectories: true)
+
+        let logFile = logDir.appendingPathComponent("share_debug.log")
+        let timestamp = ISO8601DateFormatter().string(from: Date())
+        let entry = """
+        
+        ── [\(timestamp)] ──────────────────────────
+        \(message)
+        
+        """
+
+        if let data = entry.data(using: .utf8) {
+            if FileManager.default.fileExists(atPath: logFile.path) {
+                if let handle = try? FileHandle(forWritingTo: logFile) {
+                    handle.seekToEndOfFile()
+                    handle.write(data)
+                    handle.closeFile()
+                }
+            } else {
+                try? data.write(to: logFile)
+            }
+        }
+        shareLog.info("Wrote crash log entry to \(logFile.path)")
+    }
+}
+
 /// Drives the share extension's parsing + UI state. Lives for the
 /// lifetime of one share invocation. Holds the extracted content
 /// (image / text), the parse results, and the eventual save outcome.
@@ -84,6 +126,7 @@ final class ShareSession: ObservableObject {
     /// to OCR (for images) or text parsing.
     func start() {
         shareLog.info("start() called")
+        ShareCrashLog.write("Share extension started")
         guard let items = extensionContext?.inputItems as? [NSExtensionItem],
               !items.isEmpty else {
             shareLog.error("No input items from extensionContext")
@@ -141,6 +184,11 @@ final class ShareSession: ObservableObject {
         provider.loadItem(forTypeIdentifier: typeID, options: nil) { [weak self] item, error in
             if let error {
                 shareLog.error("loadItem failed: \(error.localizedDescription)")
+                ShareCrashLog.write("loadItem error: \(error.localizedDescription)\ntypeID: \(typeID)")
+                Task { @MainActor in
+                    self?.phase = .failed("Failed to load image: \(error.localizedDescription)")
+                }
+                return
             }
             shareLog.info("loadItem returned item type: \(String(describing: type(of: item)))")
 
@@ -169,15 +217,25 @@ final class ShareSession: ObservableObject {
             }()
 
             let downscaled: UIImage? = autoreleasepool {
-                guard let image else { return nil }
-                return ReceiptStorage.downscaleForOCR(image)
+                guard let image else {
+                    ShareCrashLog.write("UIImage decode returned nil.\nItem type: \(String(describing: type(of: item)))\ntypeID: \(typeID)")
+                    return nil
+                }
+                let size = image.size
+                shareLog.info("Raw image size: \(Int(size.width))x\(Int(size.height)), scale=\(image.scale)")
+                let result = ReceiptStorage.downscaleForOCR(image)
+                if result == nil {
+                    ShareCrashLog.write("downscaleForOCR returned nil.\nOriginal size: \(Int(size.width))x\(Int(size.height))")
+                }
+                return result
             }
 
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 guard let downscaled else {
-                    shareLog.error("UIImage creation failed")
-                    self.phase = .failed("Couldn't read the photo")
+                    shareLog.error("UIImage creation/downscale failed")
+                    ShareCrashLog.write("Final image nil — could not create UIImage from shared content.\ntypeID: \(typeID)")
+                    self.phase = .failed("Couldn't read the photo — see share_debug.log")
                     return
                 }
                 shareLog.info("Image loaded: \(Int(downscaled.size.width))x\(Int(downscaled.size.height))")
@@ -227,126 +285,140 @@ final class ShareSession: ObservableObject {
         let isDirectImageMode = SmartExpenseParser.hasCloudVision
 
         Task.detached(priority: .userInitiated) { [weak self] in
-            await MainActor.run { self?.parsingStatus = "Preparing image…" }
+            do {
+                try await self?.runImagePipelineInner(image: image, isDirectImageMode: isDirectImageMode)
+            } catch {
+                let msg = "runImagePipeline crashed: \(error.localizedDescription)\n\(String(describing: error))"
+                shareLog.error("\(msg)")
+                ShareCrashLog.write(msg)
+                await MainActor.run {
+                    self?.phase = .failed("Parsing failed — check share_debug.log")
+                }
+            }
+        }
+    }
 
-            let categoryEntries = await Self.loadCategoryEntries()
-            let fmContext = await Self.loadFMContext()
+    private func runImagePipelineInner(image: UIImage, isDirectImageMode: Bool) async throws {
+        await MainActor.run { [weak self] in self?.parsingStatus = "Preparing image…" }
 
-            let regexResult: ReceiptStorage.ParseResult?
-            if isDirectImageMode {
-                regexResult = nil
-                shareLog.info("Skipping OCR — direct image mode active")
-                await MainActor.run { self?.parsingStatus = "Analyzing receipt…" }
+        let categoryEntries = await Self.loadCategoryEntries()
+        let fmContext = await Self.loadFMContext()
+
+        let regexResult: ReceiptStorage.ParseResult?
+        if isDirectImageMode {
+            regexResult = nil
+            shareLog.info("Skipping OCR — direct image mode active")
+            await MainActor.run { [weak self] in self?.parsingStatus = "Analyzing receipt…" }
+        } else {
+            await MainActor.run { [weak self] in self?.parsingStatus = "Reading text from image…" }
+            shareLog.info("Running OCR via ReceiptStorage.parse...")
+            let result = await ReceiptStorage.parse(image)
+            shareLog.info("OCR done. rawText length=\(result.rawText.count), amount=\(String(describing: result.amount)), merchant=\(String(describing: result.merchant))")
+            regexResult = result
+            await MainActor.run { [weak self] in self?.parsingStatus = "Extracting details…" }
+        }
+
+        let smartResult: ReceiptSmartParseResult? = await withTaskGroup(of: ReceiptSmartParseResult?.self) { group in
+            group.addTask {
+                guard SmartExpenseParser.isAvailable else { return nil }
+
+                if isDirectImageMode,
+                   let jpegData = image.jpegData(compressionQuality: 0.85) {
+                    return await SmartExpenseParser.parseReceiptImage(jpegData, categories: categoryEntries, contextBlock: fmContext)
+                }
+
+                guard let regexResult else { return nil }
+                return await SmartExpenseParser.parseReceipt(
+                    regexResult.rawText,
+                    categories: categoryEntries,
+                    documentType: regexResult.documentType,
+                    contextBlock: fmContext
+                )
+            }
+            group.addTask {
+                let timeout: Duration = isDirectImageMode ? .seconds(30) : .seconds(4)
+                try? await Task.sleep(for: timeout)
+                return nil
+            }
+            let first = await group.next() ?? nil
+            group.cancelAll()
+            return first
+        }
+
+        if smartResult == nil {
+            shareLog.error("smartResult is nil — Gemini call failed or timed out")
+            ShareCrashLog.write("Smart parse returned nil.\nisAvailable=\(SmartExpenseParser.isAvailable)\nisDirectImage=\(isDirectImageMode)\nregexResult rawText length=\(regexResult?.rawText.count ?? -1)")
+        } else {
+            shareLog.info("smartResult: amount=\(smartResult!.amount), merchant=\(smartResult?.merchant ?? "nil"), items=\(smartResult!.items.count)")
+        }
+
+        await MainActor.run { [weak self] in self?.parsingStatus = "Finishing up…" }
+
+        let mergedAmount: Double
+        let mergedMerchant: String
+        let resolvedDate: Date
+        let noteText: String
+        let extractedItems: [ReceiptLineItem]
+
+        if isDirectImageMode {
+            mergedAmount = smartResult?.amount ?? 0
+            mergedMerchant = smartResult?.merchant ?? ""
+            resolvedDate = Self.parseISODate(smartResult?.date) ?? .now
+        } else {
+            let isStructuredDoc = regexResult?.documentType == .upi
+                || regexResult?.documentType == .orderSummary
+            if isStructuredDoc, let rgx = regexResult?.amount, rgx > 0 {
+                mergedAmount = rgx
             } else {
-                await MainActor.run { self?.parsingStatus = "Reading text from image…" }
-                shareLog.info("Running OCR via ReceiptStorage.parse...")
-                let result = await ReceiptStorage.parse(image)
-                shareLog.info("OCR done. rawText length=\(result.rawText.count), amount=\(String(describing: result.amount)), merchant=\(String(describing: result.merchant))")
-                regexResult = result
-                await MainActor.run { self?.parsingStatus = "Extracting details…" }
+                mergedAmount = smartResult?.amount ?? regexResult?.amount ?? 0
             }
-
-            let smartResult: ReceiptSmartParseResult? = await withTaskGroup(of: ReceiptSmartParseResult?.self) { group in
-                group.addTask {
-                    guard SmartExpenseParser.isAvailable else { return nil }
-
-                    if isDirectImageMode,
-                       let jpegData = image.jpegData(compressionQuality: 0.85) {
-                        return await SmartExpenseParser.parseReceiptImage(jpegData, categories: categoryEntries, contextBlock: fmContext)
-                    }
-
-                    guard let regexResult else { return nil }
-                    return await SmartExpenseParser.parseReceipt(
-                        regexResult.rawText,
-                        categories: categoryEntries,
-                        documentType: regexResult.documentType,
-                        contextBlock: fmContext
-                    )
-                }
-                group.addTask {
-                    let timeout: Duration = isDirectImageMode ? .seconds(30) : .seconds(4)
-                    try? await Task.sleep(for: timeout)
-                    return nil
-                }
-                let first = await group.next() ?? nil
-                group.cancelAll()
-                return first
+            if isStructuredDoc, let rgx = regexResult?.merchant, !rgx.isEmpty {
+                mergedMerchant = rgx
+            } else {
+                mergedMerchant = smartResult?.merchant ?? regexResult?.merchant ?? ""
             }
+            resolvedDate = regexResult?.date ?? Self.parseISODate(smartResult?.date) ?? .now
+        }
 
+        if let smart = smartResult, !smart.items.isEmpty {
+            extractedItems = smart.items
+            let parts = smart.items.map { "\($0.name) ₹\(Int($0.price))" }
+            noteText = parts.joined(separator: " · ")
+        } else if !isDirectImageMode {
+            extractedItems = []
+            noteText = regexResult?.formattedNote(currencyCode: "INR") ?? ""
+        } else {
+            extractedItems = []
+            noteText = ""
+        }
+
+        let resolvedCategoryName: String? = await Self.resolveCategoryName(
+            merchant: mergedMerchant,
+            fmSuggestion: smartResult?.category
+        )
+
+        let warning: String? = {
             if smartResult == nil {
-                shareLog.error("smartResult is nil — Gemini call failed or timed out")
-            } else {
-                shareLog.info("smartResult: amount=\(smartResult!.amount), merchant=\(smartResult?.merchant ?? "nil"), items=\(smartResult!.items.count)")
+                return "Could not read receipt — check your connection or try again."
             }
+            if isDirectImageMode { return nil }
+            let fmHelped = smartResult?.amount != nil && smartResult?.merchant != nil
+            if fmHelped { return nil }
+            return regexResult?.confidenceReason
+        }()
 
-            await MainActor.run { self?.parsingStatus = "Finishing up…" }
-
-            let mergedAmount: Double
-            let mergedMerchant: String
-            let resolvedDate: Date
-            let noteText: String
-            let extractedItems: [ReceiptLineItem]
-
-            if isDirectImageMode {
-                mergedAmount = smartResult?.amount ?? 0
-                mergedMerchant = smartResult?.merchant ?? ""
-                resolvedDate = Self.parseISODate(smartResult?.date) ?? .now
-            } else {
-                let isStructuredDoc = regexResult?.documentType == .upi
-                    || regexResult?.documentType == .orderSummary
-                if isStructuredDoc, let rgx = regexResult?.amount, rgx > 0 {
-                    mergedAmount = rgx
-                } else {
-                    mergedAmount = smartResult?.amount ?? regexResult?.amount ?? 0
-                }
-                if isStructuredDoc, let rgx = regexResult?.merchant, !rgx.isEmpty {
-                    mergedMerchant = rgx
-                } else {
-                    mergedMerchant = smartResult?.merchant ?? regexResult?.merchant ?? ""
-                }
-                resolvedDate = regexResult?.date ?? Self.parseISODate(smartResult?.date) ?? .now
-            }
-
-            if let smart = smartResult, !smart.items.isEmpty {
-                extractedItems = smart.items
-                let parts = smart.items.map { "\($0.name) ₹\(Int($0.price))" }
-                noteText = parts.joined(separator: " · ")
-            } else if !isDirectImageMode {
-                extractedItems = []
-                noteText = regexResult?.formattedNote(currencyCode: "INR") ?? ""
-            } else {
-                extractedItems = []
-                noteText = ""
-            }
-
-            let resolvedCategoryName: String? = await Self.resolveCategoryName(
-                merchant: mergedMerchant,
-                fmSuggestion: smartResult?.category
-            )
-
-            let warning: String? = {
-                if smartResult == nil {
-                    return "Could not read receipt — check your connection or try again."
-                }
-                if isDirectImageMode { return nil }
-                let fmHelped = smartResult?.amount != nil && smartResult?.merchant != nil
-                if fmHelped { return nil }
-                return regexResult?.confidenceReason
-            }()
-
-            await MainActor.run { [weak self] in
-                guard let self else { return }
-                self.amount = mergedAmount
-                self.merchant = mergedMerchant
-                self.date = resolvedDate
-                self.note = noteText
-                self.items = extractedItems
-                self.categoryName = resolvedCategoryName
-                self.usedSmartParser = smartResult != nil
-                self.parseWarning = warning
-                self.parsingStatus = ""
-                self.phase = .preview
-            }
+        await MainActor.run { [weak self] in
+            guard let self else { return }
+            self.amount = mergedAmount
+            self.merchant = mergedMerchant
+            self.date = resolvedDate
+            self.note = noteText
+            self.items = extractedItems
+            self.categoryName = resolvedCategoryName
+            self.usedSmartParser = smartResult != nil
+            self.parseWarning = warning
+            self.parsingStatus = ""
+            self.phase = .preview
         }
     }
 
