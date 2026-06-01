@@ -21,7 +21,7 @@ struct SettingsView: View {
     @AppStorage("budgetAlertsEnabled") private var budgetAlertsEnabled: Bool = false
     @AppStorage("launchAnimationEnabled") private var launchAnimationEnabled: Bool = true
     @AppStorage("smartParsingEnabled") private var smartParsingEnabled: Bool = true
-    @AppStorage("selectedAIProvider", store: UserDefaults(suiteName: "group.com.app.alpha.Tula"))
+    @AppStorage("selectedAIProvider", store: UserDefaults(suiteName: "group.com.app.Tula"))
     private var selectedProviderRaw: String = AIProvider.gemini.rawValue
 
     /// Result of the most recent "Test smart parsing" tap in Settings —
