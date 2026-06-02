@@ -40,30 +40,46 @@ struct TulaWidgetProvider: TimelineProvider {
         let snapshot = WidgetStorage.read()
         let now = Date.now
         let cal = Calendar.current
-        let nowEntry = TulaWidgetEntry(date: now, snapshot: snapshot)
 
-        var entries: [TulaWidgetEntry] = [nowEntry]
+        var entries: [TulaWidgetEntry] = [
+            TulaWidgetEntry(date: now, snapshot: snapshot)
+        ]
 
-        for offset in 1...8 {
+        // Half-hour entries for the next 2 hours
+        for offset in 1...4 {
             if let future = cal.date(byAdding: .minute, value: offset * 30, to: now) {
                 entries.append(TulaWidgetEntry(date: future, snapshot: snapshot))
             }
         }
 
+        // Refresh every 30 min so background updates (notification
+        // actions) are picked up even if reloadAllTimelines() is throttled.
+        var refreshAfter = cal.date(byAdding: .minute, value: 30, to: now) ?? now
         if let nextMidnight = cal.nextDate(
             after: now,
-            matching: DateComponents(hour: 0, minute: 0, second: 0),
+            matching: DateComponents(hour: 0, minute: 0),
             matchingPolicy: .nextTime
         ) {
             var midnightSnapshot = snapshot
             midnightSnapshot.todayTotal = 0
+            midnightSnapshot.dailyTotals = Array(midnightSnapshot.dailyTotals.dropFirst()) + [0]
             midnightSnapshot.generatedAt = nextMidnight
-            entries.append(TulaWidgetEntry(date: nextMidnight,
-                                            snapshot: midnightSnapshot))
+            entries.append(TulaWidgetEntry(date: nextMidnight, snapshot: midnightSnapshot))
+
+            // Hourly entries for the morning after midnight (covers overnight)
+            for hour in 1...8 {
+                if let morning = cal.date(byAdding: .hour, value: hour, to: nextMidnight) {
+                    entries.append(TulaWidgetEntry(date: morning, snapshot: midnightSnapshot))
+                }
+            }
+
+            // Request a fresh timeline shortly after midnight
+            if let postMidnight = cal.date(byAdding: .minute, value: 1, to: nextMidnight) {
+                refreshAfter = postMidnight
+            }
         }
 
-        let refreshDate = cal.date(byAdding: .minute, value: 30, to: now) ?? now
-        let timeline = Timeline(entries: entries, policy: .after(refreshDate))
+        let timeline = Timeline(entries: entries, policy: .after(refreshAfter))
         completion(timeline)
     }
 }

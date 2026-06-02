@@ -792,14 +792,51 @@ enum SmartExpenseParser {
             "to": 2, "too": 2
         ]
         let tensWords: [String: Int] = [
+            "ten": 10, "eleven": 11, "twelve": 12, "thirteen": 13,
+            "fourteen": 14, "fifteen": 15, "sixteen": 16, "seventeen": 17,
+            "eighteen": 18, "nineteen": 19,
             "twenty": 20, "thirty": 30, "forty": 40, "fifty": 50,
             "sixty": 60, "seventy": 70, "eighty": 80, "ninety": 90
         ]
-        let tensDigits: Set<String> = ["20", "30", "40", "50", "60", "70", "80", "90"]
+        let tensDigits: Set<String> = [
+            "10", "11", "12", "13", "14", "15", "16", "17", "18", "19",
+            "20", "30", "40", "50", "60", "70", "80", "90"
+        ]
 
         var tokens = text.components(separatedBy: .whitespaces).filter { !$0.isEmpty }
-        var i = 0
 
+        // Pass 1: "X hundred Y" → combined number (e.g. "two hundred fifty" → "250")
+        var i = 0
+        while i < tokens.count - 1 {
+            let current = tokens[i].lowercased().trimmingCharacters(in: .punctuationCharacters)
+            let next = tokens[i + 1].lowercased().trimmingCharacters(in: .punctuationCharacters)
+
+            if next == "hundred" {
+                var hundreds = 0
+                if let o = onesWords[current] { hundreds = o * 100 }
+                else if let d = Int(current), d >= 1, d <= 9 { hundreds = d * 100 }
+
+                if hundreds > 0 {
+                    // Check for a trailing tens/ones word: "two hundred fifty"
+                    if i + 2 < tokens.count {
+                        let third = tokens[i + 2].lowercased().trimmingCharacters(in: .punctuationCharacters)
+                        if let t = tensWords[third] {
+                            tokens[i] = String(hundreds + t)
+                            tokens.remove(at: i + 2)
+                            tokens.remove(at: i + 1)
+                            continue
+                        }
+                    }
+                    tokens[i] = String(hundreds)
+                    tokens.remove(at: i + 1)
+                    continue
+                }
+            }
+            i += 1
+        }
+
+        // Pass 2: Indian compound "ones tens" → ones×100+tens
+        i = 0
         while i < tokens.count - 1 {
             let current = tokens[i].lowercased().trimmingCharacters(in: .punctuationCharacters)
             let next = tokens[i + 1].lowercased().trimmingCharacters(in: .punctuationCharacters)
@@ -819,6 +856,25 @@ enum SmartExpenseParser {
             } else {
                 i += 1
             }
+        }
+
+        // Pass 3: "X thousand" → X*1000 (e.g. "two thousand" → "2000")
+        i = 0
+        while i < tokens.count - 1 {
+            let current = tokens[i].lowercased().trimmingCharacters(in: .punctuationCharacters)
+            let next = tokens[i + 1].lowercased().trimmingCharacters(in: .punctuationCharacters)
+
+            if next == "thousand" || next == "k" {
+                var value = 0
+                if let o = onesWords[current] { value = o }
+                else if let d = Int(current), d >= 1, d <= 99 { value = d }
+                if value > 0 {
+                    tokens[i] = String(value * 1000)
+                    tokens.remove(at: i + 1)
+                    continue
+                }
+            }
+            i += 1
         }
 
         return tokens.joined(separator: " ")

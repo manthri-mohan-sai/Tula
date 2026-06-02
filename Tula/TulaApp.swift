@@ -112,7 +112,7 @@ struct TulaApp: App {
             // so by the time the portal opens (~3.15s in) the home
             // is fully rendered and ready.
             ZStack {
-                RootTabView()
+                RootTabView(appDelegate: appDelegate, launchAnimationDone: $launchAnimationDone)
                     .tint(Color.tulaBrandFallback)
                     .onAppear {
                         let context = ModelContext(sharedContainer)
@@ -166,7 +166,7 @@ struct TulaApp: App {
                         launchAnimationDone = true
                     }
                     .onAppear {
-                        if !launchAnimationEnabled {
+                        if !launchAnimationEnabled || appDelegate.pendingShortcutURL != nil || appDelegate.launchedFromDeepLink {
                             launchAnimationDone = true
                         }
                     }
@@ -185,6 +185,7 @@ struct TulaApp: App {
                 // Re-schedule the daily reminder with fresh dynamic
                 // content (today's spend summary or "no spends" nudge).
                 NotificationManager.refreshDailyReminder(using: context)
+
             }
         }
     }
@@ -360,6 +361,8 @@ enum TulaTab: Hashable {
 /// We intercept selection on the .add tab to present the AddExpense sheet
 /// instead of navigating, since Add is an *action* not a destination.
 struct RootTabView: View {
+    let appDelegate: TulaAppDelegate
+    @Binding var launchAnimationDone: Bool
     @State private var selectedTab: TulaTab = .home
     @State private var showingAddExpense = false
 
@@ -411,31 +414,50 @@ struct RootTabView: View {
         // and posts a notification that the QuickLogBar listens to —
         // starting voice capture without manual tap.
         .onOpenURL { url in
-            guard url.scheme == "tula" else { return }
-            switch url.host {
-            case "add":
-                Haptics.impact()
-                showingAddExpense = true
-            case "voice":
-                Haptics.impact()
-                selectedTab = .home
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-                    NotificationCenter.default.post(
-                        name: .tulaStartVoiceCapture,
-                        object: nil
-                    )
-                }
-            case "scan":
-                Haptics.impact()
-                showingAddExpense = true
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                    NotificationCenter.default.post(
-                        name: .tulaStartReceiptScan,
-                        object: nil
-                    )
-                }
-            default: break
+            if !launchAnimationDone { launchAnimationDone = true }
+            handleDeepLink(url)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .tulaQuickAction)) { note in
+            if let url = note.object as? URL {
+                appDelegate.pendingShortcutURL = nil
+                if !launchAnimationDone { launchAnimationDone = true }
+                handleDeepLink(url)
             }
+        }
+        .task {
+            guard let url = appDelegate.pendingShortcutURL else { return }
+            appDelegate.pendingShortcutURL = nil
+            if !launchAnimationDone { launchAnimationDone = true }
+            try? await Task.sleep(for: .seconds(0.5))
+            handleDeepLink(url)
+        }
+    }
+
+    private func handleDeepLink(_ url: URL) {
+        guard url.scheme == "tula" else { return }
+        switch url.host {
+        case "add":
+            Haptics.impact()
+            showingAddExpense = true
+        case "voice":
+            Haptics.impact()
+            selectedTab = .home
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                NotificationCenter.default.post(
+                    name: .tulaStartVoiceCapture,
+                    object: nil
+                )
+            }
+        case "scan":
+            Haptics.impact()
+            showingAddExpense = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                NotificationCenter.default.post(
+                    name: .tulaStartReceiptScan,
+                    object: nil
+                )
+            }
+        default: break
         }
     }
 }
@@ -448,4 +470,5 @@ extension Notification.Name {
     /// microphone automatically.
     static let tulaStartVoiceCapture = Notification.Name("tula.startVoiceCapture")
     static let tulaStartReceiptScan = Notification.Name("tula.startReceiptScan")
+    static let tulaQuickAction = Notification.Name("tula.quickAction")
 }

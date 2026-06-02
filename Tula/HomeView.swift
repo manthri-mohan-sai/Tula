@@ -708,13 +708,9 @@ struct HomeView: View {
                                 isVoice: Bool) {
         let isMultiExpense = parsedExpenses.count >= 2
 
-        if isVoice, !isMultiExpense {
-            if SmartExpenseParser.isAvailable {
-                if #available(iOS 26.0, *) {
-                    handleVoiceQuickLog(rawInput: rawInput, ruleFallback: parsedExpenses)
-                    return
-                }
-            }
+        if isVoice, !isMultiExpense, SmartExpenseParser.isAvailable {
+            handleVoiceQuickLog(rawInput: rawInput, ruleFallback: parsedExpenses)
+            return
         }
         // Typed input, multi-expense voice, or no-FM device: rule path.
         saveParsedExpenses(parsedExpenses)
@@ -725,7 +721,6 @@ struct HomeView: View {
     /// constructs and saves an Expense from the structured result. Falls
     /// back to the rule-parsed expenses if FM is unavailable, returns
     /// garbage, or times out.
-    @available(iOS 26.0, *)
     private func handleVoiceQuickLog(rawInput: String,
                                      ruleFallback: [ParsedExpense]) {
         let usableCategories = allCategories.filter { !$0.isArchived }
