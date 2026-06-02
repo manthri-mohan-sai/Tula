@@ -846,68 +846,44 @@ struct QuickActionsEntryView: View {
 
 struct HomeQuickActionsView: View {
     var body: some View {
-        VStack(spacing: 0) {
-            HStack(alignment: .firstTextBaseline) {
-                Text("Quick Add")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                Spacer()
+        Grid(horizontalSpacing: 12, verticalSpacing: 12) {
+            GridRow {
+                Link(destination: URL(string: "tula://scan")!) {
+                    ZStack {
+                        Circle()
+                            .fill(Color.tulaBrandFallback.opacity(0.12))
+                        Image(systemName: "text.viewfinder")
+                            .font(.system(size: 26, weight: .semibold))
+                            .foregroundStyle(Color.tulaBrandFallback)
+                    }
+                }
+                Link(destination: URL(string: "tula://voice")!) {
+                    ZStack {
+                        Circle()
+                            .fill(Color.tulaBrandFallback.opacity(0.12))
+                        Image(systemName: "mic.fill")
+                            .font(.system(size: 26, weight: .semibold))
+                            .foregroundStyle(Color.tulaBrandFallback)
+                    }
+                }
+            }
+            GridRow {
+                Link(destination: URL(string: "tula://add")!) {
+                    ZStack {
+                        Circle()
+                            .fill(Color.tulaBrandFallback.opacity(0.12))
+                        Image(systemName: "plus")
+                            .font(.system(size: 28, weight: .semibold))
+                            .foregroundStyle(Color.tulaBrandFallback)
+                    }
+                }
                 Text("तु")
-                    .font(.system(size: 11, weight: .heavy))
-                    .foregroundStyle(Color.tulaBrandFallback.opacity(0.5))
+                    .font(.system(size: 34, weight: .bold))
+                    .foregroundStyle(Color.tulaBrandFallback)
             }
-
-            Spacer()
-
-            HStack(spacing: 0) {
-                QuickActionButton(
-                    icon: "doc.text.viewfinder",
-                    label: "Scan",
-                    color: Color.tulaBrandFallback,
-                    url: URL(string: "tula://scan")!
-                )
-                Spacer()
-                QuickActionButton(
-                    icon: "mic.fill",
-                    label: "Voice",
-                    color: .green,
-                    url: URL(string: "tula://voice")!
-                )
-                Spacer()
-                QuickActionButton(
-                    icon: "plus",
-                    label: "Add",
-                    color: .blue,
-                    url: URL(string: "tula://add")!
-                )
-            }
-
-            Spacer()
         }
         .padding(16)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-}
-
-private struct QuickActionButton: View {
-    let icon: String
-    let label: String
-    let color: Color
-    let url: URL
-
-    var body: some View {
-        Link(destination: url) {
-            VStack(spacing: 5) {
-                Image(systemName: icon)
-                    .font(.system(size: 18, weight: .semibold))
-                    .foregroundStyle(color)
-                    .frame(width: 40, height: 40)
-                    .background(color.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                Text(label)
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(.secondary)
-            }
-        }
     }
 }
 
