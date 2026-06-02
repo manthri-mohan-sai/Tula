@@ -16,26 +16,66 @@ import SwiftUI
 // the build will fail (or icons render blank if Xcode silently uses a
 // stale build).
 
+// MARK: - Theme Presets
+
+struct ThemePreset: Identifiable, Equatable {
+    let id: String
+    let name: String
+    let lightHex: String
+    let darkHex: String
+    /// Alternate app icon name registered in Info.plist. `nil` = primary icon.
+    let iconName: String?
+
+    var lightColor: Color { Color(hex: lightHex) }
+    var darkColor: Color { Color(hex: darkHex) }
+    var color: Color { Color(light: Color(hex: lightHex), dark: Color(hex: darkHex)) }
+}
+
+enum TulaTheme {
+    static let themeKey = "themePresetID"
+
+    static let presets: [ThemePreset] = [
+        ThemePreset(id: "saffron", name: "Saffron",  lightHex: "D97706", darkHex: "F59E0B", iconName: nil),
+        ThemePreset(id: "ocean",   name: "Ocean",    lightHex: "2563EB", darkHex: "3B82F6", iconName: "AppIcon-Ocean"),
+        ThemePreset(id: "emerald", name: "Emerald",  lightHex: "059669", darkHex: "10B981", iconName: "AppIcon-Emerald"),
+        ThemePreset(id: "rose",    name: "Rose",     lightHex: "E11D48", darkHex: "FB7185", iconName: "AppIcon-Rose"),
+        ThemePreset(id: "violet",  name: "Violet",   lightHex: "7C3AED", darkHex: "8B5CF6", iconName: "AppIcon-Violet"),
+        ThemePreset(id: "teal",    name: "Teal",     lightHex: "0D9488", darkHex: "14B8A6", iconName: "AppIcon-Teal"),
+        ThemePreset(id: "coral",   name: "Coral",    lightHex: "EA580C", darkHex: "FB923C", iconName: "AppIcon-Coral"),
+        ThemePreset(id: "slate",   name: "Slate",    lightHex: "475569", darkHex: "94A3B8", iconName: "AppIcon-Slate"),
+    ]
+
+    static var current: ThemePreset {
+        let id = UserDefaults(suiteName: WidgetStorage.appGroupID)?.string(forKey: themeKey)
+            ?? UserDefaults.standard.string(forKey: themeKey)
+            ?? "saffron"
+        return presets.first { $0.id == id } ?? presets[0]
+    }
+
+    static func select(_ preset: ThemePreset) {
+        UserDefaults.standard.set(preset.id, forKey: themeKey)
+        UserDefaults(suiteName: WidgetStorage.appGroupID)?.set(preset.id, forKey: themeKey)
+    }
+}
+
 extension Color {
 
-    /// Tula's primary accent — saffron amber rooted in Indian visual culture.
-    /// Brighter in dark mode for readability against deep grays.
-    static let tulaBrandFallback = Color(
-        light: Color(red: 0.85, green: 0.46, blue: 0.10),  // #D97706
-        dark:  Color(red: 0.96, green: 0.62, blue: 0.24)   // #F59E0B
-    )
+    /// Tula's primary accent — reads from the user's selected theme.
+    static var tulaBrandFallback: Color {
+        TulaTheme.current.color
+    }
 
-    /// Fullscreen amber for the launch animation. Lower luminosity than
-    /// the brand accent — the accent is calibrated for small interactive
-    /// elements where brightness signals "tap me", but a fullscreen wash
-    /// at that intensity blasts the eyes, especially in dark environments
-    /// where the user just launched the app. Light mode keeps the bright
-    /// saffron (looks vibrant on a bright phone); dark mode drops to a
-    /// deeper burnt-amber that feels warm without being aggressive.
-    static let tulaLaunchBackground = Color(
-        light: Color(red: 0.85, green: 0.46, blue: 0.10),  // same as accent — bright is fine on bright screens
-        dark:  Color(red: 0.45, green: 0.22, blue: 0.05)   // #732F0D — deep burnt amber
-    )
+    /// Fullscreen color for the launch animation, derived from the theme.
+    static var tulaLaunchBackground: Color {
+        let preset = TulaTheme.current
+        let darkLaunch = Color(uiColor: {
+            let ui = UIColor(Color(hex: preset.lightHex))
+            var h: CGFloat = 0, s: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+            ui.getHue(&h, saturation: &s, brightness: &b, alpha: &a)
+            return UIColor(hue: h, saturation: min(s * 1.1, 1), brightness: b * 0.5, alpha: a)
+        }())
+        return Color(light: Color(hex: preset.lightHex), dark: darkLaunch)
+    }
 
     /// Adaptive color that swaps between light and dark mode variants.
     /// Used by `tulaBrandFallback` above and available for any future
