@@ -115,7 +115,7 @@ struct TulaTodayWidget: Widget {
             provider: TulaWidgetProvider()
         ) { entry in
             TodayWidgetEntryView(snapshot: entry.snapshot)
-                .containerBackground(.fill.tertiary, for: .widget)
+                .containerBackground(Color.tulaBrandFallback.opacity(0.08).gradient, for: .widget)
         }
         .configurationDisplayName("Today")
         .description("Today's spend with trend and month budget pace.")
@@ -157,6 +157,15 @@ struct HomeTodayView: View {
         && snapshot.monthTotal > snapshot.monthlyBudgetCap
     }
 
+    private var dayChangePercent: Double? {
+        guard snapshot.lastMonthSameDayTotal > 0 else { return nil }
+        return (snapshot.todayTotal - snapshot.lastMonthSameDayTotal) / snapshot.lastMonthSameDayTotal
+    }
+
+    private var isSpendingMoreToday: Bool {
+        snapshot.todayTotal > snapshot.lastMonthSameDayTotal
+    }
+
     private var dayLabels: [String] {
         let cal = Calendar.current
         let now = Date.now
@@ -171,9 +180,9 @@ struct HomeTodayView: View {
     var body: some View {
         ZStack(alignment: .topLeading) {
             Text("तु")
-                .font(.system(size: 130, weight: .bold))
-                .foregroundStyle(Color.tulaBrandFallback.opacity(0.15))
-                .offset(x: 25, y: -30)
+                .font(.system(size: 150, weight: .bold))
+                .foregroundStyle(Color.tulaBrandFallback.opacity(0.12))
+                .offset(x: 40, y: -30)
                 .frame(
                     maxWidth: .infinity,
                     maxHeight: .infinity,
@@ -208,6 +217,18 @@ struct HomeTodayView: View {
                     color: Color.tulaBrandFallback
                 )
                 .frame(height: 36)
+
+                if let pct = dayChangePercent {
+                    HStack(spacing: 2) {
+                        Image(systemName: isSpendingMoreToday ? "arrow.up.right" : "arrow.down.right")
+                            .font(.system(size: 8, weight: .bold))
+                        Text("\(Int(abs(pct * 100)))% vs same day last month")
+                            .font(.system(size: 9, weight: .medium))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.7)
+                    }
+                    .foregroundStyle(isSpendingMoreToday ? .red : .green)
+                }
 
                 if snapshot.monthlyBudgetCap > 0 {
                     VStack(alignment: .leading, spacing: 2) {
@@ -383,7 +404,7 @@ struct TulaCategoryWidget: Widget {
             provider: TulaWidgetProvider()
         ) { entry in
             CategoryWidgetView(snapshot: entry.snapshot)
-                .containerBackground(.fill.tertiary, for: .widget)
+                .containerBackground(Color.tulaBrandFallback.opacity(0.08).gradient, for: .widget)
         }
         .configurationDisplayName("Spending")
         .description("This month's spending by category.")
@@ -399,56 +420,60 @@ struct CategoryWidgetView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(alignment: .firstTextBaseline) {
-                Text("Spending")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Text(Currency.format(snapshot.monthTotal, code: snapshot.currencyCode))
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.primary)
-                    .monospacedDigit()
-            }
+        ZStack(alignment: .topTrailing) {
+            Text("तु")
+                .font(.system(size: 140, weight: .bold))
+                .foregroundStyle(Color.tulaBrandFallback.opacity(0.10))
+                .offset(x: 35, y: -25)
+                .allowsHitTesting(false)
 
-            if snapshot.categoryBreakdown.isEmpty {
-                categoryEmptyView
-            } else {
-                let categories = Array(snapshot.categoryBreakdown.prefix(3))
-                let maxAmount = categories.first?.amount ?? 1
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text("Spending")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text(Currency.format(snapshot.monthTotal, code: snapshot.currencyCode))
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.primary)
+                        .monospacedDigit()
+                }
 
-                Spacer(minLength: 4)
+                if snapshot.categoryBreakdown.isEmpty {
+                    categoryEmptyView
+                } else {
+                    let categories = Array(snapshot.categoryBreakdown.prefix(3))
+                    let maxAmount = categories.first?.amount ?? 1
 
-                VStack(spacing: 0) {
-                    ForEach(Array(categories.enumerated()), id: \.element.id) { index, cat in
-                        CategoryWidgetRow(
-                            entry: cat,
-                            maxAmount: maxAmount,
-                            currencyCode: snapshot.currencyCode
-                        )
-                        .padding(.vertical, 5)
-                        if index < categories.count - 1 {
-                            Divider().opacity(0.3)
+                    Spacer(minLength: 4)
+
+                    VStack(spacing: 0) {
+                        ForEach(Array(categories.enumerated()), id: \.element.id) { index, cat in
+                            CategoryWidgetRow(
+                                entry: cat,
+                                maxAmount: maxAmount,
+                                currencyCode: snapshot.currencyCode
+                            )
+                            .padding(.vertical, 5)
+                            if index < categories.count - 1 {
+                                Divider().opacity(0.3)
+                            }
                         }
+                    }
+
+                    if snapshot.categoryBreakdown.count > 3 {
+                        Spacer(minLength: 2)
+                        Text("+\(snapshot.categoryBreakdown.count - 3) more")
+                            .font(.system(size: 9, weight: .medium))
+                            .foregroundStyle(.tertiary)
+                            .frame(maxWidth: .infinity, alignment: .trailing)
                     }
                 }
 
-                if snapshot.categoryBreakdown.count > 3 {
-                    Spacer(minLength: 2)
-                    Text("+\(snapshot.categoryBreakdown.count - 3) more")
-                        .font(.system(size: 9, weight: .medium))
-                        .foregroundStyle(.tertiary)
-                        .frame(maxWidth: .infinity, alignment: .trailing)
-                }
+                Spacer(minLength: 0)
             }
-
-            Spacer(minLength: 0)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
-        .frame(
-            maxWidth: .infinity,
-            maxHeight: .infinity,
-            alignment: .topLeading
-        )
     }
 
     private var categoryEmptyView: some View {
@@ -527,7 +552,7 @@ struct TulaMonthCompareWidget: Widget {
             provider: TulaWidgetProvider()
         ) { entry in
             MonthCompareWidgetView(snapshot: entry.snapshot)
-                .containerBackground(.fill.tertiary, for: .widget)
+                .containerBackground(Color.tulaBrandFallback.opacity(0.08).gradient, for: .widget)
         }
         .configurationDisplayName("Monthly")
         .description("This month vs last month at a glance.")
@@ -549,21 +574,20 @@ struct MonthCompareWidgetView: View {
     }
 
     private var changePercent: Double? {
-        guard snapshot.lastMonthTotal > 0 else { return nil }
-        return (snapshot.monthTotal - snapshot.lastMonthTotal) / snapshot.lastMonthTotal
+        guard snapshot.lastMonthTillDayTotal > 0 else { return nil }
+        return (snapshot.monthTotal - snapshot.lastMonthTillDayTotal) / snapshot.lastMonthTillDayTotal
     }
 
     private var isSpendingMore: Bool {
-        snapshot.monthTotal > snapshot.lastMonthTotal
+        snapshot.monthTotal > snapshot.lastMonthTillDayTotal
     }
 
     var body: some View {
         ZStack(alignment: .topLeading) {
-            // Brand watermark
             Text("तु")
-                .font(.system(size: 110, weight: .bold))
+                .font(.system(size: 150, weight: .bold))
                 .foregroundStyle(Color.tulaBrandFallback.opacity(0.10))
-                .offset(x: 30, y: -25)
+                .offset(x: 40, y: -30)
                 .frame(
                     maxWidth: .infinity,
                     maxHeight: .infinity,
@@ -609,13 +633,15 @@ struct MonthCompareWidgetView: View {
                         Text("vs")
                             .font(.system(size: 10, weight: .medium))
                             .foregroundStyle(.tertiary)
-                        Text(Currency.compact(snapshot.lastMonthTotal, code: snapshot.currencyCode))
+                        Text(Currency.compact(snapshot.lastMonthTillDayTotal, code: snapshot.currencyCode))
                             .font(.system(size: 10, weight: .semibold))
                             .foregroundStyle(.secondary)
                             .monospacedDigit()
-                        Text(lastMonthName)
+                        Text("\(lastMonthName) till day \(Calendar.current.component(.day, from: Date.now))")
                             .font(.system(size: 10, weight: .medium))
                             .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.7)
                     }
                     .padding(.top, 1)
                 } else {
@@ -648,7 +674,7 @@ struct TulaUpcomingWidget: Widget {
             provider: TulaWidgetProvider()
         ) { entry in
             UpcomingWidgetView(snapshot: entry.snapshot)
-                .containerBackground(.fill.tertiary, for: .widget)
+                .containerBackground(Color.tulaBrandFallback.opacity(0.08).gradient, for: .widget)
         }
         .configurationDisplayName("Upcoming")
         .description("Recurring expenses due soon.")
@@ -660,56 +686,60 @@ struct UpcomingWidgetView: View {
     let snapshot: WidgetSnapshot
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(alignment: .firstTextBaseline) {
-                Text("Upcoming")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                Spacer()
-                if !snapshot.upcomingRecurrings.isEmpty {
-                    Text(totalLabel)
-                        .font(.caption2.weight(.medium))
-                        .foregroundStyle(.tertiary)
-                        .monospacedDigit()
-                }
-            }
+        ZStack(alignment: .topTrailing) {
+            Text("तु")
+                .font(.system(size: 140, weight: .bold))
+                .foregroundStyle(Color.tulaBrandFallback.opacity(0.10))
+                .offset(x: 35, y: -25)
+                .allowsHitTesting(false)
 
-            if snapshot.upcomingRecurrings.isEmpty {
-                VStack(spacing: 4) {
-                    Text("Nothing upcoming")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.primary)
-                    Text("Set up rules in Tula → Recurring.")
-                        .font(.caption)
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text("Upcoming")
+                        .font(.caption.weight(.semibold))
                         .foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-            } else {
-                Spacer()
-                VStack(spacing: 0) {
-                    ForEach(
-                        Array(snapshot.upcomingRecurrings.prefix(3).enumerated()),
-                        id: \.element.id
-                    ) { index, item in
-                        UpcomingWidgetRow(
-                            item: item,
-                            currencyCode: snapshot.currencyCode
-                        )
-                        .padding(.vertical, 6)
-                        if index < min(snapshot.upcomingRecurrings.count, 3) - 1 {
-                            Divider().opacity(0.3)
-                                .padding(.leading, 28)
-                        }
+                    Spacer()
+                    if !snapshot.upcomingRecurrings.isEmpty {
+                        Text(totalLabel)
+                            .font(.caption2.weight(.medium))
+                            .foregroundStyle(.tertiary)
+                            .monospacedDigit()
                     }
                 }
-                Spacer()
+
+                if snapshot.upcomingRecurrings.isEmpty {
+                    VStack(spacing: 4) {
+                        Text("Nothing upcoming")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.primary)
+                        Text("Set up rules in Tula → Recurring.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+                } else {
+                    Spacer()
+                    VStack(spacing: 0) {
+                        ForEach(
+                            Array(snapshot.upcomingRecurrings.prefix(3).enumerated()),
+                            id: \.element.id
+                        ) { index, item in
+                            UpcomingWidgetRow(
+                                item: item,
+                                currencyCode: snapshot.currencyCode
+                            )
+                            .padding(.vertical, 6)
+                            if index < min(snapshot.upcomingRecurrings.count, 3) - 1 {
+                                Divider().opacity(0.3)
+                                    .padding(.leading, 28)
+                            }
+                        }
+                    }
+                    Spacer()
+                }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
-        .frame(
-            maxWidth: .infinity,
-            maxHeight: .infinity,
-            alignment: .topLeading
-        )
     }
 
     private var totalLabel: String {
@@ -782,7 +812,7 @@ struct TulaQuickActionsWidget: Widget {
             provider: TulaWidgetProvider()
         ) { entry in
             QuickActionsEntryView(snapshot: entry.snapshot)
-                .containerBackground(.fill.tertiary, for: .widget)
+                .containerBackground(Color.tulaBrandFallback.opacity(0.08).gradient, for: .widget)
         }
         .configurationDisplayName("Quick Add")
         .description("Quickly add, scan, or voice-log an expense.")
@@ -833,7 +863,7 @@ struct HomeQuickActionsView: View {
                 QuickActionButton(
                     icon: "mic.fill",
                     label: "Voice",
-                    color: .purple,
+                    color: .green,
                     url: URL(string: "tula://voice")!
                 )
                 Spacer()

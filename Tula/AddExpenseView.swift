@@ -209,6 +209,7 @@ struct AddExpenseView: View {
                 Text("This action can't be undone.")
             }
             .onReceive(NotificationCenter.default.publisher(for: .tulaStartReceiptScan)) { _ in
+                amountFocused = false
                 showingReceiptSource = .camera
             }
             .sheet(isPresented: $showingItemsSheet) {
@@ -699,8 +700,8 @@ struct AddExpenseView: View {
             isPresented: $showingReceiptSourcePicker,
             titleVisibility: .visible
         ) {
-            Button("Take photo") { showingReceiptSource = .camera }
-            Button("Choose from library") { showingReceiptSource = .library }
+            Button("Take photo") { amountFocused = false; showingReceiptSource = .camera }
+            Button("Choose from library") { amountFocused = false; showingReceiptSource = .library }
             Button("Cancel", role: .cancel) { }
         }
         .sheet(item: $showingReceiptSource) { source in

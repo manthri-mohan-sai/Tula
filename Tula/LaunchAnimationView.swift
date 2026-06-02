@@ -244,15 +244,15 @@ struct LaunchAnimationView: View {
         }
 
         // 2.46s — PORTAL OPENS with spring physics.
-        withAnimation(.easeIn(duration: 0.15).delay(2.46)) {
+        withAnimation(.easeIn(duration: 0.20).delay(2.46)) {
             dotOpacity = 0
         }
-        withAnimation(.spring(response: 0.50, dampingFraction: 0.85).delay(2.46)) {
+        withAnimation(.spring(response: 1.0, dampingFraction: 0.82).delay(2.46)) {
             portalRadius = 1500
         }
 
-        // 2.95s — Hand off.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.95) {
+        // 3.50s — Hand off.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.50) {
             onComplete()
         }
     }
