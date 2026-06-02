@@ -182,14 +182,21 @@ enum WidgetStorage {
     }
 
     /// Persist the snapshot for the widget. Safe to call frequently.
+    /// Calls `synchronize()` to flush the write to disk immediately —
+    /// without this, the widget extension's process may read a stale
+    /// cached copy of the App Group defaults when iOS calls `getTimeline`.
     static func write(_ snapshot: WidgetSnapshot) {
         guard let data = try? JSONEncoder().encode(snapshot) else { return }
         defaults.set(data, forKey: snapshotKey)
+        defaults.synchronize()
     }
 
     /// Read the current snapshot, or `.empty` if nothing has been written
     /// (first launch before the main app has had a chance to refresh).
+    /// Calls `synchronize()` so the widget extension process picks up
+    /// writes the main app made via a different process.
     static func read() -> WidgetSnapshot {
+        defaults.synchronize()
         guard let data = defaults.data(forKey: snapshotKey),
               let snapshot = try? JSONDecoder().decode(WidgetSnapshot.self, from: data) else {
             return .empty

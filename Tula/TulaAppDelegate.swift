@@ -1,6 +1,7 @@
 import UIKit
 import UserNotifications
 import SwiftData
+import BackgroundTasks
 
 /// AppDelegate adapter — exists for one reason: to receive
 /// `UNNotificationResponse` callbacks when the user taps Log/Skip on a
@@ -20,11 +21,20 @@ final class TulaAppDelegate: NSObject, UIApplicationDelegate, UNUserNotification
     /// TulaApp checks this to skip the launch animation.
     var launchedFromDeepLink = false
 
+    static let widgetRefreshTaskID = "com.app.Tula.widgetRefresh"
+
     func application(_ application: UIApplication,
                      didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         UNUserNotificationCenter.current().delegate = self
         NotificationManager.registerCategories()
         application.shortcutItems = nil
+
+        BGTaskScheduler.shared.register(
+            forTaskWithIdentifier: Self.widgetRefreshTaskID,
+            using: nil
+        ) { task in
+            self.handleWidgetRefresh(task as! BGAppRefreshTask)
+        }
 
         if let shortcut = launchOptions?[.shortcutItem] as? UIApplicationShortcutItem,
            let urlString = shortcut.userInfo?["url"] as? String {
@@ -35,6 +45,32 @@ final class TulaAppDelegate: NSObject, UIApplicationDelegate, UNUserNotification
         }
 
         return true
+    }
+
+    // MARK: - Background Widget Refresh
+
+    func scheduleWidgetRefresh() {
+        let request = BGAppRefreshTaskRequest(identifier: Self.widgetRefreshTaskID)
+        request.earliestBeginDate = Date(timeIntervalSinceNow: 15 * 60)
+        try? BGTaskScheduler.shared.submit(request)
+    }
+
+    private func handleWidgetRefresh(_ task: BGAppRefreshTask) {
+        scheduleWidgetRefresh()
+
+        task.expirationHandler = { task.setTaskCompleted(success: false) }
+
+        Task { @MainActor in
+            guard let container = RecurringConfirmationHandler.sharedContainer() else {
+                task.setTaskCompleted(success: false)
+                return
+            }
+            let context = ModelContext(container)
+            RecurringEngine.generateMissing(in: context)
+            try? context.save()
+            WidgetRefresh.refresh(using: context)
+            task.setTaskCompleted(success: true)
+        }
     }
 
     // MARK: - Home Screen Quick Actions
@@ -141,6 +177,10 @@ enum RecurringConfirmationHandler {
 
     /// Builds a ModelContainer pointing at the shared App Group store.
     /// Falls back to the default local store if the group isn't configured.
+    static func sharedContainer() -> ModelContainer? {
+        makeContainer()
+    }
+
     private static func makeContainer() -> ModelContainer? {
         let schema = Schema([
             Account.self, Category.self, Expense.self, Transfer.self,

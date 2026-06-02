@@ -6,6 +6,7 @@ import WidgetKit
 struct TulaApp: App {
     @UIApplicationDelegateAdaptor(TulaAppDelegate.self) var appDelegate
     @AppStorage("primaryCurrencyCode") private var primaryCurrencyCode: String = "INR"
+    @AppStorage("themePresetID") private var themePresetID: String = "saffron"
     @AppStorage("seedDataInstalled") private var seedDataInstalled: Bool = false
     @AppStorage("onboardingComplete") private var onboardingComplete: Bool = false
 
@@ -112,6 +113,7 @@ struct TulaApp: App {
             // so by the time the portal opens (~3.15s in) the home
             // is fully rendered and ready.
             ZStack {
+                let _ = themePresetID
                 RootTabView(appDelegate: appDelegate, launchAnimationDone: $launchAnimationDone)
                     .tint(Color.tulaBrandFallback)
                     .onAppear {
@@ -175,17 +177,12 @@ struct TulaApp: App {
         }
         .modelContainer(sharedContainer)
         .onChange(of: scenePhase) { _, newPhase in
-            // Refresh the widget snapshot whenever the app becomes active.
-            // The save-site calls (WidgetRefresh.refresh after each expense
-            // save) handle in-session freshness; this catches the case
-            // where the user opens the app fresh after a long absence.
             if newPhase == .active {
                 let context = ModelContext(sharedContainer)
                 WidgetRefresh.refresh(using: context)
-                // Re-schedule the daily reminder with fresh dynamic
-                // content (today's spend summary or "no spends" nudge).
                 NotificationManager.refreshDailyReminder(using: context)
-
+            } else if newPhase == .background {
+                appDelegate.scheduleWidgetRefresh()
             }
         }
     }

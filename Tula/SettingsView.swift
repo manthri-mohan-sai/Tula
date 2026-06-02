@@ -1,5 +1,7 @@
 import SwiftUI
 import SwiftData
+import WidgetKit
+import UserNotifications
 
 /// Top-level settings screen reached from the Home toolbar.
 ///
@@ -19,6 +21,7 @@ struct SettingsView: View {
     @AppStorage("reminderHour") private var reminderHour: Int = 21
     @AppStorage("reminderMinute") private var reminderMinute: Int = 0
     @AppStorage("budgetAlertsEnabled") private var budgetAlertsEnabled: Bool = false
+    @AppStorage("themePresetID") private var themePresetID: String = "saffron"
     @AppStorage("launchAnimationEnabled") private var launchAnimationEnabled: Bool = true
     @AppStorage("smartParsingEnabled") private var smartParsingEnabled: Bool = true
     @AppStorage("selectedAIProvider", store: UserDefaults(suiteName: "group.com.app.Tula"))
@@ -44,6 +47,9 @@ struct SettingsView: View {
 
     @State private var configVersion: Int = 0
 
+    @State private var showingThemePicker = false
+    @State private var themeBeforeEdit: String = ""
+    @State private var showingThemeRestartAlert = false
     @State private var showingAccounts = false
     @State private var showingCategories = false
     @State private var showingRecurring = false
@@ -67,6 +73,7 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             List {
+                // themeSection — parked for now
                 generalSection
                 alertsSection
                 dataSection
@@ -106,6 +113,76 @@ struct SettingsView: View {
     }
 
     // MARK: - Sections
+
+    private var currentThemeName: String {
+        TulaTheme.presets.first { $0.id == themePresetID }?.name ?? "Saffron"
+    }
+
+    private var themeSection: some View {
+        Section {
+            Button {
+                Haptics.tap()
+                themeBeforeEdit = themePresetID
+                showingThemePicker = true
+            } label: {
+                HStack {
+                    HStack(spacing: Spacing.md) {
+                        ZStack {
+                            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                .fill(Color.tulaBrandFallback)
+                                .frame(width: 28, height: 28)
+                            Image(systemName: "paintpalette.fill")
+                                .font(.subheadline.weight(.medium))
+                                .foregroundStyle(.white)
+                        }
+                        Text("Theme")
+                            .foregroundStyle(.primary)
+                    }
+                    Spacer()
+                    Text(currentThemeName)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    Image(systemName: "chevron.right")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            .buttonStyle(.plain)
+            .sheet(isPresented: $showingThemePicker, onDismiss: {
+                if themePresetID != themeBeforeEdit {
+                    showingThemeRestartAlert = true
+                }
+            }) {
+                ThemePickerView(selectedID: $themePresetID)
+            }
+            .alert("Restart to apply theme", isPresented: $showingThemeRestartAlert) {
+                Button("Restart Now") {
+                    scheduleReopenAndExit()
+                }
+                Button("Later", role: .cancel) { }
+            } message: {
+                Text("Tula will close and reopen with your new theme.")
+            }
+        } header: {
+            Text("Appearance")
+        }
+    }
+
+    private func scheduleReopenAndExit() {
+        let content = UNMutableNotificationContent()
+        content.title = "तुला"
+        content.body = "Tap to reopen with your new theme."
+        content.sound = nil
+
+        let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 0.5, repeats: false)
+        let request = UNNotificationRequest(identifier: "theme-restart", content: content, trigger: trigger)
+
+        UNUserNotificationCenter.current().add(request) { _ in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                exit(0)
+            }
+        }
+    }
 
     private var generalSection: some View {
         Section {
@@ -837,5 +914,80 @@ struct CurrencyPickerView: View {
                 }
             }
         }
+    }
+}
+
+// MARK: - Theme Picker
+
+struct ThemePickerView: View {
+    @Environment(\.dismiss) private var dismiss
+    @Binding var selectedID: String
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 16), count: 4), spacing: 20) {
+                        ForEach(TulaTheme.presets) { preset in
+                            Button {
+                                Haptics.selection()
+                                withAnimation(.snappy(duration: 0.25)) {
+                                    selectedID = preset.id
+                                    TulaTheme.select(preset)
+                                }
+                                WidgetCenter.shared.reloadAllTimelines()
+                            } label: {
+                                VStack(spacing: 8) {
+                                    Circle()
+                                        .fill(preset.color)
+                                        .frame(width: 48, height: 48)
+                                        .overlay {
+                                            if preset.id == selectedID {
+                                                Image(systemName: "checkmark")
+                                                    .font(.system(size: 16, weight: .bold))
+                                                    .foregroundStyle(.white)
+                                            }
+                                        }
+                                        .shadow(color: preset.color.opacity(preset.id == selectedID ? 0.5 : 0), radius: 6, y: 2)
+                                    Text(preset.name)
+                                        .font(.caption.weight(.medium))
+                                        .foregroundStyle(preset.id == selectedID ? .primary : .secondary)
+                                }
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.vertical, 8)
+                } footer: {
+                    Text("Applies across the entire app and all widgets.")
+                }
+
+                Section {
+                    HStack {
+                        Text("Preview")
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(TulaTheme.presets.first { $0.id == selectedID }?.color ?? Color.tulaBrandFallback)
+                            .frame(width: 80, height: 32)
+                            .overlay {
+                                Text("तुला")
+                                    .font(.system(size: 14, weight: .semibold))
+                                    .foregroundStyle(.white)
+                            }
+                    }
+                }
+            }
+            .navigationTitle("Theme")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                        .fontWeight(.semibold)
+                }
+            }
+        }
+        .presentationDetents([.medium])
     }
 }

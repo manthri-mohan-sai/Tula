@@ -22,6 +22,7 @@ struct HomeView: View {
     @Query private var allMerchantRules: [MerchantRule]
     @Query private var allRecurringRules: [RecurringRule]
     @PrimaryCurrency private var currencyCode
+    @AppStorage("themePresetID") private var themePresetID: String = "saffron"
 
     let onShowStats: () -> Void
 

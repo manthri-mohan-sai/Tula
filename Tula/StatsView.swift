@@ -27,6 +27,7 @@ struct StatsView: View {
     @Query(sort: \Expense.date, order: .reverse) private var allExpenses: [Expense]
     @Query(sort: \Account.sortOrder) private var allAccounts: [Account]
     @PrimaryCurrency private var currencyCode
+    @AppStorage("themePresetID") private var themePresetID: String = "saffron"
 
     @State private var period: StatsPeriod = .month
 

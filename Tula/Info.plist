@@ -59,5 +59,13 @@
 	</array>
 	<key>NSExtensionPointIdentifier</key>
 	<string>com.apple.widgetkit-extension</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>fetch</string>
+	</array>
+	<key>BGTaskSchedulerPermittedIdentifiers</key>
+	<array>
+		<string>com.app.Tula.widgetRefresh</string>
+	</array>
 </dict>
 </plist>
