@@ -24,21 +24,19 @@ import SwiftUI
 /// not behind it, not below it, but *through* it. The brand idea
 /// (balance) literally contains the product (the app).
 ///
-/// **Timeline (~4.0s):**
-///   • 0.00 – 0.30s — single dot fades in at center
-///   • 0.40 – 0.85s — dot splits, drifts apart; beam draws between
-///   • 0.95 – 1.85s — three damped oscillations finding balance
-///   • 1.85s        — settled; quiet haptic
-///   • 1.95 – 2.30s — तुला wordmark fades in below
-///   • 2.30 – 2.85s — dwell — the settled moment is held
-///   • 2.85 – 3.15s — convergence: dots return to center, beam
-///                    collapses to zero, wordmark fades
-///   • 3.15s        — single dot at center; portal begins to open
-///   • 3.15 – 3.95s — portal grows: home view revealed inside the
-///                    circle as it expands beyond screen edges
-///   • 3.95s        — portal exits screen, home view fully exposed,
-///                    onComplete fires; launch overlay is removed
-///                    (invisible at that point, no visible change)
+/// **Timeline (~2.95s):**
+///   • 0.00 – 0.18s — single dot fades in at center
+///   • 0.22 – 0.62s — dot splits, drifts apart; beam draws between
+///   • 0.68 – 1.46s — three damped oscillations finding balance
+///   • 1.46s        — settled; quiet haptic
+///   • 1.46 – 1.68s — तुला wordmark fades in below
+///   • 1.68 – 1.92s — dwell
+///   • 1.92 – 2.14s — convergence: dots return to center
+///   • 2.14 – 2.26s — dot compresses (elastic tension)
+///   • 2.26 – 2.46s — spring release with velocity
+///   • 2.46s        — portal opens with spring physics, dot fades
+///   • 2.46 – 2.90s — portal grows: home view revealed
+///   • 2.95s        — onComplete fires; overlay removed
 ///
 /// **Tap anywhere** to skip to home immediately.
 struct LaunchAnimationView: View {
@@ -70,6 +68,11 @@ struct LaunchAnimationView: View {
     /// behind it. Starts at 0 (no portal) and grows to ~1500 (much
     /// larger than any iPhone screen, ensuring full coverage).
     @State private var portalRadius: CGFloat = 0
+
+    /// Scale of the dot group. Stays 1.0 through the balance
+    /// animation, compresses after convergence to build spring
+    /// tension, then bounces back before the portal opens.
+    @State private var dotScale: CGFloat = 1.0
 
     @State private var hasStarted = false
 
@@ -133,6 +136,7 @@ struct LaunchAnimationView: View {
                         .offset(x: rightDotX, y: rightDotY)
                         .opacity(dotOpacity)
                 }
+                .scaleEffect(dotScale)
                 .position(x: geo.size.width / 2, y: geo.size.height * 0.46)
 
                 // ─── Layer 3: तुला wordmark + tagline at ~85% ────────
@@ -173,82 +177,82 @@ struct LaunchAnimationView: View {
     }
 
     private func runTimeline() {
-        // 0.00 – 0.30s — single dot fades in
-        withAnimation(.easeOut(duration: 0.30)) {
+        // 0.00 – 0.18s — single dot fades in
+        withAnimation(.easeOut(duration: 0.18)) {
             dotOpacity = 1.0
         }
 
-        // 0.40 – 0.85s — split + beam draw
-        withAnimation(.timingCurve(0.34, 0.0, 0.18, 1.0, duration: 0.50).delay(0.40)) {
+        // 0.22 – 0.62s — split + beam draw
+        // Smooth deceleration curve; beam shares it exactly.
+        let splitCurve = Animation.timingCurve(0.25, 0.1, 0.25, 1.0, duration: 0.40).delay(0.22)
+        withAnimation(splitCurve) {
             leftDotX = -80
             rightDotX = 80
-        }
-        withAnimation(.easeOut(duration: 0.45).delay(0.45)) {
             beamWidth = 160
             beamOpacity = 1.0
         }
 
-        // 0.95 – 1.85s — three damped oscillations
+        // 0.68 – 1.42s — three damped oscillations
+        // Softer easing (easeInOut feel) so tilt flows naturally.
         let swings: [(delay: Double, leftY: CGFloat, rightY: CGFloat, dur: Double)] = [
-            (0.95, -24,  24, 0.32),
-            (1.27,  14, -14, 0.30),
-            (1.55,  -6,   6, 0.26),
-            (1.79,   0,   0, 0.18),
+            (0.68, -22,  22, 0.28),
+            (0.96,  12, -12, 0.24),
+            (1.20,  -5,   5, 0.16),
+            (1.36,   0,   0, 0.10),
         ]
         for swing in swings {
-            withAnimation(.timingCurve(0.45, 0.0, 0.55, 1.0, duration: swing.dur).delay(swing.delay)) {
+            withAnimation(.timingCurve(0.42, 0.0, 0.58, 1.0, duration: swing.dur).delay(swing.delay)) {
                 leftDotY = swing.leftY
                 rightDotY = swing.rightY
             }
         }
 
-        // 1.95s — haptic at equilibrium
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.95) {
+        // 1.46s — haptic at equilibrium
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.46) {
             Haptics.tap()
         }
 
-        // 1.95 – 2.30s — तुला wordmark appears
-        withAnimation(.easeOut(duration: 0.35).delay(1.95)) {
+        // 1.46 – 1.68s — तुला wordmark appears
+        withAnimation(.easeOut(duration: 0.22).delay(1.46)) {
             wordmarkOpacity = 1.0
             wordmarkOffset = 0
         }
 
-        // 2.85 – 3.15s — CONVERGENCE. The two dots return to center
-        // and overlap, forming a single circle. Beam collapses to 0
-        // (so it's invisible — no horizontal line is left dangling
-        // out from the merged dot). Wordmark fades. By 3.15s the
-        // screen is: amber + single white dot at center.
-        withAnimation(.easeInOut(duration: 0.30).delay(2.85)) {
+        // 1.92 – 2.14s — CONVERGENCE.
+        // Same smooth curve as split, reversed.
+        withAnimation(.timingCurve(0.25, 0.0, 0.25, 1.0, duration: 0.22).delay(1.92)) {
             leftDotX = 0
             rightDotX = 0
             beamWidth = 0
+            beamOpacity = 0
             wordmarkOpacity = 0
         }
 
-        // 3.15s — PORTAL OPENS. The portal circle starts growing
-        // from the exact position (and initial radius matching) the
-        // merged dot. We fade the dot opacity in parallel: by the
-        // time the portal is ~30pt radius (slightly larger than the
-        // 11pt dot radius), the dot has fully faded — so what the
-        // user perceives is the single dot transforming directly
-        // into a growing window onto the app.
-        withAnimation(.easeIn(duration: 0.18).delay(3.15)) {
-            dotOpacity = 0
+        // 2.14 – 2.26s — COMPRESS.
+        withAnimation(.easeIn(duration: 0.12).delay(2.14)) {
+            dotScale = 0.4
         }
 
-        // 3.15 – 3.95s — Portal grows. easeInOut(0.80) — gentle start
-        // (so the eye registers the moment of "opening"), accelerating
-        // through the middle (you feel pulled in), settling at the
-        // edges (no jolt when it exits screen). 1500 covers every
-        // iPhone screen with margin.
-        withAnimation(.easeInOut(duration: 0.80).delay(3.15)) {
+        // 2.26s — SPRING RELEASE.
+        withAnimation(.interpolatingSpring(mass: 1, stiffness: 200, damping: 10, initialVelocity: 10).delay(2.26)) {
+            dotScale = 1.5
+        }
+
+        // Haptic at peak of first overshoot.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.38) {
+            Haptics.impact()
+        }
+
+        // 2.46s — PORTAL OPENS with spring physics.
+        withAnimation(.easeIn(duration: 0.15).delay(2.46)) {
+            dotOpacity = 0
+        }
+        withAnimation(.spring(response: 0.50, dampingFraction: 0.85).delay(2.46)) {
             portalRadius = 1500
         }
 
-        // 3.95s — Hand off. The portal has exited the screen; what
-        // the user sees IS the home view. Removing the overlay from
-        // the hierarchy at this point is visually a no-op.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3.95) {
+        // 2.95s — Hand off.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.95) {
             onComplete()
         }
     }
@@ -265,6 +269,7 @@ struct LaunchAnimationView: View {
             leftDotY = 0
             rightDotY = 0
             beamWidth = 0
+            dotScale = 1.0
         }
         withAnimation(.easeInOut(duration: 0.45)) {
             portalRadius = 1500

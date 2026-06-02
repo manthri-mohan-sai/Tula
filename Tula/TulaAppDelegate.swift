@@ -12,11 +12,46 @@ import SwiftData
 /// action buttons), and routes tap responses to `handleResponse`.
 final class TulaAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
 
+    /// Pending shortcut URL from a Home Screen Quick Action. TulaApp
+    /// reads and clears this when the scene becomes `.active`.
+    var pendingShortcutURL: URL?
+
+    /// True when the app was cold-launched via a widget deep link.
+    /// TulaApp checks this to skip the launch animation.
+    var launchedFromDeepLink = false
+
     func application(_ application: UIApplication,
                      didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         UNUserNotificationCenter.current().delegate = self
         NotificationManager.registerCategories()
+        application.shortcutItems = nil
+
+        if let shortcut = launchOptions?[.shortcutItem] as? UIApplicationShortcutItem,
+           let urlString = shortcut.userInfo?["url"] as? String {
+            pendingShortcutURL = URL(string: urlString)
+        }
+        if let url = launchOptions?[.url] as? URL, url.scheme == "tula" {
+            launchedFromDeepLink = true
+        }
+
         return true
+    }
+
+    // MARK: - Home Screen Quick Actions
+
+    func application(_ application: UIApplication,
+                     configurationForConnecting connectingSceneSession: UISceneSession,
+                     options: UIScene.ConnectionOptions) -> UISceneConfiguration {
+        if let shortcut = options.shortcutItem,
+           let urlString = shortcut.userInfo?["url"] as? String {
+            pendingShortcutURL = URL(string: urlString)
+        }
+        if !options.urlContexts.isEmpty {
+            launchedFromDeepLink = true
+        }
+        let config = UISceneConfiguration(name: nil, sessionRole: connectingSceneSession.role)
+        config.delegateClass = TulaSceneDelegate.self
+        return config
     }
 
     // MARK: - Foreground presentation
@@ -68,6 +103,31 @@ final class TulaAppDelegate: NSObject, UIApplicationDelegate, UNUserNotification
         // opens the app — each action response is a free wake that lets
         // us replenish the queue.
         await RecurringConfirmationHandler.rescheduleAll()
+    }
+}
+
+// MARK: - Scene Delegate (Quick Actions)
+
+final class TulaSceneDelegate: NSObject, UIWindowSceneDelegate {
+    func scene(_ scene: UIScene, willConnectTo session: UISceneSession,
+               options connectionOptions: UIScene.ConnectionOptions) {
+        if let shortcut = connectionOptions.shortcutItem,
+           let urlString = shortcut.userInfo?["url"] as? String,
+           let appDelegate = UIApplication.shared.delegate as? TulaAppDelegate {
+            appDelegate.pendingShortcutURL = URL(string: urlString)
+        }
+    }
+
+    func windowScene(_ windowScene: UIWindowScene,
+                     performActionFor shortcutItem: UIApplicationShortcutItem,
+                     completionHandler: @escaping (Bool) -> Void) {
+        guard let urlString = shortcutItem.userInfo?["url"] as? String,
+              let url = URL(string: urlString) else {
+            completionHandler(false)
+            return
+        }
+        NotificationCenter.default.post(name: .tulaQuickAction, object: url)
+        completionHandler(true)
     }
 }
 
@@ -135,5 +195,7 @@ enum RecurringConfirmationHandler {
         guard let container = makeContainer() else { return }
         let context = ModelContext(container)
         RecurringEngine.generateMissing(in: context)
+        try? context.save()
+        WidgetRefresh.refresh(using: context)
     }
 }

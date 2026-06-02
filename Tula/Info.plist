@@ -15,6 +15,48 @@
 			</array>
 		</dict>
 	</array>
+	<key>UIApplicationShortcutItems</key>
+	<array>
+		<dict>
+			<key>UIApplicationShortcutItemType</key>
+			<string>com.app.Tula.add</string>
+			<key>UIApplicationShortcutItemTitle</key>
+			<string>Add Expense</string>
+			<key>UIApplicationShortcutItemIconSymbolName</key>
+			<string>plus.circle.fill</string>
+			<key>UIApplicationShortcutItemUserInfo</key>
+			<dict>
+				<key>url</key>
+				<string>tula://add</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>UIApplicationShortcutItemType</key>
+			<string>com.app.Tula.scan</string>
+			<key>UIApplicationShortcutItemTitle</key>
+			<string>Scan Receipt</string>
+			<key>UIApplicationShortcutItemIconSymbolName</key>
+			<string>doc.text.viewfinder</string>
+			<key>UIApplicationShortcutItemUserInfo</key>
+			<dict>
+				<key>url</key>
+				<string>tula://scan</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>UIApplicationShortcutItemType</key>
+			<string>com.app.Tula.voice</string>
+			<key>UIApplicationShortcutItemTitle</key>
+			<string>Voice Log</string>
+			<key>UIApplicationShortcutItemIconSymbolName</key>
+			<string>mic.fill</string>
+			<key>UIApplicationShortcutItemUserInfo</key>
+			<dict>
+				<key>url</key>
+				<string>tula://voice</string>
+			</dict>
+		</dict>
+	</array>
 	<key>NSExtensionPointIdentifier</key>
 	<string>com.apple.widgetkit-extension</string>
 </dict>

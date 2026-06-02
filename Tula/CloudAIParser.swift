@@ -173,11 +173,30 @@ enum CloudAIParser {
               merchant "Irani Cafe", item "Tea", category "Food"
             - "four eighty ola to airport" → amount 480, merchant "Ola", \
               item null, category "Transport"
-            - "150 chai from cash" → amount 150, merchant "Chai", \
-              item null, category "Food", account "Cash"
-            - "350 biryani at paradise" → merchant "Paradise", item "Biryani"
-            - "200 paneer butter masala from haldiram" → merchant "Haldiram", \
-              item "Paneer Butter Masala"
+            - "150 chai from cash" → amount 150, merchant null, \
+              item "Chai", category "Food", account "Cash"
+            - "350 biryani at paradise" → amount 350, merchant "Paradise", \
+              item "Biryani", category "Food"
+            - "200 paneer butter masala from haldiram" → amount 200, \
+              merchant "Haldiram", item "Paneer Butter Masala", category "Food"
+            - "swiggy 450" → amount 450, merchant "Swiggy", item null, category "Food"
+            - "petrol 500" → amount 500, merchant null, item "Petrol", category "Transport"
+            - "two thousand rent" → amount 2000, merchant null, item "Rent", category "Bills"
+            - "grocery 800 dmart" → amount 800, merchant "DMart", \
+              item "Grocery", category "Groceries"
+            - "recharge 299 airtel" → amount 299, merchant "Airtel", \
+              item "Recharge", category "Bills"
+            - "milk bread eggs 350" → amount 350, merchant null, \
+              item "Milk, Bread, Eggs", category "Groceries"
+            - "medicines 120 apollo pharmacy" → amount 120, \
+              merchant "Apollo Pharmacy", item "Medicines", category "Health"
+
+            **CRITICAL:** When no preposition (at/from) is present and the \
+            input is just "MERCHANT AMOUNT" or "AMOUNT MERCHANT" (e.g. \
+            "swiggy 450", "450 zomato"), set the known app/brand as \
+            merchant and item as null. For generic items without a place \
+            (e.g. "petrol 500", "grocery 800"), set merchant null and \
+            the item to what was bought.
 
             RESPOND WITH ONLY THE JSON OBJECT. NOTHING ELSE.
             """
@@ -212,11 +231,14 @@ enum CloudAIParser {
             `item` — including meal types like dinner/lunch/breakfast/snacks/tea.
 
             Examples:
-            - "spent 250 on biryani" → amount 250, merchant "Biryani", item null, category "Food"
+            - "spent 250 on biryani" → amount 250, merchant null, item "Biryani", category "Food"
             - "ola to airport 480" → amount 480, merchant "Ola", item null, category "Transport"
             - "150 for chai at chai point" → amount 150, merchant "Chai Point", item "Chai", category "Food"
             - "560 for dinner at ramachandra restaurant" → amount 560, merchant "Ramachandra Restaurant", item "Dinner", category "Food"
-            - "subzi ke liye 200 diye" → amount 200, merchant "Subzi", item null, category "Groceries"
+            - "subzi ke liye 200 diye" → amount 200, merchant null, item "Subzi", category "Groceries"
+            - "swiggy 450" → amount 450, merchant "Swiggy", item null, category "Food"
+            - "petrol 500" → amount 500, merchant null, item "Petrol", category "Transport"
+            - "grocery 800 dmart" → amount 800, merchant "DMart", item "Grocery", category "Groceries"
 
             RESPOND WITH ONLY THE JSON OBJECT. NOTHING ELSE.
             """
