@@ -52,6 +52,14 @@ struct WidgetSnapshot: Codable, Equatable {
     /// to show change vs current month.
     var lastMonthTotal: Double
 
+    /// Last month's spend on the same calendar day as today. Used by
+    /// the Today widget to show day-over-day comparison.
+    var lastMonthSameDayTotal: Double
+
+    /// Last month's spend from day 1 through today's day number. Used
+    /// by the Monthly Comparison widget for a fair month-to-date comparison.
+    var lastMonthTillDayTotal: Double
+
     /// When this snapshot was generated.
     var generatedAt: Date
 
@@ -99,7 +107,8 @@ struct WidgetSnapshot: Codable, Equatable {
     init(currencyCode: String, todayTotal: Double, monthTotal: Double,
          monthlyBudgetCap: Double, topBudgets: [Entry], dailyTotals: [Double],
          upcomingRecurrings: [UpcomingRecurring], categoryBreakdown: [CategorySpend],
-         lastMonthTotal: Double, generatedAt: Date) {
+         lastMonthTotal: Double, lastMonthSameDayTotal: Double = 0,
+         lastMonthTillDayTotal: Double = 0, generatedAt: Date) {
         self.currencyCode = currencyCode
         self.todayTotal = todayTotal
         self.monthTotal = monthTotal
@@ -109,6 +118,8 @@ struct WidgetSnapshot: Codable, Equatable {
         self.upcomingRecurrings = upcomingRecurrings
         self.categoryBreakdown = categoryBreakdown
         self.lastMonthTotal = lastMonthTotal
+        self.lastMonthSameDayTotal = lastMonthSameDayTotal
+        self.lastMonthTillDayTotal = lastMonthTillDayTotal
         self.generatedAt = generatedAt
     }
 
@@ -123,6 +134,8 @@ struct WidgetSnapshot: Codable, Equatable {
         upcomingRecurrings = try c.decode([UpcomingRecurring].self, forKey: .upcomingRecurrings)
         categoryBreakdown = (try? c.decode([CategorySpend].self, forKey: .categoryBreakdown)) ?? []
         lastMonthTotal = (try? c.decode(Double.self, forKey: .lastMonthTotal)) ?? 0
+        lastMonthSameDayTotal = (try? c.decode(Double.self, forKey: .lastMonthSameDayTotal)) ?? 0
+        lastMonthTillDayTotal = (try? c.decode(Double.self, forKey: .lastMonthTillDayTotal)) ?? 0
         generatedAt = try c.decode(Date.self, forKey: .generatedAt)
     }
 
@@ -136,6 +149,8 @@ struct WidgetSnapshot: Codable, Equatable {
         upcomingRecurrings: [],
         categoryBreakdown: [],
         lastMonthTotal: 0,
+        lastMonthSameDayTotal: 0,
+        lastMonthTillDayTotal: 0,
         generatedAt: .distantPast
     )
 }

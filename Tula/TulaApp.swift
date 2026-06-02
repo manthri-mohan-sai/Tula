@@ -296,14 +296,33 @@ enum WidgetRefresh {
                 .map { $0 }
         }()
 
-        // Last month's total for comparison widget.
-        let lastMonthTotal: Double = {
-            guard let prevMonthStart = calendar.date(byAdding: .month, value: -1, to: monthStart) else { return 0 }
-            let lastMonthFetch = FetchDescriptor<Expense>(
+        // Last month's data for comparison widgets.
+        let prevMonthStart = calendar.date(byAdding: .month, value: -1, to: monthStart)
+        let lastMonthExpenses: [Expense] = {
+            guard let prevMonthStart else { return [] }
+            let fetch = FetchDescriptor<Expense>(
                 predicate: #Predicate { $0.date >= prevMonthStart && $0.date < monthStart }
             )
-            let lastMonthExpenses = (try? context.fetch(lastMonthFetch)) ?? []
-            return lastMonthExpenses.reduce(0) { $0 + $1.amount }
+            return (try? context.fetch(fetch)) ?? []
+        }()
+        let lastMonthTotal = lastMonthExpenses.reduce(0) { $0 + $1.amount }
+
+        // Same calendar day last month (e.g. Jun 2 → May 2).
+        let lastMonthSameDayTotal: Double = {
+            guard let sameDay = calendar.date(byAdding: .month, value: -1, to: dayStart),
+                  let sameDayEnd = calendar.date(byAdding: .day, value: 1, to: sameDay) else { return 0 }
+            return lastMonthExpenses
+                .filter { $0.date >= sameDay && $0.date < sameDayEnd }
+                .reduce(0) { $0 + $1.amount }
+        }()
+
+        // Last month from day 1 through today's day number (month-to-date).
+        let lastMonthTillDayTotal: Double = {
+            guard let prevMonthStart,
+                  let cutoff = calendar.date(byAdding: .day, value: calendar.component(.day, from: now), to: prevMonthStart) else { return 0 }
+            return lastMonthExpenses
+                .filter { $0.date >= prevMonthStart && $0.date < cutoff }
+                .reduce(0) { $0 + $1.amount }
         }()
 
         let primaryCurrencyCode = UserDefaults.standard
@@ -319,6 +338,8 @@ enum WidgetRefresh {
             upcomingRecurrings: upcomingRecurrings,
             categoryBreakdown: categoryBreakdown,
             lastMonthTotal: lastMonthTotal,
+            lastMonthSameDayTotal: lastMonthSameDayTotal,
+            lastMonthTillDayTotal: lastMonthTillDayTotal,
             generatedAt: now
         )
 
