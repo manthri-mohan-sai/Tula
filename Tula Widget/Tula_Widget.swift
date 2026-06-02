@@ -117,6 +117,7 @@ struct TulaTodayWidget: Widget {
             TodayWidgetEntryView(snapshot: entry.snapshot)
                 .containerBackground(Color.tulaBrandFallback.opacity(0.08).gradient, for: .widget)
         }
+        .contentMarginsDisabled()
         .configurationDisplayName("Today")
         .description("Today's spend with trend and month budget pace.")
         .supportedFamilies([
@@ -194,7 +195,6 @@ struct HomeTodayView: View {
                 Text("Today")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
-                    .padding(.top, 8)
 
                 Text(
                     Currency
@@ -255,12 +255,13 @@ struct HomeTodayView: View {
                     }
                 }
             }
+            .padding(16)
+            .frame(
+                maxWidth: .infinity,
+                maxHeight: .infinity,
+                alignment: .topLeading
+            )
         }
-        .frame(
-            maxWidth: .infinity,
-            maxHeight: .infinity,
-            alignment: .topLeading
-        )
     }
 }
 
@@ -406,6 +407,7 @@ struct TulaCategoryWidget: Widget {
             CategoryWidgetView(snapshot: entry.snapshot)
                 .containerBackground(Color.tulaBrandFallback.opacity(0.08).gradient, for: .widget)
         }
+        .contentMarginsDisabled()
         .configurationDisplayName("Spending")
         .description("This month's spending by category.")
         .supportedFamilies([.systemMedium])
@@ -472,6 +474,7 @@ struct CategoryWidgetView: View {
 
                 Spacer(minLength: 0)
             }
+            .padding(16)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
     }
@@ -554,6 +557,7 @@ struct TulaMonthCompareWidget: Widget {
             MonthCompareWidgetView(snapshot: entry.snapshot)
                 .containerBackground(Color.tulaBrandFallback.opacity(0.08).gradient, for: .widget)
         }
+        .contentMarginsDisabled()
         .configurationDisplayName("Monthly")
         .description("This month vs last month at a glance.")
         .supportedFamilies([.systemSmall])
@@ -599,7 +603,6 @@ struct MonthCompareWidgetView: View {
                 Text(monthName)
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
-                    .padding(.top, 6)
 
                 Spacer(minLength: 4)
 
@@ -652,12 +655,13 @@ struct MonthCompareWidgetView: View {
 
                 Spacer(minLength: 0)
             }
+            .padding(16)
+            .frame(
+                maxWidth: .infinity,
+                maxHeight: .infinity,
+                alignment: .topLeading
+            )
         }
-        .frame(
-            maxWidth: .infinity,
-            maxHeight: .infinity,
-            alignment: .topLeading
-        )
     }
 }
 
@@ -676,6 +680,7 @@ struct TulaUpcomingWidget: Widget {
             UpcomingWidgetView(snapshot: entry.snapshot)
                 .containerBackground(Color.tulaBrandFallback.opacity(0.08).gradient, for: .widget)
         }
+        .contentMarginsDisabled()
         .configurationDisplayName("Upcoming")
         .description("Recurring expenses due soon.")
         .supportedFamilies([.systemMedium])
@@ -738,6 +743,7 @@ struct UpcomingWidgetView: View {
                     Spacer()
                 }
             }
+            .padding(16)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
     }
@@ -814,6 +820,7 @@ struct TulaQuickActionsWidget: Widget {
             QuickActionsEntryView(snapshot: entry.snapshot)
                 .containerBackground(Color.tulaBrandFallback.opacity(0.08).gradient, for: .widget)
         }
+        .contentMarginsDisabled()
         .configurationDisplayName("Quick Add")
         .description("Quickly add, scan, or voice-log an expense.")
         .supportedFamilies([
@@ -877,6 +884,7 @@ struct HomeQuickActionsView: View {
 
             Spacer()
         }
+        .padding(16)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
