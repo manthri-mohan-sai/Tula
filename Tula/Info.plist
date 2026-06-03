@@ -8,7 +8,7 @@
 			<key>CFBundleTypeRole</key>
 			<string>Editor</string>
 			<key>CFBundleURLName</key>
-			<string>com.app.Tula.url</string>
+			<string>com.app.alpha.Tula.url</string>
 			<key>CFBundleURLSchemes</key>
 			<array>
 				<string>tula</string>
@@ -19,7 +19,7 @@
 	<array>
 		<dict>
 			<key>UIApplicationShortcutItemType</key>
-			<string>com.app.Tula.add</string>
+			<string>com.app.alpha.Tula.add</string>
 			<key>UIApplicationShortcutItemTitle</key>
 			<string>Add Expense</string>
 			<key>UIApplicationShortcutItemIconSymbolName</key>
@@ -32,7 +32,7 @@
 		</dict>
 		<dict>
 			<key>UIApplicationShortcutItemType</key>
-			<string>com.app.Tula.scan</string>
+			<string>com.app.alpha.Tula.scan</string>
 			<key>UIApplicationShortcutItemTitle</key>
 			<string>Scan Receipt</string>
 			<key>UIApplicationShortcutItemIconSymbolName</key>
@@ -45,7 +45,7 @@
 		</dict>
 		<dict>
 			<key>UIApplicationShortcutItemType</key>
-			<string>com.app.Tula.voice</string>
+			<string>com.app.alpha.Tula.voice</string>
 			<key>UIApplicationShortcutItemTitle</key>
 			<string>Voice Log</string>
 			<key>UIApplicationShortcutItemIconSymbolName</key>
@@ -65,7 +65,7 @@
 	</array>
 	<key>BGTaskSchedulerPermittedIdentifiers</key>
 	<array>
-		<string>com.app.Tula.widgetRefresh</string>
+		<string>com.app.alpha.Tula.widgetRefresh</string>
 	</array>
 </dict>
 </plist>

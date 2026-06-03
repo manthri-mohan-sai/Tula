@@ -12,7 +12,7 @@ import WidgetKit
 struct Tula_WidgetControl: ControlWidget {
     var body: some ControlWidgetConfiguration {
         StaticControlConfiguration(
-            kind: "com.app.Tula.Tula Widget",
+            kind: "com.app.alpha.Tula.Tula-Widget",
             provider: Provider()
         ) { value in
             ControlWidgetToggle(

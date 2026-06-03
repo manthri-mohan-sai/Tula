@@ -21,7 +21,7 @@ final class TulaAppDelegate: NSObject, UIApplicationDelegate, UNUserNotification
     /// TulaApp checks this to skip the launch animation.
     var launchedFromDeepLink = false
 
-    static let widgetRefreshTaskID = "com.app.Tula.widgetRefresh"
+    static let widgetRefreshTaskID = "com.app.alpha.Tula.widgetRefresh"
 
     func application(_ application: UIApplication,
                      didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {

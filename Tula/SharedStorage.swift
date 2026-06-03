@@ -118,7 +118,7 @@ enum SharedStorage {
 enum SharedNotifications {
     /// Posted by the share extension after a successful expense save.
     /// The main app listens for this name and refreshes its queries.
-    static let didSaveExpense = "com.app.Tula.didSaveExpense"
+    static let didSaveExpense = "com.app.alpha.Tula.didSaveExpense"
 }
 
 /// Post a Darwin notification by name. Wrapped here so callers don't

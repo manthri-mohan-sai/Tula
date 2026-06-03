@@ -6,7 +6,7 @@ import SwiftUI
 // Widget Extension target. Required setup:
 //   1. Add these files to Widget target membership:
 //        - WidgetSnapshot.swift, Currency.swift, SharedAppearance.swift
-//   2. Both targets need App Group `group.com.app.Tula`
+//   2. Both targets need App Group `group.com.app.alpha.Tula`
 //
 // Widget gallery:
 //   Home screen

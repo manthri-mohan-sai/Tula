@@ -16,7 +16,7 @@ import UIKit
 import CoreImage
 import os.log
 
-private let aiLog = Logger(subsystem: "com.app.Tula", category: "CloudAI")
+private let aiLog = Logger(subsystem: "com.app.alpha.Tula", category: "CloudAI")
 
 enum CloudAIParser {
 
