@@ -126,12 +126,70 @@ enum BackupError: LocalizedError {
 
 enum BackupManager {
 
-    // MARK: - Export
+    // MARK: - Auto Backup
 
-    /// Export the entire database into an encrypted `.tulabackup` file.
-    /// Returns the encrypted Data ready to be written to disk / shared.
+    private static let autoBackupDir = "AutoBackups"
+    private static let maxAutoBackups = 7
+    private static let lastAutoBackupKey = "lastAutoBackupDate"
+
     @MainActor
-    static func exportBackup(from context: ModelContext, passphrase: String) throws -> Data {
+    static func autoBackupIfNeeded(context: ModelContext) {
+        let lastBackup = UserDefaults.standard.object(forKey: lastAutoBackupKey) as? Date ?? .distantPast
+        guard !Calendar.current.isDateInToday(lastBackup) else { return }
+
+        do {
+            let dir = try autoBackupDirectory()
+            let bundle = try buildBundle(from: context)
+            let encoder = JSONEncoder()
+            encoder.dateEncodingStrategy = .iso8601
+            let data = try encoder.encode(bundle)
+
+            let formatter = DateFormatter()
+            formatter.dateFormat = "yyyy-MM-dd"
+            let filename = "tula-auto-\(formatter.string(from: .now)).json"
+            let fileURL = dir.appendingPathComponent(filename)
+            try data.write(to: fileURL, options: .atomic)
+
+            UserDefaults.standard.set(Date.now, forKey: lastAutoBackupKey)
+            pruneOldBackups(in: dir)
+        } catch {
+            // Silent failure — auto-backup is best-effort
+        }
+    }
+
+    static var lastAutoBackupDate: Date? {
+        UserDefaults.standard.object(forKey: lastAutoBackupKey) as? Date
+    }
+
+    private static func autoBackupDirectory() throws -> URL {
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let dir = docs.appendingPathComponent(autoBackupDir)
+        if !FileManager.default.fileExists(atPath: dir.path) {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        }
+        return dir
+    }
+
+    private static func pruneOldBackups(in dir: URL) {
+        guard let files = try? FileManager.default.contentsOfDirectory(
+            at: dir, includingPropertiesForKeys: [.creationDateKey], options: .skipsHiddenFiles
+        ) else { return }
+
+        let sorted = files
+            .filter { $0.pathExtension == "json" }
+            .sorted { a, b in
+                let da = (try? a.resourceValues(forKeys: [.creationDateKey]))?.creationDate ?? .distantPast
+                let db = (try? b.resourceValues(forKeys: [.creationDateKey]))?.creationDate ?? .distantPast
+                return da > db
+            }
+
+        for file in sorted.dropFirst(maxAutoBackups) {
+            try? FileManager.default.removeItem(at: file)
+        }
+    }
+
+    @MainActor
+    private static func buildBundle(from context: ModelContext) throws -> BackupBundle {
         let accounts = (try? context.fetch(FetchDescriptor<Account>())) ?? []
         let categories = (try? context.fetch(FetchDescriptor<Category>())) ?? []
         let expenses = (try? context.fetch(FetchDescriptor<Expense>())) ?? []
@@ -143,7 +201,7 @@ enum BackupManager {
             throw BackupError.noData
         }
 
-        let bundle = BackupBundle(
+        return BackupBundle(
             accounts: accounts.map(AccountDTO.from),
             categories: categories.map(CategoryDTO.from),
             expenses: expenses.map(ExpenseDTO.from),
@@ -151,11 +209,16 @@ enum BackupManager {
             recurringRules: recurringRules.map(RecurringRuleDTO.from),
             merchantRules: merchantRules.map(MerchantRuleDTO.from)
         )
+    }
 
+    // MARK: - Export
+
+    @MainActor
+    static func exportBackup(from context: ModelContext, passphrase: String) throws -> Data {
+        let bundle = try buildBundle(from: context)
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         let jsonData = try encoder.encode(bundle)
-
         return try encrypt(jsonData, passphrase: passphrase)
     }
 

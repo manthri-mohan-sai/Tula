@@ -60,13 +60,23 @@ struct SettingsView: View {
     @State private var showingReminders = false
     @State private var showingBackup = false
     @State private var showingExport = false
-    @State private var showingNotificationDeniedAlert = false
 
     private var notificationSummary: String {
-        if reminderEnabled && summaryEnabled { return "Reminder & Summary" }
-        if reminderEnabled { return "Reminder" }
-        if summaryEnabled { return "Summary" }
-        return "Off"
+        let count = [reminderEnabled, summaryEnabled, budgetAlertsEnabled].filter { $0 }.count
+        switch count {
+        case 0: return "Off"
+        case 3: return "All On"
+        case 1:
+            if reminderEnabled { return "Reminder" }
+            if summaryEnabled { return "Summary" }
+            return "Budget"
+        default:
+            var parts: [String] = []
+            if reminderEnabled { parts.append("Reminder") }
+            if summaryEnabled { parts.append("Summary") }
+            if budgetAlertsEnabled { parts.append("Budget") }
+            return parts.joined(separator: " & ")
+        }
     }
 
     var body: some View {
@@ -74,7 +84,6 @@ struct SettingsView: View {
             List {
                 // themeSection — parked for now
                 generalSection
-                alertsSection
                 dataSection
                 voiceSection
                 smartParsingSection
@@ -97,16 +106,6 @@ struct SettingsView: View {
             .sheet(isPresented: $showingExport) { ExportView() }
             .sheet(isPresented: $showingCurrencyPicker) {
                 CurrencyPickerView(selectedCode: $primaryCurrencyCode)
-            }
-            .alert("Notifications are off", isPresented: $showingNotificationDeniedAlert) {
-                Button("Open Settings") {
-                    if let url = URL(string: UIApplication.openSettingsURLString) {
-                        UIApplication.shared.open(url)
-                    }
-                }
-                Button("Cancel", role: .cancel) { }
-            } message: {
-                Text("Enable Notifications for Tula in iOS Settings to receive budget alerts.")
             }
         }
     }
@@ -215,23 +214,6 @@ struct SettingsView: View {
         }
     }
 
-    /// Budget threshold alerts — single toggle. When turned on we request
-    /// notification permission immediately; if denied we prompt the user
-    /// to open iOS Settings (one-tap deep link).
-    private var alertsSection: some View {
-        Section {
-            Toggle(isOn: Binding(
-                get: { budgetAlertsEnabled },
-                set: { newValue in toggleBudgetAlerts(to: newValue) }
-            )) {
-                settingsLabel("Budget Alerts", icon: "chart.pie.fill", color: .orange)
-            }
-        } header: {
-            Text("Alerts")
-        } footer: {
-            Text("Get a notification when any budget reaches 75% or goes over.")
-        }
-    }
 
     private var dataSection: some View {
         Section {
@@ -750,7 +732,11 @@ struct SettingsView: View {
         } header: {
             Text("Privacy")
         } footer: {
-            Text("Encrypted backups with your passphrase. Your data never leaves your device unless you share it.")
+            if let lastDate = BackupManager.lastAutoBackupDate {
+                Text("Auto-backup: \(lastDate.formatted(.relative(presentation: .named))). Keeps last 7 days on device.")
+            } else {
+                Text("Auto-backup runs daily. Your data never leaves your device unless you share it.")
+            }
         }
     }
 
@@ -790,36 +776,6 @@ struct SettingsView: View {
         let build = dict?["CFBundleVersion"] as? String
         if let build, build != version { return "\(version) (\(build))" }
         return version
-    }
-
-    // MARK: - Budget Alerts Toggle
-
-    /// Handles flipping the budget alerts toggle. Requests notification
-    /// permission on enable; resets the per-budget "has fired" flags on
-    /// disable so re-enabling later starts fresh.
-    private func toggleBudgetAlerts(to newValue: Bool) {
-        if newValue {
-            Task {
-                let status = await NotificationManager.currentStatus()
-                if status == .denied {
-                    showingNotificationDeniedAlert = true
-                    return
-                }
-                let granted = await NotificationManager.requestAuthorization()
-                await MainActor.run {
-                    if granted {
-                        budgetAlertsEnabled = true
-                        Haptics.success()
-                    } else {
-                        showingNotificationDeniedAlert = true
-                    }
-                }
-            }
-        } else {
-            budgetAlertsEnabled = false
-            NotificationManager.resetAllBudgetAlertFlags()
-            Haptics.tap()
-        }
     }
 
     // MARK: - Row Builders

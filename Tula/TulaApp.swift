@@ -183,6 +183,8 @@ struct TulaApp: App {
                 NotificationManager.refreshDailyReminder(using: context)
             } else if newPhase == .background {
                 appDelegate.scheduleWidgetRefresh()
+                let ctx = ModelContext(sharedContainer)
+                BackupManager.autoBackupIfNeeded(context: ctx)
             }
         }
     }

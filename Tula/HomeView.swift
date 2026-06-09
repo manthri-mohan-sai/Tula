@@ -48,6 +48,7 @@ struct HomeView: View {
     /// Counter (not bool) handles concurrent multi-entry parses correctly.
     @State private var smartParseInFlight: Int = 0
     @State private var heroTapPulse: Bool = false
+    @State private var dismissedInsightIDs: Set<String> = []
 
     @AppStorage("lastUsedAccountID") private var lastUsedAccountID: String = ""
     @AppStorage("budgetAlertsEnabled") private var budgetAlertsEnabled: Bool = false
@@ -1135,7 +1136,7 @@ struct HomeView: View {
         if reviewCount > 0 {
             contexts.append(.review(count: reviewCount))
         }
-        if let topInsight = insights.first {
+        if let topInsight = insights.first(where: { !dismissedInsightIDs.contains($0.id) }) {
             contexts.append(.insight(topInsight))
         }
         return contexts
@@ -1181,7 +1182,7 @@ struct HomeView: View {
         if reviewCount > 0 {
             contexts.append(.review(count: reviewCount))
         }
-        if let topInsight = insights.first {
+        if let topInsight = insights.first(where: { !dismissedInsightIDs.contains($0.id) }) {
             contexts.append(.insight(topInsight))
         }
         return contexts
@@ -1244,7 +1245,22 @@ struct HomeView: View {
             ) {
                 contextRowBody(for: context, showHint: true)
             }
-        case .review, .insight, .recurringOverflow, .overdueOverflow:
+        case .insight(let insight):
+            contextRowBody(
+                for: context,
+                showHint: false,
+                onDismiss: {
+                    _ = withAnimation(AppAnimation.snappy) {
+                        dismissedInsightIDs.insert(insight.id)
+                    }
+                    Haptics.tap()
+                },
+                onTap: {
+                    Haptics.tap()
+                    handleContextTap(context)
+                }
+            )
+        case .review, .recurringOverflow, .overdueOverflow:
             Button {
                 Haptics.tap()
                 handleContextTap(context)
@@ -1259,41 +1275,53 @@ struct HomeView: View {
     /// `showHint` adds a faint "swipe" affordance on the trailing edge to
     /// hint that the row is swipeable (since swipe is non-discoverable by
     /// default). For non-swipeable contexts, shows a chevron instead.
-    private func contextRowBody(for context: HomeContext, showHint: Bool) -> some View {
+    private func contextRowBody(for context: HomeContext, showHint: Bool, onDismiss: (() -> Void)? = nil, onTap: (() -> Void)? = nil) -> some View {
         let icon = contextIcon(for: context)
         let color = contextColor(for: context)
         let title = contextTitle(for: context)
         let detail = contextDetail(for: context)
 
         return HStack(spacing: Spacing.md) {
-            ZStack {
-                Circle()
-                    .fill(color.opacity(0.15))
-                    .frame(width: 36, height: 36)
-                Image(systemName: icon)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(color)
+            HStack(spacing: Spacing.md) {
+                ZStack {
+                    Circle()
+                        .fill(color.opacity(0.15))
+                        .frame(width: 36, height: 36)
+                    Image(systemName: icon)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(color)
+                }
+
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(title)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                    Text(detail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+
+                Spacer(minLength: 0)
+            }
+            .contentShape(Rectangle())
+            .onTapGesture {
+                onTap?()
             }
 
-            VStack(alignment: .leading, spacing: 1) {
-                Text(title)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                Text(detail)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-
-            Spacer(minLength: 0)
-
-            // Trailing affordance: chevron for tap-only rows, a subtle
-            // "swipe arrows" hint for swipeable rows. The hint is two
-            // tiny chevrons in opposite directions — universally readable
-            // as "you can swipe this either way" without taking up
-            // significant space.
-            if showHint {
+            if let onDismiss {
+                Button {
+                    onDismiss()
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+                        .frame(width: 28, height: 28)
+                        .background(Circle().fill(Color.secondary.opacity(0.1)))
+                }
+                .buttonStyle(.plain)
+            } else if showHint {
                 HStack(spacing: 1) {
                     Image(systemName: "chevron.left")
                     Image(systemName: "chevron.right")
@@ -1313,7 +1341,6 @@ struct HomeView: View {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .fill(Color.tulaCardSurface)
         )
-        .contentShape(Rectangle())
     }
 
     /// Right-side action area for non-swipeable contexts (review/insight).

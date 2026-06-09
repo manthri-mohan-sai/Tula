@@ -164,7 +164,7 @@ struct AccountDetailView: View {
                 }
             }
             secondaryActionButton(
-                title: "Move Money",
+                title: "Transfer",
                 icon: "arrow.left.arrow.right"
             ) {
                 Haptics.tap()

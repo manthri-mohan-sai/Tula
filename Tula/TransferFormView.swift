@@ -1,16 +1,6 @@
 import SwiftUI
 import SwiftData
 
-/// One form for all transfer types. Caller can pre-configure with:
-/// - `presetKind`: e.g. .cardBillPayment for the "Pay Bill" entry point
-/// - `presetFromAccount` / `presetToAccount`: lock one or both sides
-/// - `presetAmount`: pre-fill amount (e.g. outstanding balance)
-///
-/// Auto-infers kind from from/to account types if not specified:
-///   Bank → CC      = cardBillPayment
-///   Bank → Cash    = withdrawal
-///   Cash → Bank    = deposit
-///   anything else  = generic
 struct TransferFormView: View {
     @Environment(\.modelContext) private var context
     @Environment(\.dismiss) private var dismiss
@@ -50,7 +40,6 @@ struct TransferFormView: View {
     }
 
     private var fromOptions: [Account] {
-        // For Pay Bill, source must be a bank account (CC paying CC is not a thing)
         if presetKind == .cardBillPayment {
             return activeAccounts.filter { $0.kind == .bank || $0.kind == .wallet }
         }
@@ -59,7 +48,7 @@ struct TransferFormView: View {
 
     private var toOptions: [Account] {
         if presetKind == .cardBillPayment, let preset = presetToAccount {
-            return [preset]    // Destination is locked
+            return [preset]
         }
         return activeAccounts.filter { $0.id != fromAccount?.id }
     }
@@ -73,8 +62,12 @@ struct TransferFormView: View {
         case .cardBillPayment: return "Pay Card Bill"
         case .withdrawal:      return "Withdraw Cash"
         case .deposit:         return "Deposit Cash"
-        default:               return "Move Money"
+        default:               return "Transfer"
         }
+    }
+
+    private var canSwap: Bool {
+        presetKind == nil && presetFromAccount == nil && presetToAccount == nil
     }
 
     var body: some View {
@@ -133,16 +126,75 @@ struct TransferFormView: View {
     // MARK: - Routing
 
     private var routingSection: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            fromSection
+            swapRow
+            toSection
+        }
+    }
+
+    private var fromSection: some View {
         VStack(alignment: .leading, spacing: Spacing.md) {
-            SectionHeader(title: "From")
+            HStack(alignment: .firstTextBaseline) {
+                SectionHeader(title: "From")
+                Spacer()
+                if let from = fromAccount {
+                    Text(Currency.format(from.derivedBalance, code: currencyCode))
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
+            }
             accountStrip(
                 accounts: fromOptions,
                 selection: $fromAccount,
                 isLocked: presetFromAccount != nil
             )
+        }
+    }
 
-            SectionHeader(title: "To")
-                .padding(.top, Spacing.sm)
+    private var swapRow: some View {
+        HStack {
+            Spacer()
+            Button {
+                guard canSwap else { return }
+                Haptics.selection()
+                withAnimation(AppAnimation.snappy) {
+                    let temp = fromAccount
+                    fromAccount = toAccount
+                    toAccount = temp
+                }
+            } label: {
+                Image(systemName: "arrow.up.arrow.down")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(canSwap ? Color.tulaBrandFallback : Color.secondary.opacity(0.3))
+                    .frame(width: 36, height: 36)
+                    .background(
+                        Circle()
+                            .fill(canSwap
+                                  ? Color.tulaBrandFallback.opacity(0.1)
+                                  : Color.secondary.opacity(0.06))
+                    )
+            }
+            .disabled(!canSwap)
+            Spacer()
+        }
+        .padding(.vertical, Spacing.xs)
+    }
+
+    private var toSection: some View {
+        VStack(alignment: .leading, spacing: Spacing.md) {
+            HStack(alignment: .firstTextBaseline) {
+                SectionHeader(title: "To")
+                Spacer()
+                if let to = toAccount {
+                    Text(Currency.format(to.derivedBalance, code: currencyCode))
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
+            }
+            .padding(.top, Spacing.sm)
             accountStrip(
                 accounts: toOptions,
                 selection: $toAccount,
@@ -154,18 +206,6 @@ struct TransferFormView: View {
     private func accountStrip(accounts: [Account],
                               selection: Binding<Account?>,
                               isLocked: Bool) -> some View {
-        // Reorder so the selected account is the leading chip. When
-        // the user taps a chip mid-strip, it animates to position 0
-        // and the others shift right to fill the gap. This surfaces
-        // the user's current choice as the most prominent chip and
-        // mirrors how Apple Wallet's filter pills behave — selected
-        // state isn't just visual styling, it's positional priority.
-        //
-        // The reorder is computed every render. SwiftUI's ForEach
-        // diffs by `.id`, so items keep their identity through the
-        // reordering — `withAnimation` on the selection change
-        // (below in onTapGesture) animates each chip moving to its
-        // new slot, no manual offset math required.
         let ordered: [Account] = {
             guard let selectedID = selection.wrappedValue?.id,
                   let idx = accounts.firstIndex(where: { $0.id == selectedID }) else {
@@ -206,10 +246,6 @@ struct TransferFormView: View {
             .scrollClipDisabled()
             .onChange(of: selection.wrappedValue?.id) { _, newID in
                 guard let id = newID else { return }
-                // Anchor .leading now (was .center) because the
-                // selected chip is the leading element after the
-                // reorder. If the strip was scrolled rightward, this
-                // pulls it back to show the new selection.
                 withAnimation(.snappy(duration: 0.4)) {
                     proxy.scrollTo(id, anchor: .leading)
                 }
@@ -265,7 +301,6 @@ struct TransferFormView: View {
         dismiss()
     }
 
-    /// Best-effort inference of transfer kind from the account types involved.
     private func inferKind(from: Account, to: Account) -> TransferKind {
         switch (from.kind, to.kind) {
         case (.bank, .creditCard), (.wallet, .creditCard): return .cardBillPayment

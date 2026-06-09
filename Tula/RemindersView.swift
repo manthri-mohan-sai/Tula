@@ -12,6 +12,8 @@ struct RemindersView: View {
     @AppStorage("summaryHour") private var summaryHour: Int = 21
     @AppStorage("summaryMinute") private var summaryMinute: Int = 0
 
+    @AppStorage("budgetAlertsEnabled") private var budgetAlertsEnabled: Bool = false
+
     @State private var authStatus: UNAuthorizationStatus = .notDetermined
 
     private var reminderTime: Date {
@@ -105,6 +107,18 @@ struct RemindersView: View {
                     }
                 }
 
+                Section {
+                    Toggle("Budget alerts", isOn: Binding(
+                        get: { budgetAlertsEnabled },
+                        set: { toggleBudgetAlerts(to: $0) }
+                    ))
+                    .disabled(permissionDenied)
+                } header: {
+                    Text("Budget Alerts")
+                } footer: {
+                    Text("Get notified when any budget reaches 75% or goes over.")
+                }
+
                 if permissionDenied {
                     Section {
                         Button("Open iOS Settings") {
@@ -142,6 +156,25 @@ struct RemindersView: View {
                 reminderEnabled = false
                 Haptics.warning()
             }
+        }
+    }
+
+    private func toggleBudgetAlerts(to newValue: Bool) {
+        if newValue {
+            Task {
+                let granted = await NotificationManager.requestAuthorization()
+                authStatus = await NotificationManager.currentStatus()
+                if granted {
+                    budgetAlertsEnabled = true
+                    Haptics.success()
+                } else {
+                    Haptics.warning()
+                }
+            }
+        } else {
+            budgetAlertsEnabled = false
+            NotificationManager.resetAllBudgetAlertFlags()
+            Haptics.tap()
         }
     }
 

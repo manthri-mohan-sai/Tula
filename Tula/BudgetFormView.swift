@@ -91,13 +91,7 @@ struct BudgetFormView: View {
                         Picker("Category", selection: $selectedCategory) {
                             Text("Select…").tag(Category?.none)
                             ForEach(categories) { cat in
-                                Label {
-                                    Text(cat.name)
-                                } icon: {
-                                    Image(systemName: cat.iconKey)
-                                        .foregroundStyle(Color(hex: cat.colorHex))
-                                }
-                                .tag(Category?.some(cat))
+                                Text(cat.name).tag(Category?.some(cat))
                             }
                         }
                     } else {

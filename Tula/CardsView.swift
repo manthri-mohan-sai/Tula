@@ -156,18 +156,14 @@ struct CardsView: View {
         .tulaNavigationSubtitle(subtitleText)
         .navigationBarTitleDisplayMode(.large)
         .toolbar {
-            // Move money — transfer between accounts. Pre-selects the
-            // currently-active card as the source, so swiping to a
-            // card → tapping this opens a transfer FROM that card.
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
                     Haptics.tap()
                     showingTransfer = true
                 } label: {
-                    Image(systemName: "arrow.left.arrow.right")
-                        .font(.body.weight(.semibold))
+                    Label("Transfer", systemImage: "arrow.left.arrow.right")
+                        .font(.subheadline.weight(.semibold))
                 }
-                .accessibilityLabel("Move money")
             }
             ToolbarItem(placement: .topBarTrailing) {
                 Button {

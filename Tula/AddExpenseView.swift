@@ -842,71 +842,109 @@ struct AddExpenseView: View {
         .buttonStyle(PressableScaleStyle(scale: 0.98))
     }
 
-    /// Populated receipt card — shows thumbnail + status + trash button.
-    /// Tap on thumbnail to view full-size (future enhancement); tap trash
-    /// to remove the receipt. OCR status indicator shows a spinner while
-    /// running, then disappears.
+    @State private var showingFullReceipt = false
+
     private func receiptThumbnailCard(image: UIImage) -> some View {
-        HStack(spacing: Spacing.md) {
-            Image(uiImage: image)
-                .resizable()
-                .aspectRatio(contentMode: .fill)
-                .frame(width: 56, height: 56)
-                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 4) {
-                    Text("Receipt attached")
-                        .font(.subheadline.weight(.medium))
-                        .foregroundStyle(.primary)
-                    if !ocrExtractedFields.isEmpty {
-                        Image(systemName: "sparkles")
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(Color.tulaBrandFallback)
-                    }
-                }
-                if receiptOCRInFlight {
-                    HStack(spacing: 4) {
-                        ProgressView().scaleEffect(0.7)
-                        Text("Reading…")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                } else if let errorMsg = scanErrorMessage {
-                    Text(errorMsg)
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                        .lineLimit(2)
-                } else if !ocrExtractedFields.isEmpty {
-                    Text(ocrSummaryText)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                } else {
-                    Text("Stored with this expense")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-
-            Spacer()
-
+        VStack(spacing: 0) {
             Button {
-                Haptics.tap()
-                receiptImage = nil
-                ocrExtractedFields.removeAll()
+                showingFullReceipt = true
             } label: {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.title3)
-                    .foregroundStyle(.secondary)
+                Image(uiImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 180)
+                    .clipped()
             }
             .buttonStyle(.plain)
+
+            HStack(spacing: Spacing.sm) {
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 4) {
+                        Text("Receipt")
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(.primary)
+                        if !ocrExtractedFields.isEmpty {
+                            Image(systemName: "sparkles")
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(Color.tulaBrandFallback)
+                        }
+                    }
+                    if receiptOCRInFlight {
+                        HStack(spacing: 4) {
+                            ProgressView().scaleEffect(0.7)
+                            Text("Reading…")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    } else if let errorMsg = scanErrorMessage {
+                        Text(errorMsg)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                            .lineLimit(2)
+                    } else if !ocrExtractedFields.isEmpty {
+                        Text(ocrSummaryText)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+
+                Spacer()
+
+                Button {
+                    Haptics.tap()
+                    showingReceiptSourcePicker = true
+                } label: {
+                    Image(systemName: "arrow.triangle.2.circlepath")
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 32, height: 32)
+                }
+                .buttonStyle(.plain)
+
+                Button {
+                    Haptics.tap()
+                    receiptImage = nil
+                    ocrExtractedFields.removeAll()
+                } label: {
+                    Image(systemName: "trash")
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(.red.opacity(0.8))
+                        .frame(width: 32, height: 32)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, Spacing.md)
+            .padding(.vertical, Spacing.sm)
         }
-        .padding(Spacing.md)
         .background(
             RoundedRectangle(cornerRadius: CornerRadius.medium, style: .continuous)
                 .fill(Color.tulaCardSurface)
         )
+        .clipShape(RoundedRectangle(cornerRadius: CornerRadius.medium, style: .continuous))
+        .fullScreenCover(isPresented: $showingFullReceipt) {
+            receiptFullScreenView(image: image)
+        }
+    }
+
+    private func receiptFullScreenView(image: UIImage) -> some View {
+        ZStack(alignment: .topTrailing) {
+            Color.black.ignoresSafeArea()
+            Image(uiImage: image)
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+                .ignoresSafeArea()
+            Button {
+                showingFullReceipt = false
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.title)
+                    .symbolRenderingMode(.hierarchical)
+                    .foregroundStyle(.white)
+                    .padding()
+            }
+        }
     }
 
     /// Short summary text describing what OCR pulled from the receipt.

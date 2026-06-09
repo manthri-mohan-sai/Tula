@@ -847,43 +847,47 @@ struct QuickActionsEntryView: View {
 
 struct HomeQuickActionsView: View {
     var body: some View {
-        Grid(horizontalSpacing: 12, verticalSpacing: 12) {
-            GridRow {
-                Link(destination: URL(string: "tula://scan")!) {
-                    ZStack {
-                        Circle()
-                            .fill(Color.tulaBrandFallback.opacity(0.12))
-                        Image(systemName: "text.viewfinder")
-                            .font(.system(size: 26, weight: .semibold))
-                            .foregroundStyle(Color.tulaBrandFallback)
-                    }
+        VStack(spacing: 8) {
+            Link(destination: URL(string: "tula://scan")!) {
+                HStack(spacing: 8) {
+                    Image(systemName: "text.viewfinder")
+                        .font(.system(size: 22, weight: .semibold))
+                    Text("Scan")
+                        .font(.system(size: 16, weight: .semibold))
                 }
-                Link(destination: URL(string: "tula://voice")!) {
-                    ZStack {
-                        Circle()
-                            .fill(Color.tulaBrandFallback.opacity(0.12))
-                        Image(systemName: "mic.fill")
-                            .font(.system(size: 26, weight: .semibold))
-                            .foregroundStyle(Color.tulaBrandFallback)
-                    }
-                }
+                .foregroundStyle(Color.tulaBrandFallback)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .fill(Color.tulaBrandFallback.opacity(0.12))
+                )
             }
-            GridRow {
+
+            HStack(spacing: 8) {
                 Link(destination: URL(string: "tula://add")!) {
-                    ZStack {
-                        Circle()
-                            .fill(Color.tulaBrandFallback.opacity(0.12))
-                        Image(systemName: "plus")
-                            .font(.system(size: 28, weight: .semibold))
-                            .foregroundStyle(Color.tulaBrandFallback)
-                    }
+                    Image(systemName: "plus")
+                        .font(.system(size: 24, weight: .semibold))
+                        .foregroundStyle(Color.tulaBrandFallback)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .background(
+                            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                .fill(Color.tulaBrandFallback.opacity(0.12))
+                        )
                 }
-                Text("तु")
-                    .font(.system(size: 34, weight: .bold))
-                    .foregroundStyle(Color.tulaBrandFallback)
+
+                Link(destination: URL(string: "tula://voice")!) {
+                    Image(systemName: "mic.fill")
+                        .font(.system(size: 22, weight: .semibold))
+                        .foregroundStyle(Color.tulaBrandFallback)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .background(
+                            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                .fill(Color.tulaBrandFallback.opacity(0.12))
+                        )
+                }
             }
         }
-        .padding(16)
+        .padding(14)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
