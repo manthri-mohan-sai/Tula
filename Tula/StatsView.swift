@@ -1146,7 +1146,7 @@ struct CategoryDonut: View {
         Chart(slices) { slice in
             SectorMark(
                 angle:        .value("Amount", slice.fraction),
-                innerRadius:  .ratio(0.55),
+                innerRadius:  .ratio(0.70),
                 angularInset: 1.5
             )
             .foregroundStyle(slice.color)

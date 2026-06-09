@@ -399,7 +399,7 @@ struct OverallBudgetCard: View {
             Chart(pieSlices) { slice in
                 SectorMark(
                     angle:        .value("Amount", slice.amount),
-                    innerRadius:  .ratio(0.55),
+                    innerRadius:  .ratio(0.70),
                     angularInset: 1.5
                 )
                 .foregroundStyle(slice.color)

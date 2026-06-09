@@ -979,7 +979,7 @@ struct MonthSpendWidgetView: View {
 
     private var donutCenterLabel: (String, String)? {
         if hasBudget {
-            return ("\(Int(budgetProgress * 100))%", "used")
+            return ("\(Int(budgetProgress * 100))%", "Used")
         } else if hasLastMonthData {
             return ("~\(Currency.compact(projectedTotal, code: snapshot.currencyCode))", "month end")
         } else {
@@ -1162,7 +1162,7 @@ private struct DonutChartView: View {
             Chart(slices) { slice in
                 SectorMark(
                     angle:        .value("Amount", slice.amount),
-                    innerRadius:  .ratio(0.55),
+                    innerRadius:  .ratio(0.70),
                     angularInset: 1.5
                 )
                 .foregroundStyle(slice.color)
@@ -1172,15 +1172,17 @@ private struct DonutChartView: View {
 
             if let label = centerLabel {
                 VStack(spacing: 1) {
+                    Text(label.1)
+                        .font(.caption2.weight(.thin))
+                        .foregroundStyle(.secondary)
+                        .kerning(0.5)
                     Text(label.0)
-                        .font(.system(size: 14, weight: .bold, design: .rounded))
+                        .font(.system(size: 16, weight: .bold, design: .rounded))
                         .foregroundStyle(.primary)
                         .monospacedDigit()
                         .minimumScaleFactor(0.5)
                         .lineLimit(1)
-                    Text(label.1)
-                        .font(.system(size: 9, weight: .medium))
-                        .foregroundStyle(.tertiary)
+                    
                 }
             }
         }
