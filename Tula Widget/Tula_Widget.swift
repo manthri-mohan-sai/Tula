@@ -1,5 +1,6 @@
 import WidgetKit
 import SwiftUI
+import Charts
 
 // MARK: - Setup
 //
@@ -1128,71 +1129,54 @@ struct MonthSpendWidgetView: View {
 
 // MARK: - Donut Chart
 
+/// SectorMark-based donut chart matching the style used in BudgetsView.
 private struct DonutChartView: View {
     let categories: [WidgetSnapshot.CategorySpend]
     let centerLabel: (String, String)?
 
-    private var strokeWidth: CGFloat { centerLabel == nil ? 20 : 12 }
-    private let gapAngle: Double = 3
-
-    private struct Segment {
-        let startAngle: Double
-        let endAngle: Double
-        let color: Color
+    private struct Slice: Identifiable {
+        let id   = UUID()
+        let amount: Double
+        let color:  Color
     }
 
-    private var segments: [Segment] {
-        var result: [Segment] = []
-        let totalPercentage = categories.reduce(0.0) { $0 + $1.percentage }
-        let otherPercentage = max(1.0 - totalPercentage, 0)
-        let totalGap = gapAngle * Double(categories.count + (otherPercentage > 0 ? 1 : 0))
-        let available = 360.0 - totalGap
-
-        var angle: Double = -90
-
-        for cat in categories {
-            let sweep = available * cat.percentage
-            if sweep > 0 {
-                result.append(Segment(
-                    startAngle: angle,
-                    endAngle: angle + sweep,
-                    color: Color(hex: cat.colorHex)
-                ))
-                angle += sweep + gapAngle
-            }
+    private var slices: [Slice] {
+        var result = categories.map {
+            Slice(amount: $0.percentage, color: Color(hex: $0.colorHex))
         }
-
-        if otherPercentage > 0.01 {
-            let sweep = available * otherPercentage
-            result.append(Segment(
-                startAngle: angle,
-                endAngle: angle + sweep,
-                color: Color.gray.opacity(0.25)
-            ))
+        let used = categories.reduce(0.0) { $0 + $1.percentage }
+        let rest = max(0, 1.0 - used)
+        if rest > 0.01 {
+            result.append(Slice(amount: rest,
+                                color: Color.gray.opacity(0.18)))
         }
-
+        if result.isEmpty {
+            result.append(Slice(amount: 1,
+                                color: Color.gray.opacity(0.18)))
+        }
         return result
     }
 
     var body: some View {
         ZStack {
-            ForEach(Array(segments.enumerated()), id: \.offset) { _, seg in
-                Circle()
-                    .trim(
-                        from: CGFloat((seg.startAngle + 90) / 360),
-                        to: CGFloat((seg.endAngle + 90) / 360)
-                    )
-                    .stroke(seg.color, style: StrokeStyle(lineWidth: strokeWidth, lineCap: .round))
-                    .rotationEffect(.degrees(-90))
+            Chart(slices) { slice in
+                SectorMark(
+                    angle:        .value("Amount", slice.amount),
+                    innerRadius:  .ratio(0.55),
+                    angularInset: 1.5
+                )
+                .foregroundStyle(slice.color)
+                .cornerRadius(3)
             }
+            .chartLegend(.hidden)
 
             if let label = centerLabel {
                 VStack(spacing: 1) {
                     Text(label.0)
-                        .font(.system(size: 16, weight: .bold, design: .rounded))
+                        .font(.system(size: 14, weight: .bold, design: .rounded))
                         .foregroundStyle(.primary)
                         .monospacedDigit()
-                        .minimumScaleFactor(0.6)
+                        .minimumScaleFactor(0.5)
                         .lineLimit(1)
                     Text(label.1)
                         .font(.system(size: 9, weight: .medium))
@@ -1200,7 +1184,6 @@ private struct DonutChartView: View {
                 }
             }
         }
-        .padding(strokeWidth / 2 + 2)
     }
 }
 
