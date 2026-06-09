@@ -148,7 +148,10 @@ struct TulaApp: App {
                                 // since totals may have changed.
                                 shareExtensionDidSaveTick &+= 1
                                 let ctx = ModelContext(sharedContainer)
-                                WidgetRefresh.refresh(using: ctx)
+                                WidgetRefresh.refresh(
+                                    using: ctx,
+                                    upcomingRecurrings: buildUpcomingRecurrings(in: ctx)
+                                )
                             }
                         }
                     }
@@ -179,7 +182,10 @@ struct TulaApp: App {
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase == .active {
                 let context = ModelContext(sharedContainer)
-                WidgetRefresh.refresh(using: context)
+                WidgetRefresh.refresh(
+                    using: context,
+                    upcomingRecurrings: buildUpcomingRecurrings(in: context)
+                )
                 NotificationManager.refreshDailyReminder(using: context)
             } else if newPhase == .background {
                 appDelegate.scheduleWidgetRefresh()
@@ -191,198 +197,29 @@ struct TulaApp: App {
 }
 
 
-// MARK: - Widget Snapshot Refresh
+// MARK: - Upcoming Recurrings Builder
 
-/// Centralized widget-snapshot refresh logic. Called on app foreground,
-/// after every expense/transfer save, and as part of recurring-rule
-/// state changes. Was previously a private instance method on `TulaApp`
-/// that only ran on foreground — now any save site can trigger it.
-///
-/// **Why a separate type?** Save sites need a single line they can drop
-/// in (`WidgetRefresh.refresh(using: context)`) without depending on the
-/// app struct or environment. Static method on an enum keeps it stateless
-/// and importable from anywhere.
-enum WidgetRefresh {
-
-    /// Rebuilds the widget snapshot from current data and writes it to the
-    /// App Group. Cheap enough to call after every save — ~milliseconds
-    /// for typical expense counts. Triggers a `WidgetCenter` reload at
-    /// the end so iOS pulls a fresh timeline immediately.
-    static func refresh(using context: ModelContext) {
-        let calendar = Calendar.current
-        let now = Date.now
-
-        // Pull expenses for this month — sufficient for both today and month totals.
-        guard let monthStart = calendar.dateInterval(of: .month, for: now)?.start else { return }
-        let dayStart = calendar.startOfDay(for: now)
-
-        let monthExpenseFetch = FetchDescriptor<Expense>(
-            predicate: #Predicate { $0.date >= monthStart }
+/// Builds the next 3 recurring expenses due for embedding in the widget snapshot.
+/// Kept separate from WidgetRefresh (which lives in a shared file) because it
+/// depends on RecurringEngine, which is not compiled into the share extension.
+func buildUpcomingRecurrings(in context: ModelContext) -> [WidgetSnapshot.UpcomingRecurring] {
+    let rulesFetch = FetchDescriptor<RecurringRule>(
+        predicate: #Predicate { $0.isPaused == false }
+    )
+    let rules = (try? context.fetch(rulesFetch)) ?? []
+    let upcoming = rules.compactMap { rule -> WidgetSnapshot.UpcomingRecurring? in
+        guard rule.kind == .expense else { return nil }
+        guard let due = RecurringEngine.nextDueDate(for: rule) else { return nil }
+        return WidgetSnapshot.UpcomingRecurring(
+            id: rule.id,
+            name: rule.name,
+            amount: rule.amount,
+            dueDate: due,
+            colorHex: rule.category?.colorHex ?? "#D97706",
+            iconKey: rule.category?.iconKey ?? "calendar"
         )
-        let monthExpenses = (try? context.fetch(monthExpenseFetch)) ?? []
-        let monthTotal = monthExpenses.reduce(0) { $0 + $1.amount }
-        let todayTotal = monthExpenses
-            .filter { $0.date >= dayStart }
-            .reduce(0) { $0 + $1.amount }
-
-        // Active budgets — all periods, all scopes.
-        let budgetFetch = FetchDescriptor<Budget>(
-            predicate: #Predicate { $0.isActive == true }
-        )
-        let allBudgets = (try? context.fetch(budgetFetch)) ?? []
-
-        // Mirror BudgetsView: separate Overall from Category budgets.
-        let overallBudget   = allBudgets.first { $0.category == nil }
-        let categoryBudgets = allBudgets.filter { $0.category != nil }
-
-        // Same weekly/yearly → monthly conversion as BudgetsView.monthlyEquivalent.
-        func monthlyEquiv(_ b: Budget) -> Double {
-            switch b.period {
-            case .weekly:  return b.amount * (52.0 / 12.0)
-            case .monthly: return b.amount
-            case .yearly:  return b.amount / 12.0
-            }
-        }
-
-        let categoryMonthlySum = categoryBudgets.reduce(0) { $0 + monthlyEquiv($1) }
-
-        // displayTotal = max(overall, categorySum) — mirrors BudgetsView.overallDisplayTotal.
-        // Prevents double-counting when both an Overall and Category budgets coexist.
-        let totalCap = max(overallBudget?.amount ?? 0, categoryMonthlySum)
-
-        // topBudgets: category rows only — Overall is already the aggregate cap.
-        // All periods included; Budget.spent() filters to the correct period window.
-        let entries: [WidgetSnapshot.Entry] = categoryBudgets
-            .map { b -> WidgetSnapshot.Entry in
-                let spent = b.spent(in: monthExpenses)
-                return WidgetSnapshot.Entry(
-                    id: b.id,
-                    name: b.displayName,
-                    amount: b.amount,
-                    spent: spent,
-                    colorHex: b.category?.colorHex ?? "#D97706",
-                    iconKey: b.category?.iconKey ?? "infinity",
-                    isOverall: false
-                )
-            }
-            .sorted { $0.progress > $1.progress }
-            .prefix(4)
-            .map { $0 }
-
-        // 7-day sparkline (oldest-first).
-        var dailyTotals: [Double] = Array(repeating: 0, count: 7)
-        for daysAgo in 0..<7 {
-            guard let start = calendar.date(byAdding: .day, value: -daysAgo, to: dayStart),
-                  let end = calendar.date(byAdding: .day, value: 1, to: start) else { continue }
-            let total = monthExpenses
-                .filter { $0.date >= start && $0.date < end }
-                .reduce(0) { $0 + $1.amount }
-            dailyTotals[6 - daysAgo] = total
-        }
-
-        let upcomingRecurrings = buildUpcomingRecurrings(in: context)
-
-        // Category breakdown — group this month's expenses by category,
-        // sum each, sort descending, take top 5 for the widget.
-        let categoryBreakdown: [WidgetSnapshot.CategorySpend] = {
-            var totals: [UUID: (category: (name: String, colorHex: String, iconKey: String), amount: Double)] = [:]
-            for expense in monthExpenses {
-                guard let cat = expense.category else { continue }
-                let key = cat.id
-                if var existing = totals[key] {
-                    existing.amount += expense.amount
-                    totals[key] = existing
-                } else {
-                    totals[key] = (category: (name: cat.name, colorHex: cat.colorHex, iconKey: cat.iconKey), amount: expense.amount)
-                }
-            }
-            return totals
-                .map { (key, val) in
-                    WidgetSnapshot.CategorySpend(
-                        id: key,
-                        name: val.category.name,
-                        amount: val.amount,
-                        colorHex: val.category.colorHex,
-                        iconKey: val.category.iconKey,
-                        percentage: monthTotal > 0 ? val.amount / monthTotal : 0
-                    )
-                }
-                .sorted { $0.amount > $1.amount }
-                .prefix(5)
-                .map { $0 }
-        }()
-
-        // Last month's data for comparison widgets.
-        let prevMonthStart = calendar.date(byAdding: .month, value: -1, to: monthStart)
-        let lastMonthExpenses: [Expense] = {
-            guard let prevMonthStart else { return [] }
-            let fetch = FetchDescriptor<Expense>(
-                predicate: #Predicate { $0.date >= prevMonthStart && $0.date < monthStart }
-            )
-            return (try? context.fetch(fetch)) ?? []
-        }()
-        let lastMonthTotal = lastMonthExpenses.reduce(0) { $0 + $1.amount }
-
-        // Same calendar day last month (e.g. Jun 2 → May 2).
-        let lastMonthSameDayTotal: Double = {
-            guard let sameDay = calendar.date(byAdding: .month, value: -1, to: dayStart),
-                  let sameDayEnd = calendar.date(byAdding: .day, value: 1, to: sameDay) else { return 0 }
-            return lastMonthExpenses
-                .filter { $0.date >= sameDay && $0.date < sameDayEnd }
-                .reduce(0) { $0 + $1.amount }
-        }()
-
-        // Last month from day 1 through today's day number (month-to-date).
-        let lastMonthTillDayTotal: Double = {
-            guard let prevMonthStart,
-                  let cutoff = calendar.date(byAdding: .day, value: calendar.component(.day, from: now), to: prevMonthStart) else { return 0 }
-            return lastMonthExpenses
-                .filter { $0.date >= prevMonthStart && $0.date < cutoff }
-                .reduce(0) { $0 + $1.amount }
-        }()
-
-        let primaryCurrencyCode = UserDefaults.standard
-            .string(forKey: "primaryCurrencyCode") ?? "INR"
-
-        let snapshot = WidgetSnapshot(
-            currencyCode: primaryCurrencyCode,
-            todayTotal: todayTotal,
-            monthTotal: monthTotal,
-            monthlyBudgetCap: totalCap,
-            topBudgets: entries,
-            dailyTotals: dailyTotals,
-            upcomingRecurrings: upcomingRecurrings,
-            categoryBreakdown: categoryBreakdown,
-            lastMonthTotal: lastMonthTotal,
-            lastMonthSameDayTotal: lastMonthSameDayTotal,
-            lastMonthTillDayTotal: lastMonthTillDayTotal,
-            generatedAt: now
-        )
-
-        WidgetStorage.write(snapshot)
-        WidgetCenter.shared.reloadAllTimelines()
     }
-
-    /// Next 3 recurring expenses due, sorted by due date ascending.
-    private static func buildUpcomingRecurrings(in context: ModelContext) -> [WidgetSnapshot.UpcomingRecurring] {
-        let rulesFetch = FetchDescriptor<RecurringRule>(
-            predicate: #Predicate { $0.isPaused == false }
-        )
-        let rules = (try? context.fetch(rulesFetch)) ?? []
-        let upcoming = rules.compactMap { rule -> WidgetSnapshot.UpcomingRecurring? in
-            guard rule.kind == .expense else { return nil }
-            guard let due = RecurringEngine.nextDueDate(for: rule) else { return nil }
-            return WidgetSnapshot.UpcomingRecurring(
-                id: rule.id,
-                name: rule.name,
-                amount: rule.amount,
-                dueDate: due,
-                colorHex: rule.category?.colorHex ?? "#D97706",
-                iconKey: rule.category?.iconKey ?? "calendar"
-            )
-        }
-        return Array(upcoming.sorted { $0.dueDate < $1.dueDate }.prefix(3))
-    }
+    return Array(upcoming.sorted { $0.dueDate < $1.dueDate }.prefix(3))
 }
 
 // MARK: - Root Tabs

@@ -118,6 +118,7 @@ struct LogExpenseIntent: AppIntent {
         }
 
         try? context.save(); WidgetRefresh.refresh(using: context)
+        postDarwinNotification(SharedNotifications.didSaveExpense)
 
         // Remember the last used account so subsequent Quick Log defaults work.
         if let id = lastAccountID {

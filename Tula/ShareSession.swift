@@ -547,7 +547,12 @@ final class ShareSession: ObservableObject {
 
         do {
             try context.save()
-            // Ping the main app to refresh @Query views if it's running.
+            // Write a fresh widget snapshot and reload timelines immediately.
+            // The upcomingRecurrings field is unchanged by adding a one-off
+            // expense, so we reuse the existing value from the snapshot.
+            let existingUpcoming = WidgetStorage.read().upcomingRecurrings
+            WidgetRefresh.refresh(using: context, upcomingRecurrings: existingUpcoming)
+            // Also ping the main app (if running) to refresh its @Query views.
             postDarwinNotification(SharedNotifications.didSaveExpense)
             phase = .saved
             // Brief delay so the user sees the "Saved" state before the

@@ -46,16 +46,16 @@ struct TulaWidgetProvider: TimelineProvider {
             TulaWidgetEntry(date: now, snapshot: snapshot)
         ]
 
-        // Half-hour entries for the next 2 hours
-        for offset in 1...4 {
-            if let future = cal.date(byAdding: .minute, value: offset * 30, to: now) {
+        // Quarter-hour entries for the next 2 hours
+        for offset in 1...8 {
+            if let future = cal.date(byAdding: .minute, value: offset * 15, to: now) {
                 entries.append(TulaWidgetEntry(date: future, snapshot: snapshot))
             }
         }
 
-        // Refresh every 30 min so background updates (notification
+        // Refresh every 15 min so background updates (notification
         // actions) are picked up even if reloadAllTimelines() is throttled.
-        var refreshAfter = cal.date(byAdding: .minute, value: 30, to: now) ?? now
+        var refreshAfter = cal.date(byAdding: .minute, value: 15, to: now) ?? now
         if let nextMidnight = cal.nextDate(
             after: now,
             matching: DateComponents(hour: 0, minute: 0),

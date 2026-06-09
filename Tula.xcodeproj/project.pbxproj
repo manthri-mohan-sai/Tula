@@ -79,6 +79,8 @@
 				ShareRootView.swift,
 				ShareSession.swift,
 				SmartExpenseParser.swift,
+					WidgetRefresh.swift,
+					WidgetSnapshot.swift,
 			);
 			target = 47BC84392FCAAF79000FB10E /* TulaShare */;
 		};

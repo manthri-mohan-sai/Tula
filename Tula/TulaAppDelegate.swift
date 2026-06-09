@@ -68,7 +68,10 @@ final class TulaAppDelegate: NSObject, UIApplicationDelegate, UNUserNotification
             let context = ModelContext(container)
             RecurringEngine.generateMissing(in: context)
             try? context.save()
-            WidgetRefresh.refresh(using: context)
+            WidgetRefresh.refresh(
+                using: context,
+                upcomingRecurrings: buildUpcomingRecurrings(in: context)
+            )
             task.setTaskCompleted(success: true)
         }
     }
