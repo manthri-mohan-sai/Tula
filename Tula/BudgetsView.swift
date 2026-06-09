@@ -334,29 +334,28 @@ struct OverallBudgetCard: View {
         }
     }
 
-    // MARK: - Body row (uncategorized amount + donut chart)
+    // MARK: - Body row (total budget amount + donut chart)
 
     private var bodyRow: some View {
         HStack(alignment: .center, spacing: 16) {
 
-            // Left: uncategorized amount
+            // Left: total budget
             VStack(alignment: .leading, spacing: 4) {
-                Text(Currency.format(uncategorized, code: currencyCode))
+                Text(Currency.format(displayTotal, code: currencyCode))
                     .font(.title2.bold())
-                    .foregroundStyle(uncategorized > 0 ? .primary : .secondary)
+                    .foregroundStyle(displayTotal > 0 ? .primary : .secondary)
                     .monospacedDigit()
-                    .contentTransition(.numericText(value: uncategorized))
-                    .animation(.snappy(duration: 0.35), value: uncategorized)
+                    .contentTransition(.numericText(value: displayTotal))
+                    .animation(.snappy(duration: 0.35), value: displayTotal)
 
-                Text("Uncategorized")
+                Text("Total Budget")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                if displayTotal > 0 {
-                    Text("of \(Currency.format(displayTotal, code: currencyCode)) total")
+                if displayTotal == 0 {
+                    Text("No budgets set yet")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
-                        .monospacedDigit()
                 }
             }
 
