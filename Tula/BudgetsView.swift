@@ -1,14 +1,17 @@
 import SwiftUI
 import SwiftData
+import Charts
 
-/// Top-level list of all budgets. Reached from Home toolbar.
+/// Top-level budgets screen. Always shows the OverallBudgetCard pinned at
+/// the top (even when no budgets exist), then individual category budgets
+/// grouped by period below.
 ///
-/// Layout: grouped by period (Monthly / Weekly / Yearly) so the user sees
-/// what resets when. Each row shows the category, spent/total, progress bar,
-/// remaining headroom, and days left in the period.
+/// The pinned card aggregates ALL category budgets by converting each to a
+/// monthly equivalent (weekly × 52/12, yearly ÷ 12, monthly × 1) so the
+/// total represents a single comparable monthly picture regardless of how
+/// individual budgets reset.
 struct BudgetsView: View {
     @Environment(\.modelContext) private var context
-    @Environment(\.dismiss) private var dismiss
     @AppStorage("primaryCurrencyCode") private var currencyCode: String = "INR"
 
     @Query(filter: #Predicate<Budget> { $0.isActive == true },
@@ -17,26 +20,68 @@ struct BudgetsView: View {
 
     @Query private var expenses: [Expense]
 
-    @State private var showingAddBudget = false
+    @State private var showingAddBudget   = false
+    @State private var showingOverallEdit = false
     @State private var editingBudget: Budget?
+
+    // MARK: - Derived
+
+    /// The stored Overall budget record, if the user has set one.
+    private var overallBudget: Budget? {
+        budgets.first { $0.category == nil }
+    }
+
+    /// All active category budgets across any period.
+    private var allCategoryBudgets: [Budget] {
+        budgets.filter { $0.category != nil }
+    }
+
+    /// Converts any budget's amount to a monthly equivalent so the
+    /// pinned card can aggregate across periods fairly.
+    private func monthlyEquivalent(_ budget: Budget) -> Double {
+        switch budget.period {
+        case .weekly:  return budget.amount * (52.0 / 12.0)
+        case .monthly: return budget.amount
+        case .yearly:  return budget.amount / 12.0
+        }
+    }
+
+    /// Sum of all category budgets expressed as monthly equivalents.
+    private var categoryMonthlySum: Double {
+        allCategoryBudgets.reduce(0) { $0 + monthlyEquivalent($1) }
+    }
+
+    /// The number shown as "total" in the pinned card.
+    /// Uses the user-set Overall amount when it exceeds the auto-sum;
+    /// otherwise falls back to the auto-sum.
+    private var overallDisplayTotal: Double {
+        max(overallBudget?.amount ?? 0, categoryMonthlySum)
+    }
+
+    /// Portion of the overall total not covered by any category budget.
+    private var uncategorizedAmount: Double {
+        max(0, overallDisplayTotal - categoryMonthlySum)
+    }
+
+    /// Actual spending in the current calendar month across all categories.
+    private var totalMonthlySpent: Double {
+        let cal = Calendar.current
+        guard let window = cal.dateInterval(of: .month, for: .now) else { return 0 }
+        return expenses
+            .filter { $0.date >= window.start && $0.date < window.end }
+            .reduce(0) { $0 + $1.amount }
+    }
 
     // MARK: - Sectioning
 
-    /// Groups budgets by period so all monthly budgets appear together,
-    /// then weekly, then yearly. Within a period: Overall first (special),
-    /// then by createdAt (newest first, matching @Query order).
+    /// Category budgets grouped by period (Monthly → Weekly → Yearly).
+    /// Overall budgets are excluded — they live only in the pinned card.
     private var sectionedBudgets: [(period: BudgetPeriod, budgets: [Budget])] {
-        // Use a fixed period order — monthly is the dominant case, show first.
         let orderedPeriods: [BudgetPeriod] = [.monthly, .weekly, .yearly]
         return orderedPeriods.compactMap { p in
             let items = budgets
-                .filter { $0.period == p }
-                .sorted { lhs, rhs in
-                    // Overall always sorts first within a period
-                    if lhs.category == nil && rhs.category != nil { return true }
-                    if lhs.category != nil && rhs.category == nil { return false }
-                    return lhs.createdAt > rhs.createdAt
-                }
+                .filter { $0.period == p && $0.category != nil }
+                .sorted { $0.createdAt > $1.createdAt }
             return items.isEmpty ? nil : (p, items)
         }
     }
@@ -44,12 +89,57 @@ struct BudgetsView: View {
     // MARK: - Body
 
     var body: some View {
-        Group {
-            if budgets.isEmpty {
-                emptyState
-            } else {
-                budgetsList
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+
+                // Pinned overall card — always visible
+                OverallBudgetCard(
+                    categoryBudgets:   allCategoryBudgets,
+                    overallBudget:     overallBudget,
+                    monthlyEquivalent: monthlyEquivalent,
+                    displayTotal:      overallDisplayTotal,
+                    uncategorized:     uncategorizedAmount,
+                    totalMonthlySpent: totalMonthlySpent,
+                    currencyCode:      currencyCode
+                ) {
+                    showingOverallEdit = true
+                }
+
+                // Per-category budgets grouped by period
+                if sectionedBudgets.isEmpty {
+                    categoryEmptyPrompt
+                } else {
+                    ForEach(sectionedBudgets, id: \.period) { section in
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text(section.period.displayName)
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                                .padding(.horizontal, 4)
+
+                            ForEach(section.budgets) { budget in
+                                Button {
+                                    Haptics.tap()
+                                    editingBudget = budget
+                                } label: {
+                                    BudgetCard(budget: budget,
+                                               expenses: expenses,
+                                               currencyCode: currencyCode)
+                                }
+                                .buttonStyle(.plain)
+                                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                                    Button(role: .destructive) {
+                                        delete(budget)
+                                    } label: {
+                                        Label("Delete", systemImage: "trash")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 16)
         }
         .background(Color.tulaBackground)
         .navigationTitle("Budgets")
@@ -68,85 +158,301 @@ struct BudgetsView: View {
             }
         }
         .sheet(isPresented: $showingAddBudget) {
-            BudgetFormView()
+            BudgetFormView(categoryAutoTotal: categoryMonthlySum)
+        }
+        .sheet(isPresented: $showingOverallEdit) {
+            BudgetFormView(existingBudget: overallBudget,
+                           categoryAutoTotal: categoryMonthlySum)
         }
         .sheet(item: $editingBudget) { b in
-            BudgetFormView(existingBudget: b)
+            BudgetFormView(existingBudget: b,
+                           categoryAutoTotal: categoryMonthlySum)
         }
     }
 
-    // MARK: - List
+    // MARK: - Category empty prompt
 
-    private var budgetsList: some View {
-        List {
-            ForEach(sectionedBudgets, id: \.period) { section in
-                Section {
-                    ForEach(section.budgets) { budget in
-                        Button {
-                            Haptics.tap()
-                            editingBudget = budget
-                        } label: {
-                            BudgetCard(budget: budget,
-                                       expenses: expenses,
-                                       currencyCode: currencyCode)
-                        }
-                        .buttonStyle(.plain)
-                        .listRowInsets(EdgeInsets(top: 6, leading: 16,
-                                                  bottom: 6, trailing: 16))
-                        .listRowBackground(Color.clear)
-                        .listRowSeparator(.hidden)
-                    }
-                    .onDelete { offsets in
-                        delete(from: section.budgets, at: offsets)
-                    }
-                } header: {
-                    Text(section.period.displayName)
-                }
-            }
-        }
-        .listStyle(.insetGrouped)
-    }
-
-    // MARK: - Empty State
-
-    private var emptyState: some View {
-        VStack(spacing: 16) {
-            Image(systemName: "chart.pie")
-                .font(.system(size: 48, weight: .light))
+    private var categoryEmptyPrompt: some View {
+        VStack(spacing: 14) {
+            Image(systemName: "plus.circle.dashed")
+                .font(.system(size: 36, weight: .light))
                 .foregroundStyle(.tertiary)
-            Text("No Budgets Yet")
-                .font(.title3.weight(.semibold))
-            Text("Set spending caps for categories\nor an overall monthly limit.")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
+
+            VStack(spacing: 6) {
+                Text("No Category Budgets")
+                    .font(.subheadline.weight(.semibold))
+                Text("Add caps for Groceries, Transport, or any\ncategory — they roll up into the card above.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            }
+
             Button {
                 Haptics.tap()
                 showingAddBudget = true
             } label: {
-                Label("Create Budget", systemImage: "plus")
-                    .font(.body.weight(.semibold))
-                    .padding(.horizontal, 20)
-                    .padding(.vertical, 10)
+                Label("Add Budget", systemImage: "plus")
+                    .font(.subheadline.weight(.semibold))
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 9)
                     .background(Color.tulaBrandFallback, in: Capsule())
                     .foregroundStyle(.white)
             }
             .buttonStyle(.plain)
-            .padding(.top, 8)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding(.horizontal, 32)
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 32)
+        .padding(.horizontal, 24)
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(Color.tulaCardSurface)
+        )
     }
 
     // MARK: - Delete
 
-    private func delete(from list: [Budget], at offsets: IndexSet) {
+    private func delete(_ budget: Budget) {
         Haptics.warning()
-        for index in offsets {
-            context.delete(list[index])
-        }
+        context.delete(budget)
         try? context.save()
     }
+}
+
+// MARK: - Overall Budget Card
+
+/// Pinned summary card at the top of BudgetsView.
+///
+/// Aggregates all category budgets by converting each to a monthly
+/// equivalent (weekly × 52/12, yearly ÷ 12, monthly × 1). The donut
+/// chart on the right shows how the monthly total is split across
+/// categories; the left column shows the portion not allocated to any
+/// specific category ("Uncategorized"). A progress bar tracks actual
+/// monthly spending vs the total.
+struct OverallBudgetCard: View {
+    let categoryBudgets:   [Budget]
+    let overallBudget:     Budget?
+    let monthlyEquivalent: (Budget) -> Double
+    let displayTotal:      Double
+    let uncategorized:     Double
+    let totalMonthlySpent: Double
+    let currencyCode:      String
+    let onEdit:            () -> Void
+
+    // MARK: - Pie data
+
+    /// One slice per category budget (monthly-equivalent amount) plus an
+    /// optional Uncategorized slice. A single placeholder keeps the chart
+    /// from rendering empty when no budgets exist.
+    private var pieSlices: [PieSlice] {
+        var slices = categoryBudgets
+            .map { b in
+                PieSlice(
+                    name:   b.displayName,
+                    period: b.period,
+                    amount: monthlyEquivalent(b),
+                    color:  Color(hex: b.category?.colorHex ?? "#D97706")
+                )
+            }
+            .sorted { $0.amount > $1.amount }
+
+        if uncategorized > 0 {
+            slices.append(PieSlice(
+                name:   "Uncategorized",
+                period: nil,
+                amount: uncategorized,
+                color:  Color(uiColor: .tertiarySystemFill)
+            ))
+        }
+
+        // Guard: if everything is zero (or list is empty), show a placeholder.
+        if slices.isEmpty || slices.allSatisfy({ $0.amount == 0 }) {
+            return [PieSlice(name: "No budgets yet",
+                             period: nil,
+                             amount: 1,
+                             color: Color(uiColor: .tertiarySystemFill))]
+        }
+        return slices
+    }
+
+    private var progress: Double {
+        guard displayTotal > 0 else { return 0 }
+        return totalMonthlySpent / displayTotal
+    }
+
+    private var isOverBudget: Bool { progress > 1.0 }
+
+    // MARK: - Body
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            headerRow
+            Divider()
+            bodyRow
+            if categoryBudgets.isEmpty {
+                Text("Add category budgets below to start allocating your spending.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                legendRows
+            }
+            if displayTotal > 0 {
+                Divider()
+                progressSection
+            }
+        }
+        .padding(16)
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(Color.tulaCardSurface)
+        )
+    }
+
+    // MARK: - Header
+
+    private var headerRow: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "infinity")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(Color.tulaBrandFallback)
+                .frame(width: 30, height: 30)
+                .background(Color.tulaBrandFallback.opacity(0.15), in: Circle())
+
+            Text("Overall")
+                .font(.headline)
+
+            Spacer()
+
+            Button {
+                Haptics.tap()
+                onEdit()
+            } label: {
+                Text("Edit")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(Color.tulaBrandFallback)
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    // MARK: - Body row (uncategorized amount + donut chart)
+
+    private var bodyRow: some View {
+        HStack(alignment: .center, spacing: 16) {
+
+            // Left: uncategorized amount
+            VStack(alignment: .leading, spacing: 4) {
+                Text(Currency.format(uncategorized, code: currencyCode))
+                    .font(.title2.bold())
+                    .foregroundStyle(uncategorized > 0 ? .primary : .secondary)
+                    .monospacedDigit()
+                    .contentTransition(.numericText(value: uncategorized))
+                    .animation(.snappy(duration: 0.35), value: uncategorized)
+
+                Text("Uncategorized")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                if displayTotal > 0 {
+                    Text("of \(Currency.format(displayTotal, code: currencyCode)) total")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .monospacedDigit()
+                }
+            }
+
+            Spacer()
+
+            // Right: donut chart
+            Chart(pieSlices) { slice in
+                SectorMark(
+                    angle:        .value("Amount", slice.amount),
+                    innerRadius:  .ratio(0.55),
+                    angularInset: 1.5
+                )
+                .foregroundStyle(slice.color)
+                .cornerRadius(3)
+            }
+            .frame(width: 110, height: 110)
+        }
+    }
+
+    // MARK: - Legend
+
+    private var legendRows: some View {
+        VStack(spacing: 6) {
+            ForEach(pieSlices) { slice in
+                if slice.name != "No budgets yet" {
+                    HStack(spacing: 8) {
+                        Circle()
+                            .fill(slice.color)
+                            .frame(width: 8, height: 8)
+
+                        Text(slice.name)
+                            .font(.subheadline)
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+
+                        // Period badge for non-monthly budgets
+                        if let period = slice.period, period != .monthly {
+                            Text(period.rawValue)
+                                .font(.caption2.weight(.medium))
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 2)
+                                .background(.quaternary, in: Capsule())
+                                .foregroundStyle(.secondary)
+                        }
+
+                        Spacer(minLength: 4)
+
+                        Text(Currency.format(slice.amount, code: currencyCode))
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.primary)
+                            .monospacedDigit()
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: - Progress
+
+    private var progressSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            BudgetProgressBar(progress: progress, isOverBudget: isOverBudget)
+
+            HStack {
+                if isOverBudget {
+                    Text("Over by \(Currency.format(totalMonthlySpent - displayTotal, code: currencyCode)) this month")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.red)
+                        .monospacedDigit()
+                } else {
+                    Text("Spent \(Currency.format(totalMonthlySpent, code: currencyCode)) of \(Currency.format(displayTotal, code: currencyCode)) this month")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
+                Spacer()
+                let remaining = max(0, displayTotal - totalMonthlySpent)
+                if remaining > 0 {
+                    Text("\(Currency.format(remaining, code: currencyCode)) left")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(progress >= 0.75 ? .orange : .secondary)
+                        .monospacedDigit()
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Pie Slice
+
+private struct PieSlice: Identifiable {
+    let id     = UUID()
+    let name:   String
+    let period: BudgetPeriod?
+    let amount: Double
+    let color:  Color
 }
 
 // MARK: - Budget Card

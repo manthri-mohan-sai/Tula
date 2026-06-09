@@ -16,6 +16,11 @@ struct BudgetFormView: View {
     /// nil = create mode, non-nil = edit mode.
     let existingBudget: Budget?
 
+    /// Auto-computed monthly equivalent total from all category budgets.
+    /// Shown as a hint when scope is Overall so the user understands what
+    /// the sum already adds up to before they type a custom cap.
+    var categoryAutoTotal: Double = 0
+
     // MARK: - Form state
 
     @State private var scope: Scope = .category
@@ -31,8 +36,9 @@ struct BudgetFormView: View {
         var id: String { rawValue }
     }
 
-    init(existingBudget: Budget? = nil) {
-        self.existingBudget = existingBudget
+    init(existingBudget: Budget? = nil, categoryAutoTotal: Double = 0) {
+        self.existingBudget    = existingBudget
+        self.categoryAutoTotal = categoryAutoTotal
     }
 
     // MARK: - Validation
@@ -99,6 +105,13 @@ struct BudgetFormView: View {
                         Label("All categories count toward this budget", systemImage: "infinity")
                             .foregroundStyle(.secondary)
                             .font(.subheadline)
+                        if categoryAutoTotal > 0 {
+                            let formatted = Currency.format(categoryAutoTotal,
+                                                           code: currencyCode)
+                            Text("Category budgets total \(formatted)/mo. Set a higher amount to track unallocated spending.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                 }
 
