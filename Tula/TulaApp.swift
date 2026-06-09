@@ -225,14 +225,34 @@ enum WidgetRefresh {
             .filter { $0.date >= dayStart }
             .reduce(0) { $0 + $1.amount }
 
-        // Active budgets — only monthly ones for the snapshot.
+        // Active budgets — all periods, all scopes.
         let budgetFetch = FetchDescriptor<Budget>(
             predicate: #Predicate { $0.isActive == true }
         )
         let allBudgets = (try? context.fetch(budgetFetch)) ?? []
-        let monthlyBudgets = allBudgets.filter { $0.period == .monthly }
 
-        let entries: [WidgetSnapshot.Entry] = monthlyBudgets
+        // Mirror BudgetsView: separate Overall from Category budgets.
+        let overallBudget   = allBudgets.first { $0.category == nil }
+        let categoryBudgets = allBudgets.filter { $0.category != nil }
+
+        // Same weekly/yearly → monthly conversion as BudgetsView.monthlyEquivalent.
+        func monthlyEquiv(_ b: Budget) -> Double {
+            switch b.period {
+            case .weekly:  return b.amount * (52.0 / 12.0)
+            case .monthly: return b.amount
+            case .yearly:  return b.amount / 12.0
+            }
+        }
+
+        let categoryMonthlySum = categoryBudgets.reduce(0) { $0 + monthlyEquiv($1) }
+
+        // displayTotal = max(overall, categorySum) — mirrors BudgetsView.overallDisplayTotal.
+        // Prevents double-counting when both an Overall and Category budgets coexist.
+        let totalCap = max(overallBudget?.amount ?? 0, categoryMonthlySum)
+
+        // topBudgets: category rows only — Overall is already the aggregate cap.
+        // All periods included; Budget.spent() filters to the correct period window.
+        let entries: [WidgetSnapshot.Entry] = categoryBudgets
             .map { b -> WidgetSnapshot.Entry in
                 let spent = b.spent(in: monthExpenses)
                 return WidgetSnapshot.Entry(
@@ -242,15 +262,12 @@ enum WidgetRefresh {
                     spent: spent,
                     colorHex: b.category?.colorHex ?? "#D97706",
                     iconKey: b.category?.iconKey ?? "infinity",
-                    isOverall: b.category == nil
+                    isOverall: false
                 )
             }
             .sorted { $0.progress > $1.progress }
             .prefix(4)
             .map { $0 }
-
-        // Total cap across all monthly budgets — what the user committed to.
-        let totalCap = monthlyBudgets.reduce(0) { $0 + $1.amount }
 
         // 7-day sparkline (oldest-first).
         var dailyTotals: [Double] = Array(repeating: 0, count: 7)
