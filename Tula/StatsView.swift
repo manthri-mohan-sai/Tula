@@ -887,11 +887,8 @@ struct StatsView: View {
     private var categoryDonutHeader: some View {
         HStack(alignment: .center, spacing: Spacing.lg) {
             ZStack {
-                CategoryDonut(
-                    slices: donutSlices,
-                    lineWidth: 14
-                )
-                .frame(width: 120, height: 120)
+                CategoryDonut(slices: donutSlices)
+                    .frame(width: 120, height: 120)
 
                 VStack(spacing: 2) {
                     Text("Total")
@@ -1139,71 +1136,22 @@ struct DonutSlice: Identifiable, Equatable {
     let fraction: Double
 }
 
-/// Minimalist donut chart that renders slices as colored arc segments
-/// with a small gap between each. No animations on initial render — the
-/// donut sits in a stats screen where data changes are deliberate user
-/// actions (period change), not surprises.
-///
-/// Drawn with SwiftUI `Path` arcs rather than Charts framework because:
-///   1. We need precise control over slice gaps + corner-rounding.
-///   2. No interactivity needed — display-only chart.
-///   3. Smaller surface area / no Charts ceremony.
+/// SectorMark-based donut chart matching the style used in BudgetsView/OverallBudgetCard.
+/// Slices are expected to sum to 1.0; the "Other" bucket in the caller handles
+/// any remainder so no background ring is needed.
 struct CategoryDonut: View {
     let slices: [DonutSlice]
-    let lineWidth: CGFloat
-
-    /// Visual gap between adjacent slices, in degrees. Small enough not
-    /// to lose space but visible enough to read each slice as distinct.
-    private let gapDegrees: Double = 2.0
 
     var body: some View {
-        GeometryReader { geo in
-            let size = min(geo.size.width, geo.size.height)
-            let radius = (size - lineWidth) / 2
-            let center = CGPoint(x: geo.size.width / 2, y: geo.size.height / 2)
-
-            ZStack {
-                // Background ring — visible only if slices don't sum to 1
-                // (defensive, since they should). Soft fill so it doesn't
-                // compete with slice colors.
-                Circle()
-                    .strokeBorder(Color.gray.opacity(0.10), lineWidth: lineWidth)
-
-                ForEach(Array(arcSpans.enumerated()), id: \.offset) { _, span in
-                    Path { path in
-                        path.addArc(
-                            center: center,
-                            radius: radius,
-                            startAngle: .degrees(span.start),
-                            endAngle: .degrees(span.end),
-                            clockwise: false
-                        )
-                    }
-                    .stroke(
-                        span.color,
-                        style: StrokeStyle(lineWidth: lineWidth, lineCap: .butt)
-                    )
-                }
-            }
+        Chart(slices) { slice in
+            SectorMark(
+                angle:        .value("Amount", slice.fraction),
+                innerRadius:  .ratio(0.55),
+                angularInset: 1.5
+            )
+            .foregroundStyle(slice.color)
+            .cornerRadius(3)
         }
-    }
-
-    /// Walks the slices and produces start/end angles, with a small gap
-    /// inserted between adjacent slices. Starts at the top of the circle
-    /// (-90°) so the first slice begins where the eye lands first.
-    private var arcSpans: [(start: Double, end: Double, color: Color)] {
-        var spans: [(Double, Double, Color)] = []
-        var cursor: Double = -90
-        let totalGap = gapDegrees * Double(slices.count)
-        let usable = 360 - totalGap
-
-        for slice in slices {
-            let span = slice.fraction * usable
-            let start = cursor
-            let end = cursor + span
-            spans.append((start, end, slice.color))
-            cursor = end + gapDegrees
-        }
-        return spans
+        .chartLegend(.hidden)
     }
 }
