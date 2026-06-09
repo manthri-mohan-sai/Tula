@@ -372,16 +372,21 @@ enum RecurringEngine {
     /// into the given context. Marked `internal` (no access level) so the
     /// notification-response handler can call it when the user taps
     /// "Log it" on a confirmation notification.
-    static func createTransaction(rule: RecurringRule, date: Date, in context: ModelContext) {
+    static func createTransaction(rule: RecurringRule, date: Date, in context: ModelContext, fallbackName: String? = nil) {
         switch rule.kind {
         case .expense:
-            let merchantName = (rule.merchant?.trimmingCharacters(in: .whitespaces).isEmpty == false)
+            var merchantName = (rule.merchant?.trimmingCharacters(in: .whitespaces).isEmpty == false)
                 ? rule.merchant! : rule.name
+            if merchantName.isEmpty, let fallback = fallbackName, !fallback.isEmpty {
+                merchantName = fallback
+            }
+            let itemName = (rule.note?.trimmingCharacters(in: .whitespaces).isEmpty == false)
+                ? rule.note : rule.name
             let expense = Expense(
                 amount: rule.amount,
                 date: date,
                 merchant: merchantName,
-                note: rule.note,
+                note: itemName,
                 source: .recurring,
                 category: rule.category,
                 account: rule.account

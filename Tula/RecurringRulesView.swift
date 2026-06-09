@@ -782,16 +782,8 @@ struct RecurringRuleFormView: View {
         Picker("Category", selection: $category) {
             Text("None").tag(Category?.none)
             ForEach(activeCategories) { cat in
-                categoryRow(cat).tag(Category?.some(cat))
+                Text(cat.name).tag(Category?.some(cat))
             }
-        }
-    }
-
-    private func categoryRow(_ cat: Category) -> some View {
-        HStack {
-            Image(systemName: cat.iconKey)
-                .foregroundStyle(Color(hex: cat.colorHex))
-            Text(cat.name)
         }
     }
 
@@ -799,16 +791,8 @@ struct RecurringRuleFormView: View {
         Picker(label, selection: selection) {
             Text("Select").tag(Account?.none)
             ForEach(activeAccounts) { acc in
-                accountRow(acc).tag(Account?.some(acc))
+                Text(acc.name).tag(Account?.some(acc))
             }
-        }
-    }
-
-    private func accountRow(_ acc: Account) -> some View {
-        HStack {
-            Image(systemName: acc.iconKey)
-                .foregroundStyle(Color(hex: acc.colorHex))
-            Text(acc.name)
         }
     }
 

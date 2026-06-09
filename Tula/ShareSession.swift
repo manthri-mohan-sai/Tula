@@ -97,7 +97,12 @@ final class ShareSession: ObservableObject {
     /// Nil = high confidence = no banner.
     @Published var parseWarning: String?
     @Published var items: [ReceiptLineItem] = []
+    @Published var discount: Double = 0
+    @Published var tax: Double = 0
     @Published var parsingStatus: String = ""
+    @Published var availableCategories: [String] = []
+    @Published var availableAccounts: [(name: String, id: UUID)] = []
+    @Published var selectedAccountName: String?
 
     // MARK: - Wiring
 
@@ -314,7 +319,7 @@ final class ShareSession: ObservableObject {
         if isDirectImageMode {
             mergedAmount = smartResult?.amount ?? 0
             mergedMerchant = smartResult?.merchant ?? ""
-            resolvedDate = Self.parseISODate(smartResult?.date) ?? .now
+            resolvedDate = Self.parseISODate(smartResult?.date, time: smartResult?.time) ?? .now
         } else {
             let isStructuredDoc = regexResult?.documentType == .upi
                 || regexResult?.documentType == .orderSummary
@@ -328,12 +333,26 @@ final class ShareSession: ObservableObject {
             } else {
                 mergedMerchant = smartResult?.merchant ?? regexResult?.merchant ?? ""
             }
-            resolvedDate = regexResult?.date ?? Self.parseISODate(smartResult?.date) ?? .now
+            if let regDate = regexResult?.date {
+                let cal = Calendar.current
+                let dayComps = cal.dateComponents([.year, .month, .day], from: regDate)
+                let nowTime = cal.dateComponents([.hour, .minute, .second], from: .now)
+                var merged = dayComps
+                merged.hour = nowTime.hour
+                merged.minute = nowTime.minute
+                merged.second = nowTime.second
+                resolvedDate = cal.date(from: merged) ?? regDate
+            } else {
+                resolvedDate = Self.parseISODate(smartResult?.date, time: smartResult?.time) ?? .now
+            }
         }
 
         if let smart = smartResult, !smart.items.isEmpty {
             extractedItems = smart.items
-            let parts = smart.items.map { "\($0.name) ₹\(Int($0.price))" }
+            let parts = smart.items.map { item in
+                let qty = item.quantity > 1 ? " ×\(item.quantity)" : ""
+                return "\(item.name)\(qty) ₹\(Int(item.price))"
+            }
             noteText = parts.joined(separator: " · ")
         } else if !isDirectImageMode {
             extractedItems = []
@@ -348,15 +367,20 @@ final class ShareSession: ObservableObject {
             fmSuggestion: smartResult?.category
         )
 
-        let warning: String? = {
+        let warning: String? = await {
             if smartResult == nil {
-                return "Could not read receipt — check your connection or try again."
+                return await MainActor.run { CloudAIParser.lastParseError }
+                    ?? "Could not read receipt. Check your connection or try again."
             }
             if isDirectImageMode { return nil }
             let fmHelped = smartResult?.amount != nil && smartResult?.merchant != nil
             if fmHelped { return nil }
             return regexResult?.confidenceReason
         }()
+
+        let (categoryNames, accountEntries, matchedAccountName) = await Self.loadPickerData(
+            paymentMode: smartResult?.paymentMode
+        )
 
         await MainActor.run { [weak self] in
             guard let self else { return }
@@ -365,10 +389,15 @@ final class ShareSession: ObservableObject {
             self.date = resolvedDate
             self.note = noteText
             self.items = extractedItems
+            self.discount = smartResult?.discount ?? 0
+            self.tax = smartResult?.tax ?? 0
             self.categoryName = resolvedCategoryName
             self.usedSmartParser = smartResult != nil
             self.parseWarning = warning
             self.parsingStatus = ""
+            self.availableCategories = categoryNames
+            self.availableAccounts = accountEntries
+            self.selectedAccountName = matchedAccountName
             self.phase = .preview
         }
     }
@@ -413,13 +442,17 @@ final class ShareSession: ObservableObject {
                 fmSuggestion: fmCategory
             )
 
+            let (categoryNames, accountEntries, _) = await Self.loadPickerData(paymentMode: nil)
+
             await MainActor.run { [weak self] in
                 guard let self else { return }
                 self.amount = parsedAmount
                 self.merchant = parsedMerchant
-                self.note = parsedAmount > 0 ? "" : text  // raw text as note if we couldn't parse
+                self.note = parsedAmount > 0 ? "" : text
                 self.categoryName = resolvedCategoryName
                 self.usedSmartParser = smartSucceeded
+                self.availableCategories = categoryNames
+                self.availableAccounts = accountEntries
                 self.phase = .preview
             }
         }
@@ -461,7 +494,14 @@ final class ShareSession: ObservableObject {
         // - Account: first account by sortOrder (the user's primary)
         // - Category: try to match the FM-suggested name, else "Other"
         let accountFetch = FetchDescriptor<Account>(sortBy: [SortDescriptor(\.sortOrder)])
-        guard let account = try? context.fetch(accountFetch).first(where: { !$0.isArchived }) else {
+        let allAccounts = (try? context.fetch(accountFetch))?.filter { !$0.isArchived } ?? []
+        let account: Account
+        if let selected = selectedAccountName,
+           let match = allAccounts.first(where: { $0.name == selected }) {
+            account = match
+        } else if let first = allAccounts.first {
+            account = first
+        } else {
             phase = .failed("No account set up")
             return
         }
@@ -521,13 +561,32 @@ final class ShareSession: ObservableObject {
 
     // MARK: - Helpers
 
-    /// Parse YYYY-MM-DD from FM into a Date. Returns nil for nil/invalid.
-    private static func parseISODate(_ string: String?) -> Date? {
-        guard let string, !string.isEmpty else { return nil }
+    private static func parseISODate(_ dateString: String?, time timeString: String? = nil) -> Date? {
+        guard let dateString, !dateString.isEmpty else { return nil }
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "yyyy-MM-dd"
-        return formatter.date(from: string)
+        guard let dateOnly = formatter.date(from: dateString) else { return nil }
+
+        let cal = Calendar.current
+        let dayComps = cal.dateComponents([.year, .month, .day], from: dateOnly)
+
+        if let timeString, !timeString.isEmpty {
+            let parts = timeString.split(separator: ":").compactMap { Int($0) }
+            if parts.count >= 2 {
+                var merged = dayComps
+                merged.hour = parts[0]
+                merged.minute = parts[1]
+                return cal.date(from: merged)
+            }
+        }
+
+        let nowTime = cal.dateComponents([.hour, .minute, .second], from: .now)
+        var merged = dayComps
+        merged.hour = nowTime.hour
+        merged.minute = nowTime.minute
+        merged.second = nowTime.second
+        return cal.date(from: merged)
     }
 
     /// Load the user's actual non-archived categories from the shared
@@ -568,6 +627,44 @@ final class ShareSession: ObservableObject {
             return categories.map {
                 CategoryEntry(name: $0.name, iconKey: $0.iconKey)
             }
+        }
+    }
+
+    private static func loadPickerData(paymentMode: String?) async -> (
+        categories: [String],
+        accounts: [(name: String, id: UUID)],
+        matchedAccount: String?
+    ) {
+        return await MainActor.run {
+            guard let container = SharedStorage.makeSharedContainer() else {
+                return ([], [], nil)
+            }
+            let context = ModelContext(container)
+
+            let catDescriptor = FetchDescriptor<Category>(
+                predicate: #Predicate { !$0.isArchived },
+                sortBy: [SortDescriptor(\.sortOrder)]
+            )
+            let categories = (try? context.fetch(catDescriptor)) ?? []
+            let catNames = categories.map(\.name)
+
+            let accDescriptor = FetchDescriptor<Account>(sortBy: [SortDescriptor(\.sortOrder)])
+            let accounts = (try? context.fetch(accDescriptor))?.filter { !$0.isArchived } ?? []
+            let accEntries = accounts.map { (name: $0.name, id: $0.id) }
+
+            var matched: String? = nil
+            if let mode = paymentMode?.lowercased(), !mode.isEmpty {
+                let match = accounts.first { acc in
+                    let name = acc.name.lowercased()
+                    return name.contains(mode) || mode.contains(name)
+                        || (mode.contains("cash") && name.contains("cash"))
+                        || (mode.contains("upi") && (name.contains("upi") || name.contains("gpay") || name.contains("phonepe") || name.contains("paytm")))
+                        || ((mode.contains("card") || mode.contains("credit") || mode.contains("debit")) && (name.contains("card") || name.contains("credit") || name.contains("debit")))
+                }
+                matched = match?.name
+            }
+
+            return (catNames, accEntries, matched)
         }
     }
 

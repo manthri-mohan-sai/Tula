@@ -20,6 +20,8 @@ private let aiLog = Logger(subsystem: "com.app.Tula", category: "CloudAI")
 
 enum CloudAIParser {
 
+    @MainActor static var lastParseError: String?
+
     // MARK: - Text / Voice Parse
 
     static func parse(_ input: String,
@@ -312,11 +314,12 @@ enum CloudAIParser {
         let cfg = config ?? CloudAIConfig.load()
         guard !cfg.apiKey.isEmpty else {
             aiLog.error("parseReceiptImage: API key is empty")
+            await MainActor.run { lastParseError = "AI provider not configured. Add your API key in Settings." }
             return nil
         }
         aiLog.info("parseReceiptImage: starting, model=\(cfg.model), imageSize=\(imageData.count / 1024)KB, contextLen=\(contextBlock.count)")
 
-        let resizedData = Self.resizeImageData(imageData, maxDimension: 2048, quality: 0.85)
+        let resizedData = Self.resizeImageData(imageData, maxDimension: 1280, quality: 0.65)
         let finalImageData = resizedData ?? imageData
 
         aiLog.info("parseReceiptImage: image \(imageData.count / 1024)KB → \(finalImageData.count / 1024)KB")
@@ -336,14 +339,25 @@ enum CloudAIParser {
             )
         }
 
+        await MainActor.run { lastParseError = nil }
+
         guard let json = await callImageChatCompletions(
             config: cfg,
             systemPrompt: systemPrompt,
             imageBase64: base64Image,
             mimeType: mimeType
-        ) else { return nil }
+        ) else {
+            if await MainActor.run(body: { lastParseError }) == nil {
+                await MainActor.run { lastParseError = "Couldn't read the receipt. Try a clearer photo or enter details manually." }
+            }
+            return nil
+        }
 
-        return validateReceiptResult(decodeReceiptJSON(json))
+        let result = validateReceiptResult(decodeReceiptJSON(json))
+        if result.amount <= 0 {
+            await MainActor.run { lastParseError = "Couldn't find a total on this receipt. Please enter the amount manually." }
+        }
+        return result
     }
 
     private static func buildGeminiImagePrompt(categories: [CategoryEntry], contextBlock: String = "") -> String {
@@ -353,55 +367,32 @@ enum CloudAIParser {
         let contextSection = contextBlock.isEmpty ? "" : "\n\n\(contextBlock)\n"
 
         return """
-        You are a receipt parser. Read this receipt image and extract ALL of \
-        the following fields. Every field matters — do NOT skip any.
+        Extract receipt data into JSON with these fields:
         \(contextSection)
-        FIELD: "amount" (number, REQUIRED)
-        The GRAND TOTAL — the final amount the customer paid. Look for the \
-        largest bold number near the bottom, labeled "Total" / "Grand Total" / \
-        "Net Amount" / "Bill Total" / "Amount Paid". Read every digit exactly \
-        as printed. Never round or estimate. Indian number format: "1,250" = \
-        1250. If the same number appears as both "Subtotal" and "Total", the \
-        amount is that number ONCE.
+        "amount": GRAND TOTAL the customer paid (number). Look for "Total"/"Grand Total"/"Bill Total"/"Amount Paid" near the bottom.
 
-        FIELD: "merchant" (string, REQUIRED)
-        The business name — the restaurant, shop, or store name. Title-case it.
-        **DELIVERY APP SCREENSHOTS (Swiggy, Zomato, Blinkit, Zepto, Instamart):**
-        The app name (Swiggy, Zomato, etc.) is NEVER the merchant. Look for \
-        the RESTAURANT or STORE name — it appears below the app header, often \
-        with a cuisine type, rating, or location subtitle next to it. Examples: \
-        "Meghana Foods", "Paradise Biryani", "Burger King", "DMart". The app \
-        brand is just the platform — the merchant is who prepared/sold the food.
-        **PRINTED RECEIPTS:** The merchant is usually at the top in larger text.
-        If a merchant in the FREQUENT MERCHANTS list (above) visually matches \
-        what's printed — even partially or with OCR errors — use the canonical \
-        spelling from the list.
+        "merchant": Business name from the receipt header, title-cased (string). \
+        For delivery apps (Swiggy/Zomato/Blinkit), use the RESTAURANT name, not the app. \
+        **INDIAN CONTEXT**: "Hotel" in India usually means RESTAURANT, not accommodation. \
+        "Subbaiah Gari Hotel", "Udupi Hotel", "Sagar Hotel" are all restaurants.
 
-        FIELD: "items" (array, REQUIRED — must not be empty for receipts)
-        List EVERY purchased product, dish, or service as a separate object \
-        with "name" (string) and "price" (number). Read each line item from \
-        the receipt — do NOT skip any, do NOT merge items. If a line shows \
-        quantity and total (e.g. "Naan x2 = 80"), use the line total (80). \
-        EXCLUDE: tax, CGST, SGST, GST, VAT, service charge, delivery fee, \
-        discount, subtotal, total, tip, round-off, packaging, container charge.
+        "items": Array of {"name","price","quantity"}. \
+        name = item name ONLY (no prices, no amounts — strip "370" from "SPL VEG MEALS - 370"). \
+        price = line total (qty × unit price). quantity = integer (default 1). \
+        EXCLUDE: tax/GST/CGST/SGST/VAT/service charge/discount/subtotal/total/tip/round-off/packaging.
 
-        FIELD: "category" (string, REQUIRED)
-        Pick exactly ONE from this list based on the merchant and items:
+        "discount": Total discount as positive number. null if none.
+        "tax": Combined tax (CGST+SGST / GST / VAT / service charge). null if none.
+
+        "category": Pick ONE from this list. \
+        Decide by WHAT WAS PURCHASED, not where. Meals/food/dishes/drinks → "Food". \
+        Groceries/raw ingredients → "Groceries". Medicines → "Health". Fuel → "Transport". \
+        **In India, "Hotel" on a receipt almost always means restaurant = "Food".** \
         \(categoryList)
 
-        FIELD: "date" (string)
-        Transaction date in YYYY-MM-DD format. Indian dates are DD/MM/YYYY \
-        (day first). Return null only if no date is visible on the receipt.
-
-        BEFORE YOU RESPOND — verify your answer:
-        1. Add up all item prices. Does the sum roughly equal the amount \
-        (within ±25% for tax/service charge)? If not, re-read the receipt.
-        2. Did you list EVERY visible line item? Count them on the receipt \
-        and count them in your items array — they must match.
-        3. Is the amount the GRAND TOTAL printed on the receipt, not a \
-        subtotal or a single item's price?
-        4. Is the merchant the actual business name from the receipt header?
-        Take your time. One correct answer is worth more than a fast wrong one.
+        "date": YYYY-MM-DD. Indian dates are DD/MM/YYYY (day first). null if missing.
+        "time": HH:MM (24h). null if missing.
+        "payment_mode": Cash/Card/UPI/etc. null if not visible.
         """
     }
 
@@ -532,7 +523,7 @@ enum CloudAIParser {
         You are a JSON-only receipt parser. You MUST respond with ONLY a single valid JSON object. \
         No explanations, no markdown, no code fences, no extra text before or after the JSON.
 
-        Schema: {"amount":number,"merchant":string|null,"date":"YYYY-MM-DD"|null,"category":string|null,"items":[{"name":string,"price":number}]}
+        Schema: {"amount":number,"merchant":string|null,"date":"YYYY-MM-DD"|null,"time":"HH:MM"|null,"category":string|null,"payment_mode":string|null,"items":[{"name":string,"price":number}]}
 
         You are TULA's senior receipt parser. Your output goes DIRECTLY \
         into the user's expense database with no review. Wrong values \
@@ -546,24 +537,38 @@ enum CloudAIParser {
           value, printed verbatim on the receipt. NEVER sum two values \
           to derive it.
 
-        - **merchant**: business / place name. Title-cased. If NO clear \
-          business name appears, INFER a GENERIC PLACE TYPE from the \
-          items: "Restaurant", "Pharmacy", "Grocery Store", etc.
+        - **merchant**: business / place name. Title-cased. \
+          For delivery apps (Swiggy/Zomato/Blinkit), use the RESTAURANT name, \
+          not the app. If NO clear business name appears, INFER a GENERIC \
+          PLACE TYPE from the items: "Restaurant", "Pharmacy", "Grocery Store", etc.
 
         - **date**: transaction date in YYYY-MM-DD format. null if not present.
 
-        - **items**: EVERY individual purchased item as {"name", "price"}. \
-          Read each line item from the receipt — do NOT skip any, do NOT \
-          merge multiple items into one. Each dish, product, or service \
-          gets its own entry. EXCLUDE tax, subtotal, total, discount, \
-          change, tip, and payment-method lines.
+        - **time**: transaction time in HH:MM (24-hour) format. null if not present.
 
-        - **category**: pick ONE from the list below. Decision priority:
-            1. MERCHANT matches a category's keywords → use that.
-            2. ITEMS suggest a category → use that.
-            3. Other signals in the text.
-            4. NEVER invent a category not in this list.
-            5. **Prefer null over a bad guess.**
+        - **items**: EVERY individual purchased item as {"name", "price", \
+          "quantity"}. Read each line item — do NOT skip any, do NOT merge. \
+          name = item name ONLY (no prices or amounts in the name — strip \
+          "370" from "SPL VEG MEALS - 370"). \
+          Price = line total (not unit price). Quantity = integer (default 1). \
+          EXCLUDE tax, subtotal, total, discount, change, tip lines.
+
+        - **discount**: total discount amount as a positive number. null \
+          if no discount on the receipt.
+
+        - **tax**: total tax (CGST+SGST, GST, VAT, service charge combined). \
+          null if no tax visible.
+
+        - **payment_mode**: how the customer paid — "Cash", "Card", "UPI", \
+          etc. null if not visible on the receipt.
+
+        - **category**: pick ONE from the list below. Decide by WHAT WAS \
+          PURCHASED, not the business type. Meals/food/dishes/drinks → "Food". \
+          Groceries/raw ingredients → "Groceries". Medicines → "Health". \
+          Fuel → "Transport". \
+          **INDIAN CONTEXT**: "Hotel" in India usually means RESTAURANT, \
+          not accommodation — e.g. "Subbaiah Gari Hotel", "Udupi Hotel" = Food. \
+          NEVER invent a category not in this list. Prefer null over a bad guess.
 
         Available categories (parenthesized keywords describe what fits):
         \(categoryList)
@@ -594,29 +599,39 @@ enum CloudAIParser {
         let amount = flexDouble(json["amount"]) ?? 0
         let merchant = json["merchant"] as? String
         let date = json["date"] as? String
+        let time = json["time"] as? String
         let category = json["category"] as? String
+        let paymentMode = json["payment_mode"] as? String
+
+        let discount = flexDouble(json["discount"])
+        let tax = flexDouble(json["tax"])
 
         var items: [ReceiptLineItem] = []
         if let rawItems = json["items"] as? [[String: Any]] {
             for (i, item) in rawItems.enumerated() {
                 let name = item["name"] as? String
                 let price = flexDouble(item["price"])
+                let qty = (item["quantity"] as? Int) ?? (flexDouble(item["quantity"]).map { Int($0) }) ?? 1
                 if let name, let price {
-                    items.append(ReceiptLineItem(name: name, price: price))
+                    items.append(ReceiptLineItem(name: name, price: price, quantity: max(qty, 1)))
                 } else {
                     aiLog.warning("Item[\(i)] dropped: name=\(name ?? "nil"), price=\(String(describing: item["price"]))")
                 }
             }
         }
 
-        aiLog.info("Decoded: amount=\(amount), merchant=\(merchant ?? "nil"), items=\(items.count)/\(json["items"].map { "\(($0 as? [Any])?.count ?? 0)" } ?? "0") raw, date=\(date ?? "nil")")
+        aiLog.info("Decoded: amount=\(amount), merchant=\(merchant ?? "nil"), items=\(items.count)/\(json["items"].map { "\(($0 as? [Any])?.count ?? 0)" } ?? "0") raw, date=\(date ?? "nil"), time=\(time ?? "nil"), discount=\(discount ?? 0), tax=\(tax ?? 0)")
 
         return ReceiptSmartParseResult(
             amount: amount,
             merchant: merchant,
             date: date,
+            time: time,
             category: category,
-            items: items
+            paymentMode: paymentMode,
+            items: items,
+            discount: discount,
+            tax: tax
         )
     }
 
@@ -657,18 +672,34 @@ enum CloudAIParser {
             date = nil
         }
 
+        var time = result.time?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if let t = time, t.isEmpty || t.lowercased() == "null" {
+            time = nil
+        }
+
         var category = result.category?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         if let c = category, c.isEmpty || c.lowercased() == "null" {
             category = nil
         }
 
+        var paymentMode = result.paymentMode?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if let p = paymentMode, p.isEmpty || p.lowercased() == "null" {
+            paymentMode = nil
+        }
+
         return ReceiptSmartParseResult(
             amount: amount,
             merchant: merchant,
             date: date,
+            time: time,
             category: category,
-            items: items
+            paymentMode: paymentMode,
+            items: items,
+            discount: result.discount,
+            tax: result.tax
         )
     }
 
@@ -695,7 +726,7 @@ enum CloudAIParser {
     private enum GeminiOutcome {
         case success([String: Any])
         case rateLimited
-        case failed
+        case failed(String)
     }
 
     private static let geminiFallbackModels = [
@@ -725,7 +756,11 @@ enum CloudAIParser {
             "amount": ["type": "NUMBER", "description": "Grand total amount paid"],
             "merchant": ["type": "STRING", "description": "Business or store name from the receipt"],
             "date": ["type": "STRING", "description": "Date in YYYY-MM-DD format", "nullable": true],
+            "time": ["type": "STRING", "description": "Time in HH:MM (24h) format from the receipt", "nullable": true],
             "category": ["type": "STRING", "description": "Expense category from the provided list"],
+            "payment_mode": ["type": "STRING", "description": "Payment method: Cash, Card, UPI, etc.", "nullable": true],
+            "discount": ["type": "NUMBER", "description": "Total discount amount (positive number)", "nullable": true],
+            "tax": ["type": "NUMBER", "description": "Total tax amount (GST/CGST/SGST/VAT/service charge combined)", "nullable": true],
             "items": [
                 "type": "ARRAY",
                 "description": "Every individual purchased item from the receipt",
@@ -733,7 +768,8 @@ enum CloudAIParser {
                     "type": "OBJECT",
                     "properties": [
                         "name": ["type": "STRING", "description": "Item name as printed on receipt"],
-                        "price": ["type": "NUMBER", "description": "Item price in rupees"]
+                        "price": ["type": "NUMBER", "description": "Line total price in rupees"],
+                        "quantity": ["type": "INTEGER", "description": "Quantity purchased, default 1"]
                     ],
                     "required": ["name", "price"]
                 ]
@@ -849,7 +885,7 @@ enum CloudAIParser {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.timeoutInterval = 90
+        request.timeoutInterval = 60
 
         if config.endpoint.contains("openai.azure.com") {
             request.setValue(config.apiKey, forHTTPHeaderField: "api-key")
@@ -861,16 +897,30 @@ enum CloudAIParser {
 
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
-            guard let httpResponse = response as? HTTPURLResponse,
-                  httpResponse.statusCode == 200 else {
-                if let data = try? await URLSession.shared.data(for: request).0 {
-                    print("🖼️ [CloudAI] Error: \(String(data: data, encoding: .utf8) ?? "")")
+            guard let httpResponse = response as? HTTPURLResponse else {
+                await MainActor.run { lastParseError = "No response from server. Check your internet connection." }
+                return nil
+            }
+            guard httpResponse.statusCode == 200 else {
+                let errorBody = String(data: data, encoding: .utf8) ?? ""
+                aiLog.error("[ImageChat] HTTP \(httpResponse.statusCode): \(errorBody.prefix(300))")
+                if httpResponse.statusCode == 429 {
+                    await MainActor.run { lastParseError = "AI service is busy. Please wait a moment and try again." }
+                } else if httpResponse.statusCode == 401 || httpResponse.statusCode == 403 {
+                    await MainActor.run { lastParseError = "API key is invalid or expired. Check your key in Settings." }
+                } else {
+                    await MainActor.run { lastParseError = "Server error (\(httpResponse.statusCode)). Try again in a moment." }
                 }
                 return nil
             }
             return parseOpenAIResponse(data)
+        } catch let error as URLError where error.code == .timedOut {
+            aiLog.error("[ImageChat] Request timed out")
+            await MainActor.run { lastParseError = "Request timed out. Try a simpler photo or check your connection." }
+            return nil
         } catch {
-            print("🖼️ [CloudAI] Error: \(error.localizedDescription)")
+            aiLog.error("[ImageChat] Network error: \(error.localizedDescription)")
+            await MainActor.run { lastParseError = "Network error. Check your internet connection and try again." }
             return nil
         }
     }
@@ -945,6 +995,7 @@ enum CloudAIParser {
             modelsToTry.append(model)
         }
 
+        var lastErrorMessage = "Couldn't read the receipt. Try a clearer photo or enter details manually."
         for (index, model) in modelsToTry.enumerated() {
             let urlString = "https://generativelanguage.googleapis.com/v1beta/models/\(model):generateContent?key=\(config.apiKey)"
             guard let url = URL(string: urlString) else { continue }
@@ -958,38 +1009,42 @@ enum CloudAIParser {
                 return json
             case .rateLimited:
                 aiLog.warning("[\(label)] \(model) rate-limited, trying next model")
+                lastErrorMessage = "AI service is busy. Please wait a moment and try again."
                 continue
-            case .failed:
+            case .failed(let msg):
+                await MainActor.run { lastParseError = msg }
                 return nil
             }
         }
         aiLog.error("[\(label)] All \(modelsToTry.count) models rate-limited")
+        await MainActor.run { lastParseError = lastErrorMessage }
         return nil
     }
 
     private static func executeGeminiRequest(
         url: URL,
         body: [String: Any],
-        label: String
+        label: String,
+        retryCount: Int = 0
     ) async -> GeminiOutcome {
         guard let jsonData = try? JSONSerialization.data(withJSONObject: body) else {
             aiLog.error("[\(label)] Failed to serialize request body")
-            return .failed
+            return .failed("Something went wrong preparing the request. Try again.")
         }
 
-        aiLog.info("[\(label)] Sending request, bodySize=\(jsonData.count / 1024)KB")
+        aiLog.info("[\(label)] Sending request, bodySize=\(jsonData.count / 1024)KB\(retryCount > 0 ? " (retry \(retryCount))" : "")")
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.timeoutInterval = 90
+        request.timeoutInterval = 60
         request.httpBody = jsonData
 
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
             guard let httpResponse = response as? HTTPURLResponse else {
                 aiLog.error("[\(label)] Response is not HTTP")
-                return .failed
+                return .failed("No response from server. Check your internet connection.")
             }
 
             aiLog.info("[\(label)] HTTP \(httpResponse.statusCode), responseSize=\(data.count)")
@@ -1000,19 +1055,32 @@ enum CloudAIParser {
                 return .rateLimited
             }
 
+            if httpResponse.statusCode == 401 || httpResponse.statusCode == 403 {
+                return .failed("API key is invalid or expired. Check your key in Settings.")
+            }
+
             guard httpResponse.statusCode == 200 else {
                 let errorBody = String(data: data, encoding: .utf8) ?? "(no body)"
                 aiLog.error("[\(label)] HTTP \(httpResponse.statusCode): \(errorBody.prefix(500))")
-                return .failed
+                return .failed("Server error (\(httpResponse.statusCode)). Try again in a moment.")
             }
 
             if let parsed = parseGeminiResponse(data, label: label) {
                 return .success(parsed)
             }
-            return .failed
-        } catch {
+            return .failed("Couldn't understand the AI response. Try a clearer photo.")
+        } catch let error as URLError where error.code == .timedOut && retryCount < 1 {
+            aiLog.warning("[\(label)] Timed out, retrying once")
+            return await executeGeminiRequest(url: url, body: body, label: label, retryCount: retryCount + 1)
+        } catch let error as URLError where error.code == .networkConnectionLost && retryCount < 1 {
+            aiLog.warning("[\(label)] Connection lost, retrying once")
+            return await executeGeminiRequest(url: url, body: body, label: label, retryCount: retryCount + 1)
+        } catch let error as URLError {
             aiLog.error("[\(label)] Network error: \(error.localizedDescription)")
-            return .failed
+            return .failed("Network error. Check your internet connection and try again.")
+        } catch {
+            aiLog.error("[\(label)] Unexpected error: \(error.localizedDescription)")
+            return .failed("Something went wrong. Please try again.")
         }
     }
 

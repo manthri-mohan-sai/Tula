@@ -20,6 +20,9 @@ struct SettingsView: View {
     @AppStorage("reminderEnabled") private var reminderEnabled: Bool = false
     @AppStorage("reminderHour") private var reminderHour: Int = 21
     @AppStorage("reminderMinute") private var reminderMinute: Int = 0
+    @AppStorage("summaryEnabled") private var summaryEnabled: Bool = false
+    @AppStorage("summaryHour") private var summaryHour: Int = 21
+    @AppStorage("summaryMinute") private var summaryMinute: Int = 0
     @AppStorage("budgetAlertsEnabled") private var budgetAlertsEnabled: Bool = false
     @AppStorage("themePresetID") private var themePresetID: String = "saffron"
     @AppStorage("launchAnimationEnabled") private var launchAnimationEnabled: Bool = true
@@ -59,15 +62,11 @@ struct SettingsView: View {
     @State private var showingExport = false
     @State private var showingNotificationDeniedAlert = false
 
-    /// Pretty-printed status for the daily reminder row trailing label.
-    /// "Off" when disabled, otherwise the formatted hh:mm.
-    private var reminderSummary: String {
-        guard reminderEnabled else { return "Off" }
-        var comps = DateComponents()
-        comps.hour = reminderHour
-        comps.minute = reminderMinute
-        let date = Calendar.current.date(from: comps) ?? .now
-        return date.formatted(.dateTime.hour().minute())
+    private var notificationSummary: String {
+        if reminderEnabled && summaryEnabled { return "Reminder & Summary" }
+        if reminderEnabled { return "Reminder" }
+        if summaryEnabled { return "Summary" }
+        return "Off"
     }
 
     var body: some View {
@@ -193,12 +192,17 @@ struct SettingsView: View {
                 trailing: "\(Currency.symbol(for: primaryCurrencyCode)) \(primaryCurrencyCode)"
             ) { showingCurrencyPicker = true }
 
-            settingsLinkRow(
-                title: "Daily Reminder",
-                icon: "bell.badge.fill",
-                color: .red,
-                trailing: reminderSummary
-            ) { showingReminders = true }
+            NavigationLink {
+                RemindersView()
+            } label: {
+                HStack {
+                    settingsLabel("Notifications", icon: "bell.badge.fill", color: .red)
+                    Spacer()
+                    Text(notificationSummary)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+            }
 
             // The तु calligraphy intro that plays on cold launch.
             // First-time users get the brand moment; long-time users

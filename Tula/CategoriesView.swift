@@ -284,29 +284,68 @@ struct CategoryFormView: View {
         }
     }
 
+    @Query(sort: \Category.sortOrder) private var allCategoriesForColor: [Category]
+    @State private var showCustomColorPicker = false
+    @State private var customColor: Color = .blue
+
+    private static let palette = [
+        "#E03E3E", "#2D9CDB", "#27AE60", "#F2994A", "#9B51E0",
+        "#EB5757", "#219653", "#2F80ED", "#F2C94C", "#BB6BD9",
+        "#56CCF2", "#6FCF97", "#F78DA7", "#4A90D9", "#D35400",
+        "#1ABC9C", "#E74C8B", "#8E44AD", "#3498DB", "#E67E22"
+    ]
+
+    private var usedColorHexes: Set<String> {
+        let others = allCategoriesForColor
+            .filter { $0.id != existingCategory?.id && !$0.isArchived }
+            .map { $0.colorHex.uppercased().replacingOccurrences(of: "#", with: "") }
+        return Set(others)
+    }
+
+    private func isColorUsed(_ hex: String) -> Bool {
+        let clean = hex.uppercased().replacingOccurrences(of: "#", with: "")
+        return usedColorHexes.contains(clean)
+    }
+
     private var colorPicker: some View {
-        let palette = [
-            "#FF6B6B", "#51CF66", "#339AF0", "#F783AC", "#9775FA",
-            "#FFD43B", "#A18072", "#FF8787", "#20C997", "#22B8CF",
-            "#CC5DE8", "#D97706", "#7BA68D", "#8B2C3A", "#868E96"
-        ]
-        return ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: Spacing.md) {
-                ForEach(palette, id: \.self) { hex in
-                    Circle()
-                        .fill(Color(hex: hex))
-                        .frame(width: 32, height: 32)
-                        .overlay(
-                            Circle().stroke(
-                                colorHex == hex ? Color.primary : .clear,
-                                lineWidth: 2
+        VStack(alignment: .leading, spacing: Spacing.sm) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: Spacing.md) {
+                    ForEach(Self.palette, id: \.self) { hex in
+                        let used = isColorUsed(hex)
+                        Circle()
+                            .fill(Color(hex: hex))
+                            .frame(width: 32, height: 32)
+                            .opacity(used && colorHex != hex ? 0.35 : 1)
+                            .overlay(
+                                Circle().stroke(
+                                    colorHex == hex ? Color.primary : .clear,
+                                    lineWidth: 2
+                                )
+                                .padding(-3)
                             )
-                            .padding(-3)
-                        )
-                        .onTapGesture { colorHex = hex }
+                            .overlay {
+                                if used && colorHex != hex {
+                                    Image(systemName: "checkmark")
+                                        .font(.caption2.weight(.bold))
+                                        .foregroundStyle(.white)
+                                }
+                            }
+                            .onTapGesture { colorHex = hex }
+                    }
                 }
+                .padding(.vertical, 8)
+                .padding(.horizontal, 12)
             }
-            .padding(.vertical, 6)
+            .scrollClipDisabled(false)
+            .mask(
+                Capsule()
+                    .padding(.vertical, -2)
+            )
+            ColorPicker("Custom color", selection: $customColor, supportsOpacity: false)
+                .onChange(of: customColor) { _, newValue in
+                    colorHex = newValue.toHex()
+                }
         }
     }
 
@@ -334,8 +373,14 @@ struct CategoryFormView: View {
                     .onTapGesture { iconKey = icon }
                 }
             }
-            .padding(.vertical, 6)
+            .padding(.vertical, 8)
+            .padding(.horizontal, 12)
         }
+        .scrollClipDisabled(false)
+        .mask(
+            Capsule()
+                .padding(.vertical, -2)
+        )
     }
 
     private func save() {

@@ -119,18 +119,22 @@ struct ShareRootView: View {
     private var previewView: some View {
         VStack(spacing: 0) {
             ScrollView {
-                VStack(spacing: 24) {
+                VStack(spacing: 16) {
                     hero
                     if let warning = session.parseWarning {
                         warningBanner(warning)
                     }
-                    metadataCard
+                    primaryCard
+                    if !session.items.isEmpty {
+                        itemsCard
+                    }
+                    secondaryCard
                     if case .image(let image) = session.content {
                         receiptPreview(image)
                     }
                 }
                 .padding(.horizontal, 16)
-                .padding(.top, 8)
+                .padding(.top, 4)
                 .padding(.bottom, 24)
             }
             actionBar
@@ -175,28 +179,32 @@ struct ShareRootView: View {
     /// proportionally. ✨ glyph appears when smart parser contributed,
     /// signaling "AI did this" without explaining itself.
     private var hero: some View {
-        VStack(spacing: 6) {
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
+        VStack(spacing: 4) {
+            HStack(alignment: .firstTextBaseline, spacing: 5) {
                 Text(amountString)
-                    .font(.system(size: 68, weight: .semibold, design: .rounded))
+                    .font(.system(size: 52, weight: .bold, design: .rounded))
                     .foregroundStyle(session.amount > 0 ? .primary : .tertiary)
                     .monospacedDigit()
                     .contentTransition(.numericText(value: session.amount))
                     .animation(.snappy(duration: 0.35), value: session.amount)
                 if session.usedSmartParser {
                     Image(systemName: "sparkles")
-                        .font(.title3.weight(.semibold))
+                        .font(.caption.weight(.semibold))
                         .foregroundStyle(brand)
-                        .accessibilityLabel("Filled by Apple Intelligence")
                 }
             }
             if session.amount == 0 {
                 Text("Couldn't read an amount")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            } else if !session.merchant.isEmpty {
+                Text(session.merchant)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
             }
         }
-        .padding(.top, 4)
+        .padding(.top, 2)
+        .padding(.bottom, 4)
     }
 
     /// Metadata card. Icon + label + value rows with dividers.
@@ -204,29 +212,42 @@ struct ShareRootView: View {
     /// for at-a-glance recognition.
     @State private var showAllItems = false
 
-    private var metadataCard: some View {
+    private var primaryCard: some View {
         VStack(spacing: 0) {
-            metadataRow(
-                icon: "storefront.fill",
+            editableRow(
+                icon: "storefront",
                 iconColor: .secondary,
                 label: "Merchant",
-                value: session.merchant.isEmpty ? nil : session.merchant
-            )
-            Divider().padding(.leading, 44)
-            categoryRow
-            if !session.items.isEmpty {
-                Divider().padding(.leading, 44)
-                itemsSection
-            } else if !session.note.isEmpty {
-                Divider().padding(.leading, 44)
-                metadataRow(
-                    icon: "text.alignleft",
-                    iconColor: .secondary,
-                    label: "Note",
-                    value: session.note
+                placeholder: "Add merchant",
+                text: Binding(
+                    get: { session.merchant },
+                    set: { session.merchant = $0 }
                 )
-            }
-            Divider().padding(.leading, 44)
+            )
+            Divider().padding(.leading, 52)
+            categoryPickerRow
+            Divider().padding(.leading, 52)
+            accountPickerRow
+        }
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color(.secondarySystemBackground))
+        )
+    }
+
+    private var secondaryCard: some View {
+        VStack(spacing: 0) {
+            editableRow(
+                icon: "note.text",
+                iconColor: .secondary,
+                label: "Note",
+                placeholder: "Add note",
+                text: Binding(
+                    get: { session.note },
+                    set: { session.note = $0 }
+                )
+            )
+            Divider().padding(.leading, 52)
             metadataRow(
                 icon: "calendar",
                 iconColor: .secondary,
@@ -235,78 +256,200 @@ struct ShareRootView: View {
             )
         }
         .background(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .fill(Color(.secondarySystemBackground))
         )
     }
 
-    private var itemsSection: some View {
-        let visibleItems = showAllItems ? session.items : Array(session.items.prefix(3))
-        let hasMore = session.items.count > 3
+    private var itemsCard: some View {
+        let visibleItems = showAllItems ? session.items : Array(session.items.prefix(4))
+        let hasMore = session.items.count > 4
+        let hasBreakdown = session.discount > 0 || session.tax > 0
 
         return VStack(spacing: 0) {
-            HStack(spacing: 14) {
-                Image(systemName: "list.bullet")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .frame(width: 22)
+            HStack {
                 Text("Items")
-                    .font(.subheadline)
+                    .font(.footnote.weight(.semibold))
                     .foregroundStyle(.secondary)
+                    .textCase(.uppercase)
                 Spacer()
-                Text("\(session.items.count) item\(session.items.count == 1 ? "" : "s")")
-                    .font(.caption)
+                Text("\(session.items.count)")
+                    .font(.footnote.weight(.medium).monospacedDigit())
                     .foregroundStyle(.tertiary)
             }
             .padding(.horizontal, 16)
-            .padding(.vertical, 10)
+            .padding(.top, 12)
+            .padding(.bottom, 8)
 
-            ForEach(Array(visibleItems.enumerated()), id: \.offset) { _, item in
-                HStack {
+            ForEach(Array(visibleItems.enumerated()), id: \.offset) { index, item in
+                if index > 0 {
+                    Divider().padding(.leading, 16)
+                }
+                HStack(spacing: 8) {
                     Text(item.name)
-                        .font(.caption)
+                        .font(.subheadline)
                         .foregroundStyle(.primary)
                         .lineLimit(1)
+                    if item.quantity > 1 {
+                        Text("×\(item.quantity)")
+                            .font(.caption2.weight(.semibold).monospacedDigit())
+                            .foregroundStyle(brand)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(
+                                Capsule().fill(brand.opacity(0.12))
+                            )
+                    }
                     Spacer()
-                    Text("₹\(Int(item.price))")
-                        .font(.caption.weight(.medium).monospacedDigit())
-                        .foregroundStyle(.primary)
+                    Text(formatPrice(item.price))
+                        .font(.subheadline.monospacedDigit())
+                        .foregroundStyle(.secondary)
                 }
                 .padding(.horizontal, 16)
-                .padding(.leading, 36)
-                .padding(.vertical, 4)
+                .padding(.vertical, 8)
             }
 
             if hasMore {
+                Divider().padding(.leading, 16)
                 Button {
                     withAnimation(.easeInOut(duration: 0.25)) {
                         showAllItems.toggle()
                     }
                 } label: {
-                    Text(showAllItems ? "Show less" : "Show all \(session.items.count) items")
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(brand)
+                    HStack {
+                        Text(showAllItems ? "Show less" : "\(session.items.count - 4) more items")
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(brand)
+                        Spacer()
+                        Image(systemName: showAllItems ? "chevron.up" : "chevron.down")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(brand)
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
                 }
-                .padding(.top, 4)
-                .padding(.bottom, 6)
-            } else {
-                Spacer().frame(height: 6)
             }
+
+            if hasBreakdown {
+                Divider()
+                VStack(spacing: 6) {
+                    if session.discount > 0 {
+                        summaryRow(label: "Discount", value: "−\(formatPrice(session.discount))", color: .green)
+                    }
+                    if session.tax > 0 {
+                        summaryRow(label: "Tax", value: formatPrice(session.tax), color: .secondary)
+                    }
+                    summaryRow(
+                        label: "Total",
+                        value: formatPrice(session.amount),
+                        color: .primary,
+                        bold: true
+                    )
+                }
+                .padding(.vertical, 10)
+            }
+        }
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color(.secondarySystemBackground))
+        )
+    }
+
+    private func summaryRow(label: String, value: String, color: Color, bold: Bool = false) -> some View {
+        HStack {
+            Text(label)
+                .font(bold ? .subheadline.weight(.semibold) : .footnote)
+                .foregroundStyle(bold ? .primary : .secondary)
+            Spacer()
+            Text(value)
+                .font(bold ? .subheadline.weight(.semibold).monospacedDigit() : .footnote.monospacedDigit())
+                .foregroundStyle(color)
+        }
+        .padding(.horizontal, 16)
+    }
+
+    private func formatPrice(_ value: Double) -> String {
+        if value.truncatingRemainder(dividingBy: 1) == 0 {
+            return "₹\(Int(value))"
+        }
+        return String(format: "₹%.2f", value)
+    }
+
+    private var categoryPickerRow: some View {
+        let (icon, color) = categoryIconAndColor(for: session.categoryName)
+        return Menu {
+            ForEach(session.availableCategories, id: \.self) { name in
+                Button {
+                    session.categoryName = name
+                } label: {
+                    HStack {
+                        Text(name)
+                        if session.categoryName == name {
+                            Image(systemName: "checkmark")
+                        }
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: icon)
+                    .font(.subheadline)
+                    .foregroundStyle(color)
+                    .frame(width: 24)
+                Text("Category")
+                    .font(.subheadline)
+                    .foregroundStyle(.primary)
+                Spacer()
+                HStack(spacing: 4) {
+                    Text(session.categoryName ?? "Select")
+                        .font(.subheadline)
+                        .foregroundStyle(session.categoryName != nil ? .secondary : .tertiary)
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.caption2)
+                        .foregroundStyle(.quaternary)
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
         }
     }
 
-    /// Category gets a richer treatment than other rows: when a category
-    /// was detected, its mapped icon AND tinted color show, matching how
-    /// the main app's category grid items render. When no category was
-    /// detected, falls back to a neutral tag with brand tint.
-    private var categoryRow: some View {
-        let (icon, color) = categoryIconAndColor(for: session.categoryName)
-        return metadataRow(
-            icon: icon,
-            iconColor: color,
-            label: "Category",
-            value: session.categoryName
-        )
+    private var accountPickerRow: some View {
+        Menu {
+            ForEach(session.availableAccounts, id: \.id) { account in
+                Button {
+                    session.selectedAccountName = account.name
+                } label: {
+                    HStack {
+                        Text(account.name)
+                        if session.selectedAccountName == account.name {
+                            Image(systemName: "checkmark")
+                        }
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: "creditcard")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .frame(width: 24)
+                Text("Account")
+                    .font(.subheadline)
+                    .foregroundStyle(.primary)
+                Spacer()
+                HStack(spacing: 4) {
+                    Text(session.selectedAccountName ?? "Default")
+                        .font(.subheadline)
+                        .foregroundStyle(session.selectedAccountName != nil ? .secondary : .tertiary)
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.caption2)
+                        .foregroundStyle(.quaternary)
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+        }
     }
 
     /// Map a category name to an icon + color for preview purposes.
@@ -339,24 +482,44 @@ struct ShareRootView: View {
         }
     }
 
-    private func metadataRow(icon: String, iconColor: Color, label: String, value: String?) -> some View {
-        HStack(spacing: 14) {
+    private func editableRow(icon: String, iconColor: Color, label: String, placeholder: String, text: Binding<String>) -> some View {
+        HStack(spacing: 12) {
             Image(systemName: icon)
                 .font(.subheadline)
                 .foregroundStyle(iconColor)
-                .frame(width: 22)
+                .frame(width: 24)
             Text(label)
                 .font(.subheadline)
+                .foregroundStyle(.primary)
+            Spacer()
+            TextField(placeholder, text: text)
+                .font(.subheadline)
                 .foregroundStyle(.secondary)
+                .multilineTextAlignment(.trailing)
+                .textInputAutocapitalization(.words)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+    }
+
+    private func metadataRow(icon: String, iconColor: Color, label: String, value: String?) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: icon)
+                .font(.subheadline)
+                .foregroundStyle(iconColor)
+                .frame(width: 24)
+            Text(label)
+                .font(.subheadline)
+                .foregroundStyle(.primary)
             Spacer()
             Text(value ?? "—")
-                .font(.subheadline.weight(value == nil ? .regular : .medium))
-                .foregroundStyle(value == nil ? .tertiary : .primary)
+                .font(.subheadline)
+                .foregroundStyle(value == nil ? .tertiary : .secondary)
                 .lineLimit(2)
                 .multilineTextAlignment(.trailing)
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 13)
+        .padding(.vertical, 12)
     }
 
     /// Receipt photo preview with paperclip caption confirming it'll
@@ -385,28 +548,19 @@ struct ShareRootView: View {
     /// the "this is the action you want" weight. Cancel is text-only
     /// so it doesn't compete visually.
     private var actionBar: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 10) {
             Button {
                 session.save()
             } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: "checkmark.circle.fill")
-                        .font(.subheadline.weight(.semibold))
-                    Text("Add Expense")
-                        .font(.subheadline.weight(.semibold))
-                }
-                .foregroundStyle(.white)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 16)
-                .background(
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .fill(session.amount > 0 ? brand : Color.gray.opacity(0.4))
-                )
-                .shadow(
-                    color: session.amount > 0 ? brand.opacity(0.3) : .clear,
-                    radius: 10,
-                    y: 4
-                )
+                Text("Add Expense")
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 15)
+                    .background(
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .fill(session.amount > 0 ? brand : Color.gray.opacity(0.4))
+                    )
             }
             .disabled(session.amount == 0)
 
@@ -416,7 +570,7 @@ struct ShareRootView: View {
                 Text("Cancel")
                     .font(.subheadline.weight(.medium))
                     .foregroundStyle(.secondary)
-                    .padding(.vertical, 4)
+                    .padding(.vertical, 2)
             }
         }
         .padding(.horizontal, 16)
@@ -426,7 +580,7 @@ struct ShareRootView: View {
             LinearGradient(
                 stops: [
                     .init(color: Color(.systemBackground).opacity(0), location: 0),
-                    .init(color: Color(.systemBackground), location: 0.4)
+                    .init(color: Color(.systemBackground), location: 0.35)
                 ],
                 startPoint: .top,
                 endPoint: .bottom

@@ -352,7 +352,14 @@ private func sharedModelContext() throws -> ModelContext {
         Transfer.self,
         RecurringRule.self,
         MerchantRule.self,
+        Budget.self,
     ])
+    if let storeURL = SharedStorage.sharedStoreURL {
+        let config = ModelConfiguration("Tula", schema: schema, url: storeURL)
+        if let container = try? ModelContainer(for: schema, configurations: [config]) {
+            return ModelContext(container)
+        }
+    }
     let config = ModelConfiguration("Tula", schema: schema)
     guard let container = try? ModelContainer(for: schema, configurations: [config]) else {
         throw IntentError.containerUnavailable

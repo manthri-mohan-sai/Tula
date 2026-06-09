@@ -417,8 +417,12 @@ enum SmartExpenseParser {
                 amount: fm.amount ?? 0,
                 merchant: fm.merchant,
                 date: fm.date,
+                time: nil,
                 category: fm.category,
-                items: fm.items.map { ReceiptLineItem(name: $0.name, price: $0.price) }
+                paymentMode: nil,
+                items: fm.items.map { ReceiptLineItem(name: $0.name, price: $0.price) },
+                discount: nil,
+                tax: nil
             )
         } catch {
             return nil
@@ -1009,12 +1013,23 @@ struct ReceiptSmartParseResult: Codable, Sendable {
     let amount: Double
     let merchant: String?
     let date: String?
+    let time: String?
     let category: String?
+    let paymentMode: String?
     let items: [ReceiptLineItem]
+    let discount: Double?
+    let tax: Double?
 }
 
 /// Public line item type — one row in a receipt's purchased-items list.
 struct ReceiptLineItem: Codable, Sendable {
     let name: String
     let price: Double
+    let quantity: Int
+
+    init(name: String, price: Double, quantity: Int = 1) {
+        self.name = name
+        self.price = price
+        self.quantity = quantity
+    }
 }

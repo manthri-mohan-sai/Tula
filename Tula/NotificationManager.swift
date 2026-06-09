@@ -11,6 +11,7 @@ import SwiftData
 enum NotificationManager {
 
     private static let reminderID = "tula.daily.reminder"
+    private static let summaryID = "tula.daily.summary"
     private static let budgetAlertPrefix = "tula.budget."
 
     // MARK: - Authorization
@@ -31,109 +32,222 @@ enum NotificationManager {
         await UNUserNotificationCenter.current().notificationSettings().authorizationStatus
     }
 
-    // MARK: - Daily Reminder
+    // MARK: - Log Reminder
 
-    /// Schedule (or reschedule) the daily reminder at the given hour:minute.
-    /// Replaces any previously-scheduled reminder.
-    ///
-    /// Uses a **non-repeating** trigger so the notification body can be
-    /// dynamic (today's spend summary vs "no spends logged" nudge).
-    /// The app re-schedules this every foreground via `refreshDailyReminder`.
-    static func scheduleDailyReminder(at hour: Int, minute: Int, context: ModelContext? = nil) {
+    static func scheduleLogReminder(at hour: Int, minute: Int) {
         cancelDailyReminder()
 
         let content = UNMutableNotificationContent()
         content.sound = .default
+        content.title = "Time to log your day"
+        content.body = "Tap to capture today's expenses in Tula."
 
-
-        // Build dynamic body from today's expenses (if context available).
-        if let context = context {
-            let (title, body) = dailyReminderContent(using: context)
-            content.title = title
-            content.body = body
-        } else {
-            content.title = "Time to log your day"
-            content.body = "Tap to capture today's expenses in Tula."
-        }
-
-        // Schedule for the next occurrence of hour:minute. Repeats daily
-        // so the notification fires even if the user doesn't open the app.
-        // Content is refreshed with up-to-date spend data every foreground.
         var dateComponents = DateComponents()
         dateComponents.hour = hour
         dateComponents.minute = minute
 
         let trigger = UNCalendarNotificationTrigger(dateMatching: dateComponents, repeats: true)
         let request = UNNotificationRequest(identifier: reminderID, content: content, trigger: trigger)
-
         UNUserNotificationCenter.current().add(request) { _ in }
     }
 
-    /// Re-schedules the daily reminder with fresh, dynamic content based
-    /// on today's spending. Call on every foreground so the notification
-    /// body stays up-to-date even if the user logged expenses after the
-    /// initial schedule.
-    static func refreshDailyReminder(using context: ModelContext) {
-        let defaults = UserDefaults.standard
-        guard defaults.bool(forKey: "reminderEnabled") else { return }
-        let hour = defaults.integer(forKey: "reminderHour")
-        let minute = defaults.integer(forKey: "reminderMinute")
-        // If hour is 0 and minute is 0, check if this is intentional
-        // (midnight) vs never-set. AppStorage defaults reminderHour=21,
-        // but standard UserDefaults returns 0 for missing keys.
-        // Use a sentinel: if both are 0 and reminderEnabled is true,
-        // treat as 21:00 (the AppStorage default).
-        let effectiveHour = (hour == 0 && minute == 0 && !defaults.bool(forKey: "reminderHourExplicitlySet")) ? 21 : hour
-        scheduleDailyReminder(at: effectiveHour, minute: minute, context: context)
+    // MARK: - Daily Summary
+
+    static func scheduleDailySummary(at hour: Int, minute: Int, context: ModelContext? = nil) {
+        cancelDailySummary()
+
+        let content = UNMutableNotificationContent()
+        content.sound = .default
+
+        if let context {
+            let (title, body) = dailySummaryContent(using: context)
+            content.title = title
+            content.body = body
+        } else {
+            content.title = "Your daily spending summary"
+            content.body = "Tap to see how your day went."
+        }
+
+        var dateComponents = DateComponents()
+        dateComponents.hour = hour
+        dateComponents.minute = minute
+
+        let trigger = UNCalendarNotificationTrigger(dateMatching: dateComponents, repeats: true)
+        let request = UNNotificationRequest(identifier: summaryID, content: content, trigger: trigger)
+        UNUserNotificationCenter.current().add(request) { _ in }
     }
 
-    /// Builds dynamic title + body for the daily reminder based on
-    /// whether the user has logged any expenses today.
-    private static func dailyReminderContent(using context: ModelContext) -> (title: String, body: String) {
-        let calendar = Calendar.current
-        let dayStart = calendar.startOfDay(for: .now)
+    // MARK: - Legacy compat
 
-        let descriptor = FetchDescriptor<Expense>(
-            predicate: #Predicate { $0.date >= dayStart }
-        )
-        let todayExpenses = (try? context.fetch(descriptor)) ?? []
+    static func scheduleDailyReminder(at hour: Int, minute: Int, context: ModelContext? = nil) {
+        scheduleLogReminder(at: hour, minute: minute)
+    }
 
-        if todayExpenses.isEmpty {
-            // No spends logged — nudge
-            let titles = [
-                "No spends logged today",
-                "Quiet day?",
-                "Nothing logged yet"
-            ]
-            let bodies = [
-                "Did you miss any expenses? Tap to log them now.",
-                "If you spent anything today, take a moment to log it.",
-                "Even a coffee counts — tap to capture today's spending."
-            ]
-            let idx = calendar.component(.day, from: .now) % titles.count
-            return (titles[idx], bodies[idx])
-        } else {
-            // Has spends — give summary
-            let total = todayExpenses.reduce(0.0) { $0 + $1.amount }
-            let code = UserDefaults.standard.string(forKey: "primaryCurrencyCode") ?? "INR"
-            let formatted = Currency.format(total, code: code)
-            let count = todayExpenses.count
-
-            let title = "Today's spending: \(formatted)"
-            let body = "\(count) expense\(count == 1 ? "" : "s") logged. Missed any? Tap to add more."
-            return (title, body)
+    static func refreshDailyReminder(using context: ModelContext) {
+        let defaults = UserDefaults.standard
+        if defaults.bool(forKey: "reminderEnabled") {
+            let hour = defaults.integer(forKey: "reminderHour")
+            let minute = defaults.integer(forKey: "reminderMinute")
+            let effectiveHour = (hour == 0 && minute == 0 && !defaults.bool(forKey: "reminderHourExplicitlySet")) ? 21 : hour
+            scheduleLogReminder(at: effectiveHour, minute: minute)
+        }
+        if defaults.bool(forKey: "summaryEnabled") {
+            let hour = defaults.integer(forKey: "summaryHour")
+            let minute = defaults.integer(forKey: "summaryMinute")
+            let effectiveHour = (hour == 0 && minute == 0) ? 21 : hour
+            scheduleDailySummary(at: effectiveHour, minute: minute, context: context)
         }
     }
 
-    /// Cancel any scheduled daily reminder.
+    private static func dailySummaryContent(using context: ModelContext) -> (title: String, body: String) {
+        let calendar = Calendar.current
+        let dayStart = calendar.startOfDay(for: .now)
+        let code = UserDefaults.standard.string(forKey: "primaryCurrencyCode") ?? "INR"
+
+        let todayDescriptor = FetchDescriptor<Expense>(
+            predicate: #Predicate { $0.date >= dayStart }
+        )
+        let todayExpenses = (try? context.fetch(todayDescriptor)) ?? []
+
+        if todayExpenses.isEmpty {
+            return emptyDayContent(calendar: calendar, context: context, code: code)
+        } else {
+            return spendDayContent(todayExpenses, calendar: calendar, context: context, code: code)
+        }
+    }
+
+    private static func emptyDayContent(calendar: Calendar, context: ModelContext, code: String) -> (String, String) {
+        let weekday = calendar.component(.weekday, from: .now)
+        let day = calendar.component(.day, from: .now)
+        let isWeekend = weekday == 1 || weekday == 7
+
+        let recentAvg = recentDailyAverage(calendar: calendar, context: context)
+        let streak = loggingStreak(calendar: calendar, context: context)
+
+        if streak >= 3 {
+            return (
+                "Don't break your streak!",
+                "You've logged expenses \(streak) days in a row. Keep it going — even small ones count."
+            )
+        }
+
+        if isWeekend {
+            let nudges = [
+                ("Weekend spending?", "Brunch, outings, groceries — weekends add up. Tap to log anything you spent."),
+                ("Enjoy your weekend!", "If you grabbed coffee or ordered in, take a sec to log it.")
+            ]
+            return nudges[day % nudges.count]
+        }
+
+        if let avg = recentAvg, avg > 0 {
+            let formatted = Currency.format(avg, code: code)
+            return (
+                "Nothing logged yet",
+                "You usually spend about \(formatted)/day. Did today really cost zero?"
+            )
+        }
+
+        let fallbacks = [
+            ("No spends today?", "Even a chai counts. Tap to capture anything you spent."),
+            ("Quiet day so far", "If you spent anything, take a moment to log it before you forget."),
+            ("Nothing logged yet", "The best time to log is right after you spend. Tap to add.")
+        ]
+        return fallbacks[day % fallbacks.count]
+    }
+
+    private static func spendDayContent(_ expenses: [Expense], calendar: Calendar, context: ModelContext, code: String) -> (String, String) {
+        let total = expenses.reduce(0.0) { $0 + $1.amount }
+        let formatted = Currency.format(total, code: code)
+        let count = expenses.count
+        let day = calendar.component(.day, from: .now)
+
+        let topCategory = Dictionary(grouping: expenses) { $0.category?.name ?? "Other" }
+            .max(by: { $0.value.reduce(0) { $0 + $1.amount } < $1.value.reduce(0) { $0 + $1.amount } })
+
+        let recentAvg = recentDailyAverage(calendar: calendar, context: context)
+
+        var insights: [(String, String)] = []
+
+        if let topCat = topCategory, topCat.value.count > 1 {
+            let catTotal = Currency.format(topCat.value.reduce(0) { $0 + $1.amount }, code: code)
+            insights.append((
+                "Today: \(formatted)",
+                "\(topCat.key) led the day at \(catTotal). \(count) expense\(count == 1 ? "" : "s") total."
+            ))
+        }
+
+        if let avg = recentAvg, avg > 0 {
+            let ratio = total / avg
+            if ratio > 1.5 {
+                insights.append((
+                    "Spent \(formatted) today",
+                    "That's higher than your usual \(Currency.format(avg, code: code))/day. Anything else to add?"
+                ))
+            } else if ratio < 0.5 {
+                insights.append((
+                    "Light day: \(formatted)",
+                    "Well under your average of \(Currency.format(avg, code: code))/day. Nice!"
+                ))
+            }
+        }
+
+        if let merchant = expenses.first?.merchant, count == 1 {
+            insights.append((
+                "\(formatted) at \(merchant)",
+                "Just one expense today. Missed anything else?"
+            ))
+        }
+
+        insights.append((
+            "Today's spending: \(formatted)",
+            "\(count) expense\(count == 1 ? "" : "s") logged. Missed any? Tap to add more."
+        ))
+
+        return insights[day % insights.count]
+    }
+
+    private static func recentDailyAverage(calendar: Calendar, context: ModelContext) -> Double? {
+        guard let weekAgo = calendar.date(byAdding: .day, value: -7, to: calendar.startOfDay(for: .now)) else { return nil }
+        let descriptor = FetchDescriptor<Expense>(
+            predicate: #Predicate { $0.date >= weekAgo }
+        )
+        let expenses = (try? context.fetch(descriptor)) ?? []
+        guard !expenses.isEmpty else { return nil }
+        let total = expenses.reduce(0.0) { $0 + $1.amount }
+        return total / 7.0
+    }
+
+    private static func loggingStreak(calendar: Calendar, context: ModelContext) -> Int {
+        var streak = 0
+        var checkDate = calendar.date(byAdding: .day, value: -1, to: .now) ?? .now
+        for _ in 0..<30 {
+            let dayStart = calendar.startOfDay(for: checkDate)
+            guard let dayEnd = calendar.date(byAdding: .day, value: 1, to: dayStart) else { break }
+            let descriptor = FetchDescriptor<Expense>(
+                predicate: #Predicate { $0.date >= dayStart && $0.date < dayEnd }
+            )
+            let count = (try? context.fetchCount(descriptor)) ?? 0
+            if count > 0 {
+                streak += 1
+                checkDate = calendar.date(byAdding: .day, value: -1, to: checkDate) ?? checkDate
+            } else {
+                break
+            }
+        }
+        return streak
+    }
+
     static func cancelDailyReminder() {
         UNUserNotificationCenter.current()
             .removePendingNotificationRequests(withIdentifiers: [reminderID])
     }
 
-    /// Legacy single-cancel API — kept for backward compat with older
-    /// callers; behaves identically to `cancelDailyReminder()`.
-    static func cancel() { cancelDailyReminder() }
+    static func cancelDailySummary() {
+        UNUserNotificationCenter.current()
+            .removePendingNotificationRequests(withIdentifiers: [summaryID])
+    }
+
+    static func cancel() { cancelDailyReminder(); cancelDailySummary() }
 
     /// Check whether a daily reminder is currently scheduled.
     static func isScheduled() async -> Bool {
@@ -295,6 +409,9 @@ enum NotificationManager {
 
         content.userInfo = [
             "ruleID": ruleID.uuidString,
+            "ruleName": ruleName,
+            "amount": amount,
+            "currencyCode": currencyCode,
             "dueDate": dueDate.timeIntervalSince1970
         ]
 

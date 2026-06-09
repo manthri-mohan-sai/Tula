@@ -33,8 +33,11 @@ struct AddExpenseView: View {
     @State private var merchant: String
     @State private var note: String
     @State private var date: Date
+    @State private var tax: Double = 0
+    @State private var discount: Double = 0
     @State private var categoryManuallySet: Bool
     @State private var showingDeleteConfirm = false
+    @State private var categoriesExpanded = false
 
     /// Drives the items-breakdown sheet that opens when the user taps
     /// the "View items" chip below the Item field. Sheet is read-only —
@@ -71,6 +74,7 @@ struct AddExpenseView: View {
     /// the user knows "Tula filled this from the receipt, verify it."
     /// Once the user types in a field, it leaves this set.
     @State private var ocrExtractedFields: Set<OCRField> = []
+    @State private var scanErrorMessage: String?
     enum OCRField: Hashable { case amount, merchant }
 
     /// Image picker presentation state. `.camera` shows the camera UI;
@@ -573,12 +577,23 @@ struct AddExpenseView: View {
     // entry, not a fold-away detail. Scanning a full grid is fastest
     // for the user; hiding categories behind a sheet was the wrong call.
 
+    private var visibleCategories: [Category] {
+        let all = prioritizedCategories
+        if categoriesExpanded { return all }
+        // When selected category isn't in the first 3, swap it in
+        let first3 = Array(all.prefix(3))
+        if let sel = selectedCategory, !first3.contains(where: { $0.id == sel.id }) {
+            return [sel] + Array(first3.prefix(2))
+        }
+        return first3
+    }
+
     private var categoryGrid: some View {
         LazyVGrid(
             columns: Array(repeating: GridItem(.flexible(), spacing: Spacing.sm), count: 4),
             spacing: Spacing.md
         ) {
-            ForEach(prioritizedCategories) { category in
+            ForEach(visibleCategories) { category in
                 CategoryGridItem(
                     category: category,
                     isSelected: selectedCategory?.id == category.id
@@ -593,6 +608,32 @@ struct AddExpenseView: View {
                             selectedCategory = category
                             categoryManuallySet = true
                         }
+                    }
+                }
+            }
+
+            if prioritizedCategories.count > 3 {
+                VStack(spacing: Spacing.xs) {
+                    ZStack {
+                        Circle()
+                            .fill(Color.secondary.opacity(0.15))
+                            .frame(width: 50, height: 50)
+                        Image(systemName: categoriesExpanded ? "chevron.up" : "chevron.down")
+                            .font(.title3.weight(.medium))
+                            .foregroundStyle(.secondary)
+                    }
+                    Text(categoriesExpanded ? "Less" : "More")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, Spacing.sm)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    Haptics.selection()
+                    withAnimation(AppAnimation.bouncy) {
+                        categoriesExpanded.toggle()
                     }
                 }
             }
@@ -642,10 +683,58 @@ struct AddExpenseView: View {
                     .padding(.horizontal, Spacing.lg)
                     .padding(.bottom, Spacing.xs)
                 }
+                if tax > 0 || discount > 0 {
+                    Divider().padding(.leading, 48)
+                    taxDiscountRows
+                }
                 Divider().padding(.leading, 48)
                 detailRow(label: "Date", icon: "calendar") {
                     DatePicker("", selection: $date, displayedComponents: .date)
                         .labelsHidden()
+                }
+            }
+        }
+    }
+
+    private var taxDiscountRows: some View {
+        VStack(spacing: 0) {
+            if discount > 0 {
+                detailRow(label: "Discount", icon: "minus.circle") {
+                    HStack(spacing: 4) {
+                        Text(Currency.symbol(for: currencyCode))
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                        TextField("0", value: $discount, format: .number)
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(.green)
+                            .multilineTextAlignment(.trailing)
+                            .keyboardType(.decimalPad)
+                            .onChange(of: discount) { oldVal, newVal in
+                                let delta = newVal - oldVal
+                                amount = max(0, amount - delta)
+                            }
+                    }
+                }
+            }
+            if discount > 0 && tax > 0 {
+                Divider().padding(.leading, 48)
+            }
+            if tax > 0 {
+                detailRow(label: "Tax", icon: "plus.circle") {
+                    HStack(spacing: 4) {
+                        Text(Currency.symbol(for: currencyCode))
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                        TextField("0", value: $tax, format: .number)
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.trailing)
+                            .keyboardType(.decimalPad)
+                            .onChange(of: tax) { oldVal, newVal in
+                                let delta = newVal - oldVal
+                                amount = max(0, amount + delta)
+                            }
+                    }
                 }
             }
         }
@@ -783,6 +872,11 @@ struct AddExpenseView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
+                } else if let errorMsg = scanErrorMessage {
+                    Text(errorMsg)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .lineLimit(2)
                 } else if !ocrExtractedFields.isEmpty {
                     Text(ocrSummaryText)
                         .font(.caption)
@@ -895,6 +989,13 @@ struct AddExpenseView: View {
             await MainActor.run {
                 receiptOCRInFlight = false
 
+                if smartResult == nil && (isDirectImageMode || regexResult == nil) {
+                    scanErrorMessage = CloudAIParser.lastParseError
+                        ?? "Couldn't read this receipt. Enter details manually."
+                } else {
+                    scanErrorMessage = nil
+                }
+
                 // AMOUNT
                 let mergedAmount: Double?
                 if isDirectImageMode {
@@ -938,9 +1039,9 @@ struct AddExpenseView: View {
 
                 let resolvedDate: Date?
                 if isDirectImageMode {
-                    resolvedDate = parseFMDate(smartResult?.date)
+                    resolvedDate = parseFMDate(smartResult?.date, time: smartResult?.time)
                 } else {
-                    resolvedDate = regexResult?.date ?? parseFMDate(smartResult?.date)
+                    resolvedDate = regexResult?.date ?? parseFMDate(smartResult?.date, time: smartResult?.time)
                 }
                 if let parsedDate = resolvedDate, date == beforeDate,
                    Calendar.current.isDateInToday(date) {
@@ -987,6 +1088,15 @@ struct AddExpenseView: View {
                 if let formatted = itemsForNote, note == beforeNote, note.isEmpty {
                     withAnimation(.snappy(duration: 0.25)) {
                         note = formatted
+                    }
+                }
+
+                if let smart = smartResult {
+                    if let t = smart.tax, t > 0 {
+                        withAnimation(.snappy(duration: 0.25)) { tax = t }
+                    }
+                    if let d = smart.discount, d > 0 {
+                        withAnimation(.snappy(duration: 0.25)) { discount = d }
                     }
                 }
 
@@ -1061,15 +1171,24 @@ struct AddExpenseView: View {
         return overlaps.first
     }
 
-    /// Parse FM's YYYY-MM-DD string into a Date. Returns nil for
-    /// malformed strings (FM occasionally produces invalid dates when
-    /// the OCR text is ambiguous).
-    private func parseFMDate(_ string: String?) -> Date? {
+    private func parseFMDate(_ string: String?, time timeString: String? = nil) -> Date? {
         guard let string, !string.isEmpty else { return nil }
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "yyyy-MM-dd"
-        return formatter.date(from: string)
+        guard let dateOnly = formatter.date(from: string) else { return nil }
+
+        if let timeString, !timeString.isEmpty {
+            let parts = timeString.split(separator: ":").compactMap { Int($0) }
+            if parts.count >= 2 {
+                let cal = Calendar.current
+                var comps = cal.dateComponents([.year, .month, .day], from: dateOnly)
+                comps.hour = parts[0]
+                comps.minute = parts[1]
+                return cal.date(from: comps)
+            }
+        }
+        return dateOnly
     }
 
     /// Render FM-extracted items as a note string. Same format as the
@@ -1084,7 +1203,10 @@ struct AddExpenseView: View {
     /// Users who want to see every line can review the original receipt
     /// photo (which we save attached to the expense).
     private func formatSmartItems(_ items: [ReceiptLineItem], total: Double) -> String {
-        let parts = items.map { "\($0.name) \(Currency.format($0.price, code: currencyCode))" }
+        let parts = items.map { item -> String in
+            let qty = item.quantity > 1 ? "×\(item.quantity) " : ""
+            return "\(item.name) \(qty)\(Currency.format(item.price, code: currencyCode))"
+        }
         let body = parts.joined(separator: " · ")
 
         if total > 0 {
@@ -1348,9 +1470,13 @@ struct AccountPill: View {
 
     private var color: Color { Color(hex: account.colorHex) }
 
+    private var outlinedIconKey: String {
+        account.iconKey.replacingOccurrences(of: ".fill", with: "")
+    }
+
     var body: some View {
         HStack(spacing: 8) {
-            Image(systemName: account.iconKey)
+            Image(systemName: isSelected ? account.iconKey : outlinedIconKey)
                 .font(.subheadline.weight(.medium))
             Text(account.name)
                 .font(.subheadline.weight(.semibold))
@@ -1358,7 +1484,7 @@ struct AccountPill: View {
         }
         .padding(.horizontal, Spacing.lg)
         .padding(.vertical, 10)
-        .foregroundStyle(isSelected ? .white : .primary)
+        .foregroundStyle(isSelected ? .white : .secondary)
         .background(
             Capsule().fill(isSelected ? color : Color.tulaCardSurface)
         )
@@ -1376,9 +1502,13 @@ struct AccountChip: View {
 
     private var color: Color { Color(hex: account.colorHex) }
 
+    private var outlinedIconKey: String {
+        account.iconKey.replacingOccurrences(of: ".fill", with: "")
+    }
+
     var body: some View {
         HStack(spacing: 8) {
-            Image(systemName: account.iconKey)
+            Image(systemName: isSelected ? account.iconKey : outlinedIconKey)
                 .font(.subheadline.weight(.medium))
             Text(account.name)
                 .font(.subheadline.weight(.semibold))
@@ -1386,7 +1516,7 @@ struct AccountChip: View {
         }
         .padding(.horizontal, Spacing.lg)
         .padding(.vertical, 12)
-        .foregroundStyle(isSelected ? .white : .primary)
+        .foregroundStyle(isSelected ? .white : .secondary)
         .background(
             Capsule().fill(isSelected ? color : Color.tulaCardSurface)
         )

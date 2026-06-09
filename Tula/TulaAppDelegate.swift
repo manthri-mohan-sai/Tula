@@ -119,10 +119,12 @@ final class TulaAppDelegate: NSObject, UIApplicationDelegate, UNUserNotification
 
         let dueDate = Date(timeIntervalSince1970: dueEpoch)
 
+        let ruleName = info["ruleName"] as? String
+
         switch response.actionIdentifier {
         case NotificationManager.confirmLogActionID:
             NotificationManager.NotificationDiagnostics.recordActionTapped(.log, ruleID: ruleID)
-            await RecurringConfirmationHandler.logOccurrence(ruleID: ruleID, dueDate: dueDate)
+            await RecurringConfirmationHandler.logOccurrence(ruleID: ruleID, dueDate: dueDate, fallbackName: ruleName)
         case NotificationManager.confirmSkipActionID:
             NotificationManager.NotificationDiagnostics.recordActionTapped(.skip, ruleID: ruleID)
             await RecurringConfirmationHandler.skipOccurrence(ruleID: ruleID, dueDate: dueDate)
@@ -194,7 +196,7 @@ enum RecurringConfirmationHandler {
         return try? ModelContainer(for: schema, configurations: [config])
     }
 
-    static func logOccurrence(ruleID: UUID, dueDate: Date) async {
+    static func logOccurrence(ruleID: UUID, dueDate: Date, fallbackName: String? = nil) async {
         guard let container = makeContainer() else { return }
         let context = ModelContext(container)
 
@@ -203,7 +205,7 @@ enum RecurringConfirmationHandler {
         )
         guard let rule = (try? context.fetch(descriptor))?.first else { return }
 
-        RecurringEngine.createTransaction(rule: rule, date: dueDate, in: context)
+        RecurringEngine.createTransaction(rule: rule, date: dueDate, in: context, fallbackName: fallbackName)
         // Advance the boundary so nextDueDate() doesn't have to walk
         // from startDate through every past occurrence.
         if rule.lastGeneratedDate == nil || rule.lastGeneratedDate! < dueDate {

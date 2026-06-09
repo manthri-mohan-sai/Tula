@@ -97,6 +97,7 @@ struct TulaWidgetBundle: WidgetBundle {
         TulaTodayWidget()
         TulaCategoryWidget()
         TulaMonthCompareWidget()
+        TulaMonthSpendWidget()
         TulaUpcomingWidget()
         TulaQuickActionsWidget()
     }
@@ -902,6 +903,304 @@ struct LockScreenAddButton: View {
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// MARK: - Month Spend Widget (medium)
+// ═══════════════════════════════════════════════════════════════════
+
+struct TulaMonthSpendWidget: Widget {
+    let kind: String = "TulaMonthSpendWidget"
+
+    var body: some WidgetConfiguration {
+        StaticConfiguration(
+            kind: kind,
+            provider: TulaWidgetProvider()
+        ) { entry in
+            MonthSpendWidgetView(snapshot: entry.snapshot)
+                .containerBackground(Color.tulaBrandFallback.opacity(0.08).gradient, for: .widget)
+        }
+        .contentMarginsDisabled()
+        .configurationDisplayName("Month Overview")
+        .description("Monthly spend, budget progress, and top categories.")
+        .supportedFamilies([.systemMedium])
+    }
+}
+
+struct MonthSpendWidgetView: View {
+    let snapshot: WidgetSnapshot
+
+    private var hasBudget: Bool { snapshot.monthlyBudgetCap > 0 }
+
+    private var budgetProgress: Double {
+        guard hasBudget else { return 0 }
+        return min(snapshot.monthTotal / snapshot.monthlyBudgetCap, 1.0)
+    }
+
+    private var isOverBudget: Bool {
+        hasBudget && snapshot.monthTotal > snapshot.monthlyBudgetCap
+    }
+
+    private var remaining: Double {
+        max(snapshot.monthlyBudgetCap - snapshot.monthTotal, 0)
+    }
+
+    private var topCategories: [WidgetSnapshot.CategorySpend] {
+        Array(snapshot.categoryBreakdown.prefix(3))
+    }
+
+    private var monthName: String {
+        Date.now.formatted(.dateTime.month(.wide))
+    }
+
+    private var dayOfMonth: Int {
+        Calendar.current.component(.day, from: .now)
+    }
+
+    private var daysInMonth: Int {
+        Calendar.current.range(of: .day, in: .month, for: .now)?.count ?? 30
+    }
+
+    private var dailyAverage: Double {
+        guard dayOfMonth > 0 else { return 0 }
+        return snapshot.monthTotal / Double(dayOfMonth)
+    }
+
+    private var projectedTotal: Double {
+        guard dayOfMonth > 0 else { return snapshot.monthTotal }
+        return snapshot.monthTotal / Double(dayOfMonth) * Double(daysInMonth)
+    }
+
+    private var hasLastMonthData: Bool {
+        snapshot.lastMonthTillDayTotal > 0
+    }
+
+    private var donutCenterLabel: (String, String)? {
+        if hasBudget {
+            return ("\(Int(budgetProgress * 100))%", "used")
+        } else if hasLastMonthData {
+            return ("~\(Currency.compact(projectedTotal, code: snapshot.currencyCode))", "month end")
+        } else {
+            return nil
+        }
+    }
+
+    private var monthChangePercent: Double? {
+        guard snapshot.lastMonthTillDayTotal > 0 else { return nil }
+        return (snapshot.monthTotal - snapshot.lastMonthTillDayTotal) / snapshot.lastMonthTillDayTotal
+    }
+
+    private var isSpendingMore: Bool {
+        snapshot.monthTotal > snapshot.lastMonthTillDayTotal
+    }
+
+    private var lastMonthName: String {
+        let cal = Calendar.current
+        let lastMonth = cal.date(byAdding: .month, value: -1, to: .now) ?? .now
+        return lastMonth.formatted(.dateTime.month(.abbreviated))
+    }
+
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            Text("तु")
+                .font(.system(size: 140, weight: .bold))
+                .foregroundStyle(Color.tulaBrandFallback.opacity(0.08))
+                .offset(x: 35, y: -25)
+                .allowsHitTesting(false)
+
+            VStack(spacing: 0) {
+                HStack(spacing: 0) {
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text("Spent in \(monthName)")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(.secondary)
+
+                        Text(Currency.format(snapshot.monthTotal, code: snapshot.currencyCode))
+                            .font(.system(size: 26, weight: .bold, design: .rounded))
+                            .minimumScaleFactor(0.5)
+                            .lineLimit(1)
+                            .foregroundStyle(.primary)
+                            .monospacedDigit()
+                            .padding(.top, 2)
+
+                        Spacer(minLength: 4)
+
+                        if hasBudget {
+                            VStack(alignment: .leading, spacing: 3) {
+                                GeometryReader { geo in
+                                    ZStack(alignment: .leading) {
+                                        Capsule()
+                                            .fill(Color.primary.opacity(0.08))
+                                        Capsule()
+                                            .fill(isOverBudget ? Color.red : Color.tulaBrandFallback)
+                                            .frame(width: geo.size.width * budgetProgress)
+                                    }
+                                }
+                                .frame(height: 6)
+                                .clipShape(Capsule())
+
+                                if isOverBudget {
+                                    Text("Over by \(Currency.compact(snapshot.monthTotal - snapshot.monthlyBudgetCap, code: snapshot.currencyCode))")
+                                        .font(.system(size: 10, weight: .semibold))
+                                        .foregroundStyle(.red)
+                                } else {
+                                    Text("\(Currency.compact(remaining, code: snapshot.currencyCode)) left of \(Currency.compact(snapshot.monthlyBudgetCap, code: snapshot.currencyCode))")
+                                        .font(.system(size: 10, weight: .medium))
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        } else if let pct = monthChangePercent {
+                            VStack(alignment: .leading, spacing: 5) {
+                                HStack(spacing: 4) {
+                                    Image(systemName: isSpendingMore ? "arrow.up.right" : "arrow.down.right")
+                                        .font(.system(size: 10, weight: .bold))
+                                    Text("\(Int(abs(pct * 100)))% vs \(lastMonthName)")
+                                        .font(.system(size: 11, weight: .semibold))
+                                        .lineLimit(1)
+                                        .minimumScaleFactor(0.7)
+                                }
+                                .foregroundStyle(isSpendingMore ? .red : .green)
+
+                                Text("\(Currency.compact(snapshot.lastMonthTillDayTotal, code: snapshot.currencyCode)) by day \(dayOfMonth) last month")
+                                    .font(.system(size: 9.5, weight: .medium))
+                                    .foregroundStyle(.tertiary)
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.7)
+                            }
+                        } else {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("\(Currency.compact(dailyAverage, code: snapshot.currencyCode))/day avg")
+                                    .font(.system(size: 11, weight: .semibold))
+                                    .foregroundStyle(Color.tulaBrandFallback)
+
+                                Text("\(daysInMonth - dayOfMonth) days left in \(monthName.prefix(3))")
+                                    .font(.system(size: 9.5, weight: .medium))
+                                    .foregroundStyle(.tertiary)
+                            }
+                        }
+
+                        Spacer(minLength: 0)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                    if !topCategories.isEmpty {
+                        DonutChartView(
+                            categories: topCategories,
+                            centerLabel: donutCenterLabel
+                        )
+                        .frame(width: 100, height: 100)
+                        .padding(.leading, 4)
+                    }
+                }
+
+                // Bottom: horizontal category legend
+                if !topCategories.isEmpty {
+                    HStack(spacing: 0) {
+                        ForEach(Array(topCategories.enumerated()), id: \.element.id) { index, cat in
+                            HStack(spacing: 4) {
+                                Circle()
+                                    .fill(Color(hex: cat.colorHex))
+                                    .frame(width: 6, height: 6)
+                                Text(cat.name)
+                                    .font(.system(size: 10, weight: .medium))
+                                    .foregroundStyle(.primary)
+                                    .lineLimit(1)
+                                Text("\(Int(cat.percentage * 100))%")
+                                    .font(.system(size: 9, weight: .medium))
+                                    .foregroundStyle(.tertiary)
+                                    .monospacedDigit()
+                            }
+                            if index < topCategories.count - 1 {
+                                Spacer(minLength: 0)
+                            }
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.top, 8)
+                }
+            }
+            .padding(16)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        }
+    }
+}
+
+// MARK: - Donut Chart
+
+private struct DonutChartView: View {
+    let categories: [WidgetSnapshot.CategorySpend]
+    let centerLabel: (String, String)?
+
+    private var strokeWidth: CGFloat { centerLabel == nil ? 20 : 12 }
+    private let gapAngle: Double = 3
+
+    private struct Segment {
+        let startAngle: Double
+        let endAngle: Double
+        let color: Color
+    }
+
+    private var segments: [Segment] {
+        var result: [Segment] = []
+        let totalPercentage = categories.reduce(0.0) { $0 + $1.percentage }
+        let otherPercentage = max(1.0 - totalPercentage, 0)
+        let totalGap = gapAngle * Double(categories.count + (otherPercentage > 0 ? 1 : 0))
+        let available = 360.0 - totalGap
+
+        var angle: Double = -90
+
+        for cat in categories {
+            let sweep = available * cat.percentage
+            if sweep > 0 {
+                result.append(Segment(
+                    startAngle: angle,
+                    endAngle: angle + sweep,
+                    color: Color(hex: cat.colorHex)
+                ))
+                angle += sweep + gapAngle
+            }
+        }
+
+        if otherPercentage > 0.01 {
+            let sweep = available * otherPercentage
+            result.append(Segment(
+                startAngle: angle,
+                endAngle: angle + sweep,
+                color: Color.gray.opacity(0.25)
+            ))
+        }
+
+        return result
+    }
+
+    var body: some View {
+        ZStack {
+            ForEach(Array(segments.enumerated()), id: \.offset) { _, seg in
+                Circle()
+                    .trim(
+                        from: CGFloat((seg.startAngle + 90) / 360),
+                        to: CGFloat((seg.endAngle + 90) / 360)
+                    )
+                    .stroke(seg.color, style: StrokeStyle(lineWidth: strokeWidth, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+            }
+
+            if let label = centerLabel {
+                VStack(spacing: 1) {
+                    Text(label.0)
+                        .font(.system(size: 16, weight: .bold, design: .rounded))
+                        .foregroundStyle(.primary)
+                        .monospacedDigit()
+                        .minimumScaleFactor(0.6)
+                        .lineLimit(1)
+                    Text(label.1)
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundStyle(.tertiary)
+                }
+            }
+        }
+        .padding(strokeWidth / 2 + 2)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // MARK: - Sparkline
 // ═══════════════════════════════════════════════════════════════════
 
@@ -1054,3 +1353,5 @@ struct TrendChartView: View {
         }
     }
 }
+
+
