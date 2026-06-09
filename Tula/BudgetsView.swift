@@ -350,7 +350,7 @@ struct OverallBudgetCard: View {
                 .frame(width: 30, height: 30)
                 .background(Color.tulaBrandFallback.opacity(0.15), in: Circle())
 
-            Text("Overall")
+            Text("Total Budget")
                 .font(.headline)
 
             Spacer()
