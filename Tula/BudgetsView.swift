@@ -23,6 +23,9 @@ struct BudgetsView: View {
     @State private var showingAddBudget   = false
     @State private var showingOverallEdit = false
     @State private var editingBudget: Budget?
+    @State private var selectedTab: BudgetTab = .overall
+
+    private enum BudgetTab { case overall, category }
 
     // MARK: - Derived
 
@@ -89,23 +92,79 @@ struct BudgetsView: View {
     // MARK: - Body
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
+        VStack(spacing: 0) {
+            // Segmented tab picker
+            Picker("Budget View", selection: $selectedTab) {
+                Text("Overall").tag(BudgetTab.overall)
+                Text("Category").tag(BudgetTab.category)
+            }
+            .pickerStyle(.segmented)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .background(Color.tulaBackground)
 
-                // Pinned overall card — always visible
-                OverallBudgetCard(
-                    categoryBudgets:   allCategoryBudgets,
-                    overallBudget:     overallBudget,
-                    monthlyEquivalent: monthlyEquivalent,
-                    displayTotal:      overallDisplayTotal,
-                    uncategorized:     uncategorizedAmount,
-                    totalMonthlySpent: totalMonthlySpent,
-                    currencyCode:      currencyCode
-                ) {
-                    showingOverallEdit = true
+            // Tab content
+            if selectedTab == .overall {
+                overallTab
+            } else {
+                categoryTab
+            }
+        }
+        .background(Color.tulaBackground)
+        .navigationTitle("Budgets")
+        .navigationBarTitleDisplayMode(.large)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    Haptics.tap()
+                    showingAddBudget = true
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.body.weight(.semibold))
                 }
+                .tint(.primary)
+                .accessibilityLabel("Add Budget")
+            }
+        }
+        .sheet(isPresented: $showingAddBudget) {
+            BudgetFormView(categoryAutoTotal: categoryMonthlySum)
+        }
+        .sheet(isPresented: $showingOverallEdit) {
+            BudgetFormView(existingBudget: overallBudget,
+                           categoryAutoTotal: categoryMonthlySum)
+        }
+        .sheet(item: $editingBudget) { b in
+            BudgetFormView(existingBudget: b,
+                           categoryAutoTotal: categoryMonthlySum)
+        }
+    }
 
-                // Per-category budgets grouped by period
+    // MARK: - Overall tab
+
+    private var overallTab: some View {
+        ScrollView {
+            OverallBudgetCard(
+                categoryBudgets:   allCategoryBudgets,
+                overallBudget:     overallBudget,
+                monthlyEquivalent: monthlyEquivalent,
+                displayTotal:      overallDisplayTotal,
+                uncategorized:     uncategorizedAmount,
+                totalMonthlySpent: totalMonthlySpent,
+                currencyCode:      currencyCode
+            ) {
+                showingOverallEdit = true
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 8)
+            .padding(.bottom, 20)
+        }
+    }
+
+    // MARK: - Category tab
+
+    private var categoryTab: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
                 if sectionedBudgets.isEmpty {
                     categoryEmptyPrompt
                 } else {
@@ -139,34 +198,8 @@ struct BudgetsView: View {
                 }
             }
             .padding(.horizontal, 16)
-            .padding(.vertical, 16)
-        }
-        .background(Color.tulaBackground)
-        .navigationTitle("Budgets")
-        .navigationBarTitleDisplayMode(.large)
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    Haptics.tap()
-                    showingAddBudget = true
-                } label: {
-                    Image(systemName: "plus")
-                        .font(.body.weight(.semibold))
-                }
-                .tint(.primary)
-                .accessibilityLabel("Add Budget")
-            }
-        }
-        .sheet(isPresented: $showingAddBudget) {
-            BudgetFormView(categoryAutoTotal: categoryMonthlySum)
-        }
-        .sheet(isPresented: $showingOverallEdit) {
-            BudgetFormView(existingBudget: overallBudget,
-                           categoryAutoTotal: categoryMonthlySum)
-        }
-        .sheet(item: $editingBudget) { b in
-            BudgetFormView(existingBudget: b,
-                           categoryAutoTotal: categoryMonthlySum)
+            .padding(.top, 8)
+            .padding(.bottom, 20)
         }
     }
 
