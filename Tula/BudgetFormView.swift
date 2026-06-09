@@ -21,6 +21,10 @@ struct BudgetFormView: View {
     /// the sum already adds up to before they type a custom cap.
     var categoryAutoTotal: Double = 0
 
+    /// When true the scope picker is hidden and scope is fixed — used when
+    /// the user opens this form via the Overall card's Edit button.
+    var lockedScope: Bool = false
+
     // MARK: - Form state
 
     @State private var scope: Scope = .category
@@ -36,9 +40,10 @@ struct BudgetFormView: View {
         var id: String { rawValue }
     }
 
-    init(existingBudget: Budget? = nil, categoryAutoTotal: Double = 0) {
+    init(existingBudget: Budget? = nil, categoryAutoTotal: Double = 0, lockedScope: Bool = false) {
         self.existingBudget    = existingBudget
         self.categoryAutoTotal = categoryAutoTotal
+        self.lockedScope       = lockedScope
     }
 
     // MARK: - Validation
@@ -80,12 +85,27 @@ struct BudgetFormView: View {
 
                 // Scope: Category vs Overall
                 Section("Scope") {
-                    Picker("Scope", selection: $scope) {
-                        ForEach(Scope.allCases) { s in
-                            Text(s.rawValue).tag(s)
+                    if lockedScope {
+                        // Read-only row — scope cannot be changed
+                        HStack {
+                            Label(
+                                scope == .overall ? "Overall" : "Category",
+                                systemImage: scope == .overall ? "infinity" : "tag"
+                            )
+                            .foregroundStyle(.primary)
+                            Spacer()
+                            Text("Locked")
+                                .font(.caption)
+                                .foregroundStyle(.tertiary)
                         }
+                    } else {
+                        Picker("Scope", selection: $scope) {
+                            ForEach(Scope.allCases) { s in
+                                Text(s.rawValue).tag(s)
+                            }
+                        }
+                        .pickerStyle(.segmented)
                     }
-                    .pickerStyle(.segmented)
 
                     if scope == .category {
                         Picker("Category", selection: $selectedCategory) {

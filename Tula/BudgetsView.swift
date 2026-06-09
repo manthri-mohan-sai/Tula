@@ -131,7 +131,8 @@ struct BudgetsView: View {
         }
         .sheet(isPresented: $showingOverallEdit) {
             BudgetFormView(existingBudget: overallBudget,
-                           categoryAutoTotal: categoryMonthlySum)
+                           categoryAutoTotal: categoryMonthlySum,
+                           lockedScope: true)
         }
         .sheet(item: $editingBudget) { b in
             BudgetFormView(existingBudget: b,
