@@ -197,8 +197,12 @@ struct AddExpenseView: View {
             }
             .onAppear {
                 setupDefaults()
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                    amountFocused = true
+                // Only auto-open the keyboard for new expenses.
+                // In edit mode the user may just want to review, not type.
+                if !isEditing {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                        amountFocused = true
+                    }
                 }
             }
             .onChange(of: merchant) { _, newValue in
@@ -937,8 +941,10 @@ struct AddExpenseView: View {
     private func receiptFullScreenView(image: UIImage) -> some View {
         ZStack(alignment: .topTrailing) {
             Color.black.ignoresSafeArea()
+            // ZoomableReceiptView intentionally NOT given .ignoresSafeArea()
+            // so its bounds respect the Dynamic Island / notch. The black
+            // background above still bleeds to screen edges.
             ZoomableReceiptView(image: image)
-                .ignoresSafeArea()
             // Close button — placed last so it sits above the image layer.
             // Use a generous tap target to avoid mis-fires.
             VStack {
