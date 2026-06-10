@@ -832,11 +832,18 @@ struct BudgetCard: View {
                 .stroke(ringColor.opacity(0.15), lineWidth: lineWidth)
 
             // First lap — always full color.
-            Circle()
-                .trim(from: 0, to: firstLap)
-                .stroke(ringColor, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
-                .rotationEffect(.degrees(-90))
-
+            if hasOverflow {
+                Circle()
+                    .trim(from: 0, to: firstLap)
+                    .stroke(ringColor.opacity(0.75), style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+            }
+            else{
+                Circle()
+                    .trim(from: 0, to: firstLap)
+                    .stroke(ringColor, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+            }
             // Second lap — same color drawn on top; dark drop-shadow at its
             // leading cap creates the illusion the ring is lifting over itself.
             if hasOverflow {
@@ -844,7 +851,7 @@ struct BudgetCard: View {
                     .trim(from: 0, to: secondLap)
                     .stroke(ringColor, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
                     .rotationEffect(.degrees(-90))
-                    .shadow(color: .black.opacity(0.35), radius: 4)
+                    .shadow(color: .black.opacity(0.90), radius: 6)
             }
         }
         .frame(width: ringSize, height: ringSize)
