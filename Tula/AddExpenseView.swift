@@ -934,8 +934,8 @@ struct AddExpenseView: View {
             Color.black.ignoresSafeArea()
             Image(uiImage: image)
                 .resizable()
-                .aspectRatio(contentMode: .fit)
-                .ignoresSafeArea()
+                .scaledToFit()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             Button {
                 showingFullReceipt = false
             } label: {
