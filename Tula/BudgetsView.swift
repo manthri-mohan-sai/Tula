@@ -742,7 +742,7 @@ struct BudgetCard: View {
         breakdown.first?.amount ?? 1
     }
 
-    @State private var ringAnimated = false
+    @State private var animatedRingProgress: Double = 0
 
     private var percentText: String {
         let pct = Int(min(progressValue, 9.99) * 100)
@@ -806,8 +806,11 @@ struct BudgetCard: View {
         )
         .contentShape(Rectangle())
         .onAppear {
-            withAnimation(.easeOut(duration: 0.6).delay(0.15)) {
-                ringAnimated = true
+            // Animate a continuous 0→progressValue value so the overflow
+            // lap only begins once the first lap (100%) completes.
+            let duration = progressValue > 1.0 ? 1.1 : 0.65
+            withAnimation(.spring(response: duration, dampingFraction: 0.82).delay(0.15)) {
+                animatedRingProgress = progressValue
             }
         }
     }
@@ -815,18 +818,40 @@ struct BudgetCard: View {
     // MARK: - Ring
 
     private var budgetRing: some View {
-        let ringSize: CGFloat = 56
+        let ringSize: CGFloat  = 56
         let lineWidth: CGFloat = 7
-        let clamped = min(max(progressValue, 0), 1.0)
+        // How far the animated value has gone on the first lap (0-1).
+        let firstLap  = min(animatedRingProgress, 1.0)
+        // How far it has gone on the second (overflow) lap (0-1).
+        let secondLap = max(0, min(animatedRingProgress - 1.0, 1.0))
+        let hasOverflow = progressValue > 1.0
 
         return ZStack {
+            // Track
             Circle()
                 .stroke(ringColor.opacity(0.15), lineWidth: lineWidth)
 
+            // First lap — dim when the ring has wrapped so the second
+            // lap reads clearly on top (same visual logic as Health).
             Circle()
-                .trim(from: 0, to: ringAnimated ? clamped : 0)
-                .stroke(ringColor, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
+                .trim(from: 0, to: firstLap)
+                .stroke(
+                    ringColor.opacity(hasOverflow ? 0.35 : 1.0),
+                    style: StrokeStyle(lineWidth: lineWidth, lineCap: .round)
+                )
                 .rotationEffect(.degrees(-90))
+
+            // Second lap (overflow) — full color with a soft glow tip.
+            if hasOverflow {
+                Circle()
+                    .trim(from: 0, to: secondLap)
+                    .stroke(
+                        ringColor,
+                        style: StrokeStyle(lineWidth: lineWidth, lineCap: .round)
+                    )
+                    .rotationEffect(.degrees(-90))
+                    .shadow(color: ringColor.opacity(0.55), radius: 4)
+            }
         }
         .frame(width: ringSize, height: ringSize)
     }
@@ -1135,14 +1160,27 @@ struct BudgetTransactionsView: View {
                 Circle()
                     .stroke(ringColor.opacity(0.12), lineWidth: 14)
 
+                // First lap
                 Circle()
                     .trim(from: 0, to: min(animatedProgress, 1.0))
                     .stroke(
-                        ringColor,
+                        ringColor.opacity(progressValue > 1.0 ? 0.35 : 1.0),
                         style: StrokeStyle(lineWidth: 14, lineCap: .round)
                     )
                     .rotationEffect(.degrees(-90))
                     .shadow(color: ringColor.opacity(0.3), radius: 6, y: 2)
+
+                // Second lap (overflow)
+                if progressValue > 1.0 {
+                    Circle()
+                        .trim(from: 0, to: max(0, min(animatedProgress - 1.0, 1.0)))
+                        .stroke(
+                            ringColor,
+                            style: StrokeStyle(lineWidth: 14, lineCap: .round)
+                        )
+                        .rotationEffect(.degrees(-90))
+                        .shadow(color: ringColor.opacity(0.55), radius: 6, y: 2)
+                }
 
                 Image(systemName: iconKey)
                     .font(.system(size: 28, weight: .semibold))
@@ -1176,7 +1214,8 @@ struct BudgetTransactionsView: View {
         .padding(.vertical, 28)
         .padding(.horizontal, 16)
         .onAppear {
-            withAnimation(.easeOut(duration: 0.8)) {
+            let duration = progressValue > 1.0 ? 1.1 : 0.8
+            withAnimation(.spring(response: duration, dampingFraction: 0.82)) {
                 animatedProgress = progressValue
             }
         }
