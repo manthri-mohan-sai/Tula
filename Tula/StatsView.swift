@@ -36,6 +36,7 @@ struct StatsView: View {
 
     /// Date the user is dragging on the chart (nil when not interacting).
     @State private var chartSelectedDate: Date?
+    @State private var selectedWeekday: String?
 
     /// Namespace for the period picker's animated selection pill.
     @Namespace private var pickerNamespace
@@ -678,14 +679,26 @@ struct StatsView: View {
     /// numbers hard to read against. Solid background + subtle stroke +
     /// stronger shadow gives a card that always reads as "on top of."
     private func chartAnnotation(date: Date, amount: Double) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(date, format: .dateTime.weekday(.abbreviated).day().month(.abbreviated))
-                .font(.caption2.weight(.medium))
+        let isMonthly = period == .sixMonths
+        let label = isMonthly ? "MONTHLY TOTAL" : "DAILY SPENDING"
+        let dateFormat: Date.FormatStyle = isMonthly
+            ? .dateTime.month(.wide).year()
+            : .dateTime.weekday(.abbreviated).day().month(.abbreviated)
+
+        return VStack(alignment: .leading, spacing: 3) {
+            Text(label)
+                .font(.caption2.weight(.semibold))
                 .foregroundStyle(.secondary)
+                .kerning(0.3)
+
             Text(Currency.format(amount, code: currencyCode))
-                .font(.subheadline.weight(.bold))
+                .font(.title3.weight(.bold))
                 .monospacedDigit()
-                .foregroundStyle(.primary)
+                .foregroundStyle(Color.tulaBrandFallback)
+
+            Text(date, format: dateFormat)
+                .font(.caption.weight(.medium))
+                .foregroundStyle(Color.tulaBrandFallback)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
@@ -819,7 +832,22 @@ struct StatsView: View {
                         )
                         .foregroundStyle(Color.tulaBrandFallback.gradient)
                         .cornerRadius(4)
+
+                        if let selected = selectedWeekday, selected == item.name {
+                            RuleMark(x: .value("Day", item.name))
+                                .foregroundStyle(Color.tulaBrandFallback.opacity(0.35))
+                                .lineStyle(StrokeStyle(lineWidth: 1.5))
+                                .annotation(
+                                    position: .top,
+                                    alignment: .center,
+                                    spacing: 8,
+                                    overflowResolution: .init(x: .fit, y: .disabled)
+                                ) {
+                                    weekdayAnnotation(item: item)
+                                }
+                        }
                     }
+                    .chartXSelection(value: $selectedWeekday)
                     .chartXAxis {
                         AxisMarks { _ in
                             AxisValueLabel()
@@ -837,6 +865,35 @@ struct StatsView: View {
     private func peakDayName(_ weekday: Int) -> String {
         let cal = Calendar.current
         return cal.weekdaySymbols[weekday - 1]   // full name like "Saturday"
+    }
+
+    private func weekdayAnnotation(item: (weekday: Int, name: String, total: Double, count: Int)) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text("TOTAL SPENT")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .kerning(0.3)
+
+            Text(Currency.format(item.total, code: currencyCode))
+                .font(.title3.weight(.bold))
+                .monospacedDigit()
+                .foregroundStyle(Color.tulaBrandFallback)
+
+            Text(peakDayName(item.weekday))
+                .font(.caption.weight(.medium))
+                .foregroundStyle(Color.tulaBrandFallback)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color(uiColor: .systemBackground))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5)
+        )
+        .shadow(color: .black.opacity(0.20), radius: 10, y: 4)
     }
 
     // MARK: - Category Breakdown

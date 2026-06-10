@@ -742,14 +742,58 @@ struct BudgetCard: View {
         breakdown.first?.amount ?? 1
     }
 
+    @State private var ringAnimated = false
+
+    private var percentText: String {
+        let pct = Int(min(progressValue, 9.99) * 100)
+        return "\(pct)%"
+    }
+
+    private var ringColor: Color {
+        if status == .overBudget { return .red }
+        if status == .warning { return .orange }
+        return iconColor
+    }
+
     // MARK: - Body
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            headerRow
-            BudgetProgressBar(progress: progressValue,
-                              isOverBudget: status == .overBudget)
+            HStack(spacing: 14) {
+                // Left: name, percentage, spent/cap
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 8) {
+                        Image(systemName: iconKey)
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(iconColor)
+                            .frame(width: 26, height: 26)
+                            .background(iconColor.opacity(0.15), in: Circle())
+                        Text(budget.displayName)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.primary)
+                    }
+
+                    Text(percentText)
+                        .font(.system(size: 28, weight: .bold, design: .rounded))
+                        .foregroundStyle(ringColor)
+                        .monospacedDigit()
+                        .contentTransition(.numericText(value: progressValue))
+                        .animation(.snappy(duration: 0.35), value: progressValue)
+
+                    Text("\(Currency.format(spent, code: currencyCode))/\(Currency.format(budget.amount, code: currencyCode))")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
+
+                Spacer()
+
+                // Right: activity ring
+                budgetRing
+            }
+
             footerRow
+
             if !breakdown.isEmpty {
                 Divider().padding(.vertical, 2)
                 breakdownSection
@@ -761,87 +805,67 @@ struct BudgetCard: View {
                 .fill(Color.tulaCardSurface)
         )
         .contentShape(Rectangle())
-    }
-
-    // MARK: - Header
-
-    private var headerRow: some View {
-        HStack(spacing: 12) {
-            Image(systemName: iconKey)
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(iconColor)
-                .frame(width: 30, height: 30)
-                .background(iconColor.opacity(0.15), in: Circle())
-
-            VStack(alignment: .leading, spacing: 1) {
-                Text(budget.displayName)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.primary)
-                Text("\(Currency.format(spent, code: currencyCode)) of \(Currency.format(budget.amount, code: currencyCode))")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .monospacedDigit()
-                    .contentTransition(.numericText(value: spent))
-                    .animation(.snappy(duration: 0.35), value: spent)
+        .onAppear {
+            withAnimation(.easeOut(duration: 0.6).delay(0.15)) {
+                ringAnimated = true
             }
-
-            Spacer()
-
-            paceBadge
         }
     }
 
-    private var paceBadge: some View {
-        Text(pace.label)
-            .font(.caption2.weight(.semibold))
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .background(paceColor.opacity(0.15), in: Capsule())
-            .foregroundStyle(paceColor)
+    // MARK: - Ring
+
+    private var budgetRing: some View {
+        let ringSize: CGFloat = 56
+        let lineWidth: CGFloat = 7
+        let clamped = min(max(progressValue, 0), 1.0)
+
+        return ZStack {
+            Circle()
+                .stroke(ringColor.opacity(0.15), lineWidth: lineWidth)
+
+            Circle()
+                .trim(from: 0, to: ringAnimated ? clamped : 0)
+                .stroke(ringColor, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+        }
+        .frame(width: ringSize, height: ringSize)
     }
 
     // MARK: - Footer
 
-    /// Two compact stats below the progress bar — daily allowance (the
-    /// key actionable number) and days left. Swaps to "over by" messaging
-    /// when the cap is breached.
     private var footerRow: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
+                Text(pace.label)
+                    .font(.caption2.weight(.semibold))
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 3)
+                    .background(paceColor.opacity(0.12), in: Capsule())
+                    .foregroundStyle(paceColor)
+
                 if pace == .overBudget {
                     Text("Over by \(Currency.format(abs(remaining), code: currencyCode))")
-                        .font(.caption.weight(.semibold))
+                        .font(.caption2.weight(.medium))
                         .foregroundStyle(.red)
                         .monospacedDigit()
                 } else if remaining <= 0 {
-                    Text("Budget fully used")
-                        .font(.caption.weight(.semibold))
+                    Text("· Budget fully used")
+                        .font(.caption2.weight(.medium))
                         .foregroundStyle(.orange)
-                    Text("·")
-                        .foregroundStyle(.tertiary)
-                    Text(daysLeftLabel)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .monospacedDigit()
                 } else if let allowance = dailyAllowance {
-                    Text("\(Currency.format(allowance, code: currencyCode))/day")
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(.primary)
-                        .monospacedDigit()
-                    Text("·")
-                        .foregroundStyle(.tertiary)
-                    Text(daysLeftLabel)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .monospacedDigit()
-                } else {
-                    Text(daysLeftLabel)
-                        .font(.caption)
+                    Text("· \(Currency.format(allowance, code: currencyCode))/day")
+                        .font(.caption2.weight(.medium))
                         .foregroundStyle(.secondary)
                         .monospacedDigit()
                 }
+
+                Text("· \(daysLeftLabel)")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+
                 Spacer()
             }
+
             if let overshoot = projectedOvershoot {
                 Text("Projected \(Currency.format(overshoot, code: currencyCode)) over budget")
                     .font(.caption2.weight(.medium))
@@ -894,29 +918,83 @@ struct BudgetCard: View {
 /// Thin pill-shaped progress bar. Fill is brand amber by default,
 /// switches to red when over budget. Over-budget bars are visually
 /// full (the overflow indicator is the red badge in the row above).
-struct BudgetProgressBar: View {
+struct BudgetProgressBar: UIViewRepresentable {
     let progress: Double
     let isOverBudget: Bool
     var height: CGFloat = 6
 
-    var body: some View {
-        GeometryReader { geo in
-            let clamped = min(max(progress, 0), 1.0)
-            ZStack(alignment: .leading) {
-                Capsule()
-                    .fill(Color(uiColor: .tertiarySystemFill))
-
-                Capsule()
-                    .fill(fillColor)
-                    .frame(width: geo.size.width * clamped)
-                    .animation(.easeOut(duration: 0.8), value: clamped)
-            }
-        }
-        .frame(height: height)
+    func makeUIView(context: Context) -> BudgetProgressUIView {
+        BudgetProgressUIView(barHeight: height)
     }
 
-    private var fillColor: Color {
-        isOverBudget ? .red : Color.tulaBrandFallback
+    func updateUIView(_ view: BudgetProgressUIView, context: Context) {
+        view.update(
+            progress: min(max(progress, 0), 1.0),
+            fillColor: UIColor(isOverBudget ? .red : Color.tulaBrandFallback)
+        )
+    }
+}
+
+final class BudgetProgressUIView: UIView {
+    private let trackView = UIView()
+    private let fillView = UIView()
+    private let barHeight: CGFloat
+    private var targetProgress: Double = 0
+    private var hasAppeared = false
+
+    init(barHeight: CGFloat) {
+        self.barHeight = barHeight
+        super.init(frame: .zero)
+        trackView.backgroundColor = .tertiarySystemFill
+        trackView.clipsToBounds = true
+        addSubview(trackView)
+        trackView.addSubview(fillView)
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override var intrinsicContentSize: CGSize {
+        CGSize(width: UIView.noIntrinsicMetric, height: barHeight)
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        guard bounds.width > 0 else { return }
+
+        let r = barHeight / 2
+        trackView.frame = bounds
+        trackView.layer.cornerRadius = r
+        fillView.layer.cornerRadius = r
+
+        if !hasAppeared {
+            hasAppeared = true
+            fillView.frame = CGRect(x: 0, y: 0, width: 0, height: bounds.height)
+            UIView.animate(withDuration: 0.4, delay: 0.1, options: .curveEaseOut) {
+                self.fillView.frame = CGRect(
+                    x: 0, y: 0,
+                    width: self.bounds.width * self.targetProgress,
+                    height: self.bounds.height
+                )
+            }
+        }
+    }
+
+    func update(progress: Double, fillColor: UIColor) {
+        let changed = targetProgress != progress
+        targetProgress = progress
+        fillView.backgroundColor = fillColor
+
+        if hasAppeared && changed {
+            UIView.animate(withDuration: 0.3, delay: 0, options: .curveEaseInOut) {
+                self.fillView.frame = CGRect(
+                    x: 0, y: 0,
+                    width: self.bounds.width * progress,
+                    height: self.bounds.height
+                )
+            }
+        } else if !hasAppeared {
+            setNeedsLayout()
+        }
     }
 }
 
