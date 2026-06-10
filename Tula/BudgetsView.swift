@@ -819,7 +819,7 @@ struct BudgetCard: View {
 
     private var budgetRing: some View {
         let ringSize: CGFloat  = 56
-        let lineWidth: CGFloat = 7
+        let lineWidth: CGFloat = 9
         // How far the animated value has gone on the first lap (0-1).
         let firstLap  = min(animatedRingProgress, 1.0)
         // How far it has gone on the second (overflow) lap (0-1).
