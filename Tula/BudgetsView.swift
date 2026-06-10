@@ -820,11 +820,12 @@ struct BudgetCard: View {
     private var budgetRing: some View {
         let ringSize: CGFloat  = 56
         let lineWidth: CGFloat = 9
-        // How far through the *current* lap we are (0…<1).
-        // At a lap boundary (200%, 300%…) this momentarily hits 0 and the
-        // active arc resets — the same snap Apple Health rings do.
-        let lapFraction = animatedRingProgress.truncatingRemainder(dividingBy: 1.0)
         let hasOverflow = animatedRingProgress > 1.0
+        // Fraction through the current lap (0…<1).
+        // truncatingRemainder returns 0 when landing exactly on a boundary
+        // (100%, 200%…), so treat that as 1.0 = a completed full circle.
+        let rawFraction = animatedRingProgress.truncatingRemainder(dividingBy: 1.0)
+        let lapFraction = (rawFraction == 0 && animatedRingProgress >= 1.0) ? 1.0 : rawFraction
 
         return ZStack {
             // Track
@@ -1168,7 +1169,8 @@ struct BudgetTransactionsView: View {
                 // Active lap (works for any N): current lap fraction on top
                 // with a shadow to separate it from the dim ring beneath.
                 if animatedProgress > 1.0 {
-                    let lapFrac = animatedProgress.truncatingRemainder(dividingBy: 1.0)
+                    let raw = animatedProgress.truncatingRemainder(dividingBy: 1.0)
+                    let lapFrac = (raw == 0 && animatedProgress >= 1.0) ? 1.0 : raw
                     Circle()
                         .trim(from: 0, to: lapFrac)
                         .stroke(ringColor, style: StrokeStyle(lineWidth: 14, lineCap: .round))
