@@ -235,6 +235,14 @@ struct AddExpenseView: View {
                 .presentationDragIndicator(.visible)
             }
         }
+        // Receipt full-screen viewer — attached at NavigationStack level so
+        // its dismiss animation is fully isolated from the toolbar buttons
+        // beneath it (prevents the close-button tap bleeding into Save).
+        .fullScreenCover(isPresented: $showingFullReceipt) {
+            if let image = receiptImage {
+                receiptFullScreenView(image: image)
+            }
+        }
     }
 
     /// Best-available receipt image data for the items sheet. Pulls from
@@ -924,27 +932,32 @@ struct AddExpenseView: View {
                 .fill(Color.tulaCardSurface)
         )
         .clipShape(RoundedRectangle(cornerRadius: CornerRadius.medium, style: .continuous))
-        .fullScreenCover(isPresented: $showingFullReceipt) {
-            receiptFullScreenView(image: image)
-        }
     }
 
     private func receiptFullScreenView(image: UIImage) -> some View {
         ZStack(alignment: .topTrailing) {
             Color.black.ignoresSafeArea()
-            Image(uiImage: image)
-                .resizable()
-                .scaledToFit()
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            Button {
-                showingFullReceipt = false
-            } label: {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.title)
-                    .symbolRenderingMode(.hierarchical)
-                    .foregroundStyle(.white)
-                    .padding()
+            ZoomableReceiptView(image: image)
+                .ignoresSafeArea()
+            // Close button — placed last so it sits above the image layer.
+            // Use a generous tap target to avoid mis-fires.
+            VStack {
+                HStack {
+                    Spacer()
+                    Button {
+                        showingFullReceipt = false
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.title)
+                            .symbolRenderingMode(.hierarchical)
+                            .foregroundStyle(.white)
+                            .padding()
+                    }
+                    .contentShape(Rectangle())
+                }
+                Spacer()
             }
+            .padding(.top, 8)
         }
     }
 
@@ -1498,6 +1511,97 @@ struct AddExpenseView: View {
         NotificationManager.refreshDailyReminder(using: context)
         Haptics.success()
         dismiss()
+    }
+}
+
+// MARK: - Zoomable receipt viewer
+
+/// A UIScrollView-backed image viewer with pinch-to-zoom, pan, and
+/// double-tap-to-zoom. Used by AddExpenseView's full-screen receipt cover.
+private struct ZoomableReceiptView: UIViewRepresentable {
+    let image: UIImage
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeUIView(context: Context) -> UIScrollView {
+        let scroll = UIScrollView()
+        scroll.minimumZoomScale = 1.0
+        scroll.maximumZoomScale = 6.0
+        scroll.showsHorizontalScrollIndicator = false
+        scroll.showsVerticalScrollIndicator = false
+        scroll.backgroundColor = .black
+        scroll.contentInsetAdjustmentBehavior = .never
+        scroll.delegate = context.coordinator
+        scroll.bouncesZoom = true
+
+        let imageView = UIImageView(image: image)
+        imageView.contentMode = .scaleAspectFit
+        imageView.clipsToBounds = true
+        scroll.addSubview(imageView)
+        context.coordinator.imageView = imageView
+        context.coordinator.scrollView = scroll
+
+        // Double-tap: zoom in 3× at tap point, or reset if already zoomed.
+        let doubleTap = UITapGestureRecognizer(
+            target: context.coordinator,
+            action: #selector(Coordinator.handleDoubleTap(_:))
+        )
+        doubleTap.numberOfTapsRequired = 2
+        scroll.addGestureRecognizer(doubleTap)
+
+        return scroll
+    }
+
+    func updateUIView(_ scroll: UIScrollView, context: Context) {
+        guard let imageView = context.coordinator.imageView else { return }
+        DispatchQueue.main.async {
+            let size = scroll.bounds.size
+            guard size.width > 0, size.height > 0 else { return }
+            let img = image.size
+            let scale = min(size.width / img.width, size.height / img.height)
+            let w = img.width * scale
+            let h = img.height * scale
+            imageView.frame = CGRect(
+                x: (size.width - w) / 2,
+                y: (size.height - h) / 2,
+                width: w, height: h
+            )
+            scroll.contentSize = size
+            scroll.zoomScale = 1.0
+        }
+    }
+
+    final class Coordinator: NSObject, UIScrollViewDelegate {
+        weak var imageView: UIImageView?
+        weak var scrollView: UIScrollView?
+
+        func viewForZooming(in scrollView: UIScrollView) -> UIView? { imageView }
+
+        // Keep the image centered while zooming.
+        func scrollViewDidZoom(_ scrollView: UIScrollView) {
+            guard let iv = imageView else { return }
+            let bounds = scrollView.bounds.size
+            var frame = iv.frame
+            frame.origin.x = frame.size.width < bounds.width
+                ? (bounds.width - frame.size.width) / 2 : 0
+            frame.origin.y = frame.size.height < bounds.height
+                ? (bounds.height - frame.size.height) / 2 : 0
+            iv.frame = frame
+        }
+
+        @objc func handleDoubleTap(_ gesture: UITapGestureRecognizer) {
+            guard let scroll = scrollView else { return }
+            if scroll.zoomScale > 1.0 {
+                scroll.setZoomScale(1.0, animated: true)
+            } else {
+                let point = gesture.location(in: imageView)
+                let zoomRect = CGRect(
+                    x: point.x - 40, y: point.y - 40,
+                    width: 80, height: 80
+                )
+                scroll.zoom(to: zoomRect, animated: true)
+            }
+        }
     }
 }
 
