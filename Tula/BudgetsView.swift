@@ -830,7 +830,7 @@ struct BudgetCard: View {
         return ZStack {
             // Track
             Circle()
-                .stroke(ringColor.opacity(0.15), lineWidth: lineWidth)
+                .stroke(ringColor.opacity(0.10), lineWidth: lineWidth)
 
             if !hasOverflow {
                 // First lap only — full color, no shadow needed.
@@ -841,7 +841,7 @@ struct BudgetCard: View {
             } else {
                 // All completed laps rendered as one dim full ring underneath.
                 Circle()
-                    .stroke(ringColor.opacity(0.35), lineWidth: lineWidth)
+                    .stroke(ringColor.opacity(0.40), lineWidth: lineWidth)
 
                 // Active (partial) lap on top — full color + shadow so it
                 // visually lifts off the dim ring at every 100% crossing.
