@@ -820,35 +820,32 @@ struct BudgetCard: View {
     private var budgetRing: some View {
         let ringSize: CGFloat  = 56
         let lineWidth: CGFloat = 9
-        // How far the animated value has gone on the first lap (0-1).
-        let firstLap  = min(animatedRingProgress, 1.0)
-        // How far it has gone on the second (overflow) lap (0-1).
-        let secondLap = max(0, min(animatedRingProgress - 1.0, 1.0))
-        let hasOverflow = progressValue > 1.0
+        // How far through the *current* lap we are (0…<1).
+        // At a lap boundary (200%, 300%…) this momentarily hits 0 and the
+        // active arc resets — the same snap Apple Health rings do.
+        let lapFraction = animatedRingProgress.truncatingRemainder(dividingBy: 1.0)
+        let hasOverflow = animatedRingProgress > 1.0
 
         return ZStack {
             // Track
             Circle()
                 .stroke(ringColor.opacity(0.15), lineWidth: lineWidth)
 
-            // First lap — always full color.
-            if hasOverflow {
+            if !hasOverflow {
+                // First lap only — full color, no shadow needed.
                 Circle()
-                    .trim(from: 0, to: firstLap)
-                    .stroke(ringColor.opacity(0.75), style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
-                    .rotationEffect(.degrees(-90))
-            }
-            else{
-                Circle()
-                    .trim(from: 0, to: firstLap)
+                    .trim(from: 0, to: lapFraction)
                     .stroke(ringColor, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
                     .rotationEffect(.degrees(-90))
-            }
-            // Second lap — same color drawn on top; dark drop-shadow at its
-            // leading cap creates the illusion the ring is lifting over itself.
-            if hasOverflow {
+            } else {
+                // All completed laps rendered as one dim full ring underneath.
                 Circle()
-                    .trim(from: 0, to: secondLap)
+                    .stroke(ringColor.opacity(0.35), lineWidth: lineWidth)
+
+                // Active (partial) lap on top — full color + shadow so it
+                // visually lifts off the dim ring at every 100% crossing.
+                Circle()
+                    .trim(from: 0, to: lapFraction)
                     .stroke(ringColor, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
                     .rotationEffect(.degrees(-90))
                     .shadow(color: .black.opacity(0.90), radius: 6)
@@ -1164,14 +1161,16 @@ struct BudgetTransactionsView: View {
                 // First lap — always full color.
                 Circle()
                     .trim(from: 0, to: min(animatedProgress, 1.0))
-                    .stroke(ringColor, style: StrokeStyle(lineWidth: 14, lineCap: .round))
+                    .stroke(animatedProgress > 1.0 ? ringColor.opacity(0.35) : ringColor,
+                            style: StrokeStyle(lineWidth: 14, lineCap: .round))
                     .rotationEffect(.degrees(-90))
 
-                // Second lap — same color on top; dark drop-shadow separates
-                // the leading edge visually from the first lap beneath it.
-                if progressValue > 1.0 {
+                // Active lap (works for any N): current lap fraction on top
+                // with a shadow to separate it from the dim ring beneath.
+                if animatedProgress > 1.0 {
+                    let lapFrac = animatedProgress.truncatingRemainder(dividingBy: 1.0)
                     Circle()
-                        .trim(from: 0, to: max(0, min(animatedProgress - 1.0, 1.0)))
+                        .trim(from: 0, to: lapFrac)
                         .stroke(ringColor, style: StrokeStyle(lineWidth: 14, lineCap: .round))
                         .rotationEffect(.degrees(-90))
                         .shadow(color: .black.opacity(0.35), radius: 6)
