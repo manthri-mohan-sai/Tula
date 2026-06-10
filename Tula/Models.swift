@@ -316,6 +316,14 @@ final class RecurringRule {
     /// rules — they keep auto-logging exactly as before.
     var confirmationRequired: Bool = false
 
+    /// When true, the amount on this rule is a reference only — the actual
+    /// amount varies each period (e.g. power bills, fuel). The rule always
+    /// uses confirmation mode: it reminds the user and opens the log form
+    /// with merchant + category pre-filled but amount empty, showing the
+    /// last/average amount as a hint. Fixed-amount rules (false) can
+    /// auto-log the exact amount.
+    var isVariable: Bool = false
+
     @Relationship(deleteRule: .nullify, inverse: \Expense.recurringRule)
     var generatedExpenses: [Expense] = []
 

@@ -14,6 +14,8 @@ struct Insight: Identifiable {
     let icon: String
     let color: Color
     let priority: Int   // higher = more important; engine sorts by this
+    var suggestion: RecurringSuggestion? = nil
+    var categoryID: UUID? = nil
 }
 
 enum InsightKind {
@@ -25,6 +27,21 @@ enum InsightKind {
     case monthPace
     case quietToday
     case bigSpender
+    case recurringSuggestion
+}
+
+// MARK: - Recurring Suggestion
+
+struct RecurringSuggestion: Identifiable {
+    let id = UUID()
+    let merchant: String
+    let frequency: RecurringFrequency
+    let category: Category?
+    let account: Account?
+    let isVariable: Bool
+    let lastAmount: Double
+    let amountRange: (low: Double, high: Double)?
+    let dayOfMonth: Int
 }
 
 // MARK: - Engine
@@ -36,7 +53,8 @@ enum InsightEngine {
     static func generate(
         expenses: [Expense],
         accounts: [Account],
-        currencyCode: String
+        currencyCode: String,
+        recurringRules: [RecurringRule] = []
     ) -> [Insight] {
         var insights: [Insight] = []
         let calendar = Calendar.current
@@ -153,32 +171,65 @@ enum InsightEngine {
                 return prioritized(insights)
             }
             let trailing90 = expenses.filter { $0.date >= trailingStart && $0.date < monthStart }
-            let trailingTotals = Dictionary(grouping: trailing90) { $0.category?.id }
-                .mapValues { exps in exps.reduce(0) { $0 + $1.amount } }
+            let trailingByCategory = Dictionary(grouping: trailing90) { $0.category?.id }
 
-            // For each category, compute trailing-3-month monthly average
             for (catID, value) in categoryTotals {
                 guard let catID else { continue }
                 let (cat, amount) = value
-                guard let trailing = trailingTotals[catID], trailing > 0 else { continue }
+                guard let catTrailing = trailingByCategory[catID], !catTrailing.isEmpty else { continue }
 
-                let monthlyAvg = trailing / 3.0
-                guard monthlyAvg >= 500 else { continue }    // ignore noise
+                let trailingTotal = catTrailing.reduce(0) { $0 + $1.amount }
+                guard trailingTotal > 0 else { continue }
+
+                let activeMonths = Set(catTrailing.map { calendar.component(.month, from: $0.date) }).count
+                let divisor = max(Double(activeMonths), 1.0)
+                let monthlyAvg = trailingTotal / divisor
+                guard monthlyAvg >= 500 else { continue }
 
                 let ratio = amount / monthlyAvg
                 if ratio >= 1.5 {
-                    let percent = Int(((ratio - 1) * 100).rounded())
+                    let multiplier = ratio
+                    let title: String
+                    if multiplier >= 5 {
+                        title = "\(cat.name) \(Int(multiplier))x higher"
+                    } else {
+                        let percent = Int(((ratio - 1) * 100).rounded())
+                        title = "\(cat.name) +\(percent)%"
+                    }
                     insights.append(Insight(
                         id: "catAlert-\(cat.id)",
                         kind: .categoryAlert,
-                        title: "\(cat.name) +\(percent)%",
+                        title: title,
                         detail: "Above your typical monthly \(cat.name.lowercased()) spend.",
                         icon: cat.iconKey,
                         color: Color(hex: cat.colorHex),
-                        priority: percent >= 100 ? 5 : 3
+                        priority: multiplier >= 3 ? 5 : 3,
+                        categoryID: catID
                     ))
                 }
             }
+        }
+
+        // MARK: Recurring pattern suggestions
+
+        let suggestions = RecurringPatternDetector.detect(
+            expenses: expenses,
+            existingRules: recurringRules,
+            currencyCode: currencyCode
+        )
+        for suggestion in suggestions.prefix(2) {
+            let freqLabel = suggestion.frequency == .weekly ? "weekly" : "monthly"
+            let variableHint = suggestion.isVariable ? " (amount varies)" : ""
+            insights.append(Insight(
+                id: "recurringSuggestion-\(suggestion.merchant.lowercased())",
+                kind: .recurringSuggestion,
+                title: "\(suggestion.merchant) looks recurring",
+                detail: "Paid \(freqLabel)\(variableHint). Tap to set up auto-tracking.",
+                icon: "arrow.clockwise.circle.fill",
+                color: Color(hex: suggestion.category?.colorHex ?? "#D97706"),
+                priority: 4,
+                suggestion: suggestion
+            ))
         }
 
         return prioritized(insights)
@@ -236,6 +287,126 @@ enum InsightEngine {
         case 30...: return "A month-long habit. Impressive."
         default: return "Building the habit."
         }
+    }
+}
+
+// MARK: - Recurring Pattern Detector
+
+enum RecurringPatternDetector {
+
+    struct MerchantGroup {
+        let merchant: String
+        let expenses: [Expense]
+        let category: Category?
+        let account: Account?
+    }
+
+    static func detect(
+        expenses: [Expense],
+        existingRules: [RecurringRule],
+        currencyCode: String
+    ) -> [RecurringSuggestion] {
+        let calendar = Calendar.current
+        let existingMerchants = Set(
+            existingRules.compactMap { $0.merchant?.lowercased().trimmingCharacters(in: .whitespaces) }
+            + existingRules.map { $0.name.lowercased().trimmingCharacters(in: .whitespaces) }
+        )
+
+        let merchantExpenses = Dictionary(grouping: expenses) { exp -> String? in
+            guard let m = exp.merchant?.trimmingCharacters(in: .whitespaces),
+                  !m.isEmpty else { return nil }
+            return m.lowercased()
+        }
+
+        var suggestions: [RecurringSuggestion] = []
+
+        for (key, exps) in merchantExpenses {
+            guard let key, !key.isEmpty else { continue }
+            if existingMerchants.contains(key) { continue }
+
+            // Need at least 2 occurrences to detect a pattern
+            guard exps.count >= 2 else { continue }
+
+            let sorted = exps.sorted { $0.date < $1.date }
+            let displayName = sorted.last?.merchant ?? key
+
+            // Compute intervals between consecutive expenses (in days)
+            var intervals: [Int] = []
+            for i in 1..<sorted.count {
+                let days = calendar.dateComponents([.day], from: sorted[i-1].date, to: sorted[i].date).day ?? 0
+                intervals.append(days)
+            }
+
+            guard !intervals.isEmpty else { continue }
+
+            let avgInterval = Double(intervals.reduce(0, +)) / Double(intervals.count)
+
+            // Detect frequency based on average interval
+            let frequency: RecurringFrequency?
+            if avgInterval >= 5 && avgInterval <= 10 {
+                // Weekly pattern (7 days ± 3)
+                let allWeekly = intervals.allSatisfy { $0 >= 4 && $0 <= 11 }
+                frequency = allWeekly ? .weekly : nil
+            } else if avgInterval >= 25 && avgInterval <= 38 {
+                // Monthly pattern (30 days ± 8)
+                let allMonthly = intervals.allSatisfy { $0 >= 20 && $0 <= 45 }
+                frequency = allMonthly ? .monthly : nil
+            } else {
+                frequency = nil
+            }
+
+            guard let detectedFrequency = frequency else { continue }
+
+            // Determine if fixed or variable amount
+            let amounts = sorted.map(\.amount)
+            let minAmt = amounts.min() ?? 0
+            let maxAmt = amounts.max() ?? 0
+            let avgAmt = amounts.reduce(0, +) / Double(amounts.count)
+            let spread = avgAmt > 0 ? (maxAmt - minAmt) / avgAmt : 0
+            let isVariable = spread > 0.05
+
+            // Most common category and account
+            let category = mostCommon(sorted.compactMap(\.category))
+            let account = mostCommon(sorted.compactMap(\.account))
+
+            // Best guess for day of month
+            let dayOfMonth: Int
+            if detectedFrequency == .monthly {
+                let days = sorted.map { calendar.component(.day, from: $0.date) }
+                dayOfMonth = mostCommonValue(days) ?? calendar.component(.day, from: sorted.last!.date)
+            } else {
+                dayOfMonth = calendar.component(.day, from: sorted.last!.date)
+            }
+
+            let lastAmount = sorted.last?.amount ?? avgAmt
+
+            suggestions.append(RecurringSuggestion(
+                merchant: displayName,
+                frequency: detectedFrequency,
+                category: category,
+                account: account,
+                isVariable: isVariable,
+                lastAmount: lastAmount,
+                amountRange: isVariable ? (low: minAmt, high: maxAmt) : nil,
+                dayOfMonth: dayOfMonth
+            ))
+        }
+
+        // Sort by occurrence count (most frequent patterns first)
+        return suggestions.sorted {
+            merchantExpenses[$0.merchant.lowercased()]?.count ?? 0
+            > merchantExpenses[$1.merchant.lowercased()]?.count ?? 0
+        }
+    }
+
+    private static func mostCommon<T: Identifiable>(_ items: [T]) -> T? {
+        let counts = Dictionary(grouping: items, by: { $0.id })
+        return counts.max(by: { $0.value.count < $1.value.count })?.value.first
+    }
+
+    private static func mostCommonValue(_ values: [Int]) -> Int? {
+        let counts = Dictionary(grouping: values, by: { $0 })
+        return counts.max(by: { $0.value.count < $1.value.count })?.key
     }
 }
 

@@ -1,11 +1,6 @@
 import SwiftUI
 import SwiftData
 
-/// Sheet for creating a new budget or editing an existing one.
-///
-/// Layout follows AccountFormView's pattern: hero amount input at the top,
-/// then grouped configuration form below. Brand color reserved for the
-/// amount field; everything else is neutral.
 struct BudgetFormView: View {
     @Environment(\.modelContext) private var context
     @Environment(\.dismiss) private var dismiss
@@ -13,17 +8,10 @@ struct BudgetFormView: View {
 
     @Query(sort: \Category.sortOrder) private var categories: [Category]
 
-    /// nil = create mode, non-nil = edit mode.
     let existingBudget: Budget?
-
-    /// Auto-computed monthly equivalent total from all category budgets.
-    /// Shown as a hint when scope is Overall so the user understands what
-    /// the sum already adds up to before they type a custom cap.
     var categoryAutoTotal: Double = 0
-
-    /// When true the scope picker is hidden and scope is fixed — used when
-    /// the user opens this form via the Overall card's Edit button.
     var lockedScope: Bool = false
+    var initialScope: Scope = .category
 
     // MARK: - Form state
 
@@ -31,8 +19,8 @@ struct BudgetFormView: View {
     @State private var selectedCategory: Category?
     @State private var amount: Double = 0
     @State private var period: BudgetPeriod = .monthly
-
     @State private var showDeleteConfirm = false
+    @FocusState private var amountFocused: Bool
 
     enum Scope: String, CaseIterable, Identifiable {
         case category = "Category"
@@ -40,10 +28,14 @@ struct BudgetFormView: View {
         var id: String { rawValue }
     }
 
-    init(existingBudget: Budget? = nil, categoryAutoTotal: Double = 0, lockedScope: Bool = false) {
+    init(existingBudget: Budget? = nil,
+         categoryAutoTotal: Double = 0,
+         lockedScope: Bool = false,
+         initialScope: Scope = .category) {
         self.existingBudget    = existingBudget
         self.categoryAutoTotal = categoryAutoTotal
         self.lockedScope       = lockedScope
+        self.initialScope      = initialScope
     }
 
     // MARK: - Validation
@@ -56,110 +48,40 @@ struct BudgetFormView: View {
 
     private var isEditing: Bool { existingBudget != nil }
 
+    private var activeCategories: [Category] {
+        categories.filter { !$0.isArchived }
+    }
+
     // MARK: - Body
 
     var body: some View {
         NavigationStack {
-            Form {
-                // Amount — hero input
-                Section {
-                    HStack(alignment: .firstTextBaseline, spacing: 6) {
-                        Text(Currency.symbol(for: currencyCode))
-                            .font(.system(size: 34, weight: .light))
-                            .foregroundStyle(.secondary)
-                        FormattedAmountField(
-                            value: $amount,
-                            currencyCode: currencyCode,
-                            placeholder: "0",
-                            font: .system(size: 34, weight: .semibold),
-                            alignment: .leading
-                        )
-                        .foregroundStyle(Color.tulaBrandFallback)
-                    }
-                    .padding(.vertical, 8)
-                } header: {
-                    Text("Budget")
-                } footer: {
-                    Text("\(period.displayName) cap. Resets at the start of each period.")
-                }
-
-                // Scope: Category vs Overall
-                Section("Scope") {
-                    if lockedScope {
-                        // Read-only row — scope cannot be changed
-                        HStack {
-                            Label(
-                                scope == .overall ? "Overall" : "Category",
-                                systemImage: scope == .overall ? "infinity" : "tag"
-                            )
-                            .foregroundStyle(.primary)
-                            Spacer()
-                            Text("Locked")
-                                .font(.caption)
-                                .foregroundStyle(.tertiary)
-                        }
-                    } else {
-                        Picker("Scope", selection: $scope) {
-                            ForEach(Scope.allCases) { s in
-                                Text(s.rawValue).tag(s)
-                            }
-                        }
-                        .pickerStyle(.segmented)
-                    }
-
+            ScrollView {
+                VStack(spacing: Spacing.xl) {
+                    amountSection
+                    scopeSection
                     if scope == .category {
-                        Picker("Category", selection: $selectedCategory) {
-                            Text("Select…").tag(Category?.none)
-                            ForEach(categories) { cat in
-                                Text(cat.name).tag(Category?.some(cat))
-                            }
-                        }
+                        categoryChips
                     } else {
-                        // Overall — explain the implication
-                        Label("All categories count toward this budget", systemImage: "infinity")
-                            .foregroundStyle(.secondary)
-                            .font(.subheadline)
-                        if categoryAutoTotal > 0 {
-                            let formatted = Currency.format(categoryAutoTotal,
-                                                           code: currencyCode)
-                            Text("Category budgets total \(formatted)/mo. Set a higher amount to track unallocated spending.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
+                        overallHint
+                    }
+                    periodSection
+                    if isEditing {
+                        deleteButton
                     }
                 }
-
-                // Period
-                Section("Resets") {
-                    Picker("Period", selection: $period) {
-                        ForEach(BudgetPeriod.allCases) { p in
-                            Text(p.displayName).tag(p)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                }
-
-                if isEditing {
-                    Section {
-                        Button(role: .destructive) {
-                            showDeleteConfirm = true
-                        } label: {
-                            HStack {
-                                Spacer()
-                                Text("Delete Budget")
-                                Spacer()
-                            }
-                        }
-                    }
-                }
+                .padding(.horizontal, Spacing.xl)
+                .padding(.top, Spacing.sm)
+                .padding(.bottom, Spacing.xxxl)
             }
+            .background(Color(uiColor: .systemGroupedBackground))
             .navigationTitle(isEditing ? "Edit Budget" : "New Budget")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
+                ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
                 }
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItem(placement: .confirmationAction) {
                     Button("Save") {
                         Haptics.tap()
                         save()
@@ -168,7 +90,12 @@ struct BudgetFormView: View {
                     .disabled(!canSave)
                 }
             }
-            .onAppear(perform: hydrateFromExisting)
+            .onAppear {
+                hydrateFromExisting()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                    if amount == 0 { amountFocused = true }
+                }
+            }
             .confirmationDialog("Delete this budget?",
                                 isPresented: $showDeleteConfirm,
                                 titleVisibility: .visible) {
@@ -180,17 +107,189 @@ struct BudgetFormView: View {
         }
     }
 
+    // MARK: - Amount Section
+
+    private var amountSection: some View {
+        VStack(spacing: Spacing.xs) {
+            Text(Currency.symbol(for: currencyCode))
+                .font(.title2.weight(.medium))
+                .foregroundStyle(.secondary)
+
+            FormattedAmountField(
+                value: $amount,
+                currencyCode: currencyCode,
+                placeholder: "0",
+                font: .system(size: 52, weight: .bold, design: .rounded),
+                alignment: .center
+            )
+            .focused($amountFocused)
+            .frame(maxWidth: .infinity)
+            .foregroundStyle(amount > 0 ? Color.tulaBrandFallback : Color.secondary.opacity(0.4))
+
+            Text("\(period.displayName) budget cap")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.vertical, Spacing.lg)
+    }
+
+    // MARK: - Scope Section
+
+    private var scopeSection: some View {
+        VStack(alignment: .leading, spacing: Spacing.md) {
+            SectionHeader(title: "Scope")
+
+            if lockedScope {
+                HStack(spacing: 10) {
+                    Image(systemName: scope == .overall ? "infinity" : "tag.fill")
+                        .font(.subheadline)
+                        .foregroundStyle(Color.tulaBrandFallback)
+                    Text(scope == .overall ? "Overall Budget" : "Category Budget")
+                        .font(.subheadline.weight(.medium))
+                    Spacer()
+                    Text("Locked")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
+                .padding(12)
+                .background(Color.tulaCardSurface, in: RoundedRectangle(cornerRadius: CornerRadius.small, style: .continuous))
+            } else {
+                Picker("Scope", selection: $scope) {
+                    ForEach(Scope.allCases) { s in
+                        Text(s.rawValue).tag(s)
+                    }
+                }
+                .pickerStyle(.segmented)
+            }
+        }
+    }
+
+    // MARK: - Category Chips
+
+    private var categoryChips: some View {
+        VStack(alignment: .leading, spacing: Spacing.md) {
+            SectionHeader(title: "Category")
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 10) {
+                    ForEach(activeCategories) { cat in
+                        let isSelected = selectedCategory?.id == cat.id
+                        let catColor = Color(hex: cat.colorHex)
+
+                        Button {
+                            Haptics.selection()
+                            withAnimation(.spring(response: 0.35, dampingFraction: 0.7)) {
+                                selectedCategory = isSelected ? nil : cat
+                            }
+                        } label: {
+                            HStack(spacing: 7) {
+                                Image(systemName: isSelected ? cat.iconKey : cat.iconKey)
+                                    .font(.system(size: 14, weight: .semibold))
+                                    .symbolEffect(.bounce, value: isSelected)
+                                Text(cat.name)
+                                    .font(.subheadline.weight(.medium))
+                            }
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 11)
+                            .background {
+                                Capsule()
+                                    .fill(isSelected ? catColor : Color(uiColor: .tertiarySystemFill))
+                                    .shadow(color: isSelected ? catColor.opacity(0.35) : .clear,
+                                            radius: isSelected ? 8 : 0, y: isSelected ? 3 : 0)
+                            }
+                            .overlay {
+                                Capsule()
+                                    .strokeBorder(isSelected ? catColor.opacity(0.5) : Color.clear, lineWidth: 1.5)
+                            }
+                            .foregroundStyle(isSelected ? .white : .primary)
+                        }
+                        .buttonStyle(.plain)
+                        .scaleEffect(isSelected ? 1.04 : 1.0)
+                        .animation(.spring(response: 0.35, dampingFraction: 0.7), value: isSelected)
+                    }
+                }
+                .padding(.horizontal, 2)
+                .padding(.vertical, 6)
+            }
+            .scrollClipDisabled()
+
+            if selectedCategory == nil {
+                Text("Select a category for this budget")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+    }
+
+    // MARK: - Overall Hint
+
+    private var overallHint: some View {
+        Card(padding: Spacing.lg, cornerRadius: CornerRadius.small) {
+            VStack(alignment: .leading, spacing: 8) {
+                Label("All categories count toward this budget", systemImage: "infinity")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.secondary)
+
+                if categoryAutoTotal > 0 {
+                    let formatted = Currency.format(categoryAutoTotal, code: currencyCode)
+                    Text("Category budgets total \(formatted)/mo. Set a higher amount to track unallocated spending.")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+        }
+    }
+
+    // MARK: - Period Section
+
+    private var periodSection: some View {
+        VStack(alignment: .leading, spacing: Spacing.md) {
+            SectionHeader(title: "Resets Every")
+
+            Picker("Period", selection: $period) {
+                ForEach(BudgetPeriod.allCases) { p in
+                    Text(p.displayName).tag(p)
+                }
+            }
+            .pickerStyle(.segmented)
+        }
+    }
+
+    // MARK: - Delete
+
+    private var deleteButton: some View {
+        Button(role: .destructive) {
+            showDeleteConfirm = true
+        } label: {
+            HStack {
+                Spacer()
+                Label("Delete Budget", systemImage: "trash")
+                    .font(.subheadline.weight(.semibold))
+                Spacer()
+            }
+            .padding(.vertical, 14)
+            .background(Color.red.opacity(0.1), in: RoundedRectangle(cornerRadius: CornerRadius.small, style: .continuous))
+            .foregroundStyle(.red)
+        }
+        .buttonStyle(.plain)
+        .padding(.top, Spacing.md)
+    }
+
     // MARK: - Hydrate (edit mode)
 
     private func hydrateFromExisting() {
-        guard let b = existingBudget else { return }
-        amount = b.amount
-        period = b.period
-        if let cat = b.category {
-            scope = .category
-            selectedCategory = cat
+        if let b = existingBudget {
+            amount = b.amount
+            period = b.period
+            if let cat = b.category {
+                scope = .category
+                selectedCategory = cat
+            } else {
+                scope = .overall
+            }
         } else {
-            scope = .overall
+            scope = initialScope
         }
     }
 

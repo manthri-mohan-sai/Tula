@@ -225,10 +225,16 @@ private struct RuleRow: View {
 
             Spacer()
 
-            Text(Currency.format(rule.amount, code: currencyCode))
-                .font(.subheadline.weight(.semibold))
-                .monospacedDigit()
-                .foregroundStyle(rule.isPaused ? .tertiary : .primary)
+            if rule.isVariable {
+                Text("Varies")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+            } else {
+                Text(Currency.format(rule.amount, code: currencyCode))
+                    .font(.subheadline.weight(.semibold))
+                    .monospacedDigit()
+                    .foregroundStyle(rule.isPaused ? .tertiary : .primary)
+            }
         }
         .padding(.vertical, Spacing.md)
         .opacity(rule.isPaused ? 0.6 : 1)
@@ -282,6 +288,7 @@ struct RecurringRuleFormView: View {
     @State private var hasSpecificTime: Bool
     @State private var hasPauseEnd: Bool
     @State private var pauseUntil: Date
+    @State private var isVariable: Bool
     @State private var showingDeleteConfirm = false
 
     init(rule: RecurringRule? = nil) {
@@ -292,9 +299,6 @@ struct RecurringRuleFormView: View {
             _kind = State(initialValue: r.kind)
             _frequency = State(initialValue: r.frequency)
             _dayOfMonth = State(initialValue: r.dayOfMonth)
-            // For legacy rules with mask == 0, surface the startDate's
-            // weekday as a pre-selected single day — that's what the rule
-            // has been firing on all along. New rules show the same default.
             let initialWeekdays: Set<Int> = {
                 if !r.weekdaysSet.isEmpty { return r.weekdaysSet }
                 return [Calendar.current.component(.weekday, from: r.startDate)]
@@ -316,17 +320,13 @@ struct RecurringRuleFormView: View {
             _hasSpecificTime = State(initialValue: r.hasSpecificTime)
             _hasPauseEnd = State(initialValue: r.pausedUntil != nil)
             _pauseUntil = State(initialValue: r.pausedUntil ?? .now.addingTimeInterval(60 * 60 * 24 * 7))
+            _isVariable = State(initialValue: r.isVariable)
         } else {
             _name = State(initialValue: "")
             _amount = State(initialValue: 0)
             _kind = State(initialValue: .expense)
             _frequency = State(initialValue: .monthly)
             _dayOfMonth = State(initialValue: Calendar.current.component(.day, from: .now))
-            // Default to all 7 days selected — "every day" — for new rules.
-            // Matches the user's mental model when adding a recurring entry:
-            // they're more likely to deselect the days they DON'T want than
-            // to start from one day and add the rest. The footer summarizes
-            // this as "Every day" so it's clear what's happening.
             _weekdays = State(initialValue: Set(1...7))
             _customInterval = State(initialValue: 1)
             _customUnit = State(initialValue: .month)
@@ -344,7 +344,37 @@ struct RecurringRuleFormView: View {
             _hasSpecificTime = State(initialValue: false)
             _hasPauseEnd = State(initialValue: false)
             _pauseUntil = State(initialValue: .now.addingTimeInterval(60 * 60 * 24 * 7))
+            _isVariable = State(initialValue: false)
         }
+    }
+
+    init(suggestion: RecurringSuggestion) {
+        self.existingRule = nil
+        _name = State(initialValue: suggestion.merchant)
+        _amount = State(initialValue: suggestion.isVariable ? 0 : suggestion.lastAmount)
+        _kind = State(initialValue: .expense)
+        _frequency = State(initialValue: suggestion.frequency)
+        _dayOfMonth = State(initialValue: suggestion.dayOfMonth)
+        _weekdays = State(initialValue: suggestion.frequency == .weekly
+            ? [Calendar.current.component(.weekday, from: .now)]
+            : Set(1...7))
+        _customInterval = State(initialValue: 1)
+        _customUnit = State(initialValue: .month)
+        _startDate = State(initialValue: .now)
+        _hasEndDate = State(initialValue: false)
+        _endDate = State(initialValue: .now.addingTimeInterval(60 * 60 * 24 * 365))
+        _category = State(initialValue: suggestion.category)
+        _account = State(initialValue: suggestion.account)
+        _fromAccount = State(initialValue: nil)
+        _toAccount = State(initialValue: nil)
+        _merchant = State(initialValue: suggestion.merchant)
+        _note = State(initialValue: "")
+        _isPaused = State(initialValue: false)
+        _confirmationRequired = State(initialValue: suggestion.isVariable)
+        _hasSpecificTime = State(initialValue: false)
+        _hasPauseEnd = State(initialValue: false)
+        _pauseUntil = State(initialValue: .now.addingTimeInterval(60 * 60 * 24 * 7))
+        _isVariable = State(initialValue: suggestion.isVariable)
     }
 
     private var isEditing: Bool { existingRule != nil }
@@ -353,7 +383,7 @@ struct RecurringRuleFormView: View {
 
     private var canSave: Bool {
         let nameOK = !name.trimmingCharacters(in: .whitespaces).isEmpty
-        let amountOK = amount > 0
+        let amountOK = isVariable ? true : amount > 0
         if kind == .expense {
             return nameOK && amountOK && account != nil
         }
@@ -409,20 +439,28 @@ struct RecurringRuleFormView: View {
             TextField("Name (e.g. Rent, Netflix)", text: $name)
                 .textInputAutocapitalization(.words)
             HStack {
-                Text("Amount")
+                Text(isVariable ? "Reference Amount" : "Amount")
                 Spacer()
                 FormattedAmountField(
                     value: $amount,
                     currencyCode: currencyCode,
-                    placeholder: "0"
+                    placeholder: isVariable ? "Optional" : "0"
                 )
+            }
+            Toggle(isOn: $isVariable.animation(.snappy(duration: 0.25))) {
+                Text("Variable amount")
+            }
+            .onChange(of: isVariable) { _, newValue in
+                if newValue { confirmationRequired = true }
             }
             TextField("Merchant (optional)", text: $merchant)
                 .textInputAutocapitalization(.words)
         } header: {
             Text("Details")
         } footer: {
-            if !merchant.trimmingCharacters(in: .whitespaces).isEmpty {
+            if isVariable {
+                Text("Amount varies each time (e.g. power bill, fuel). You'll be asked to enter the actual amount.")
+            } else if !merchant.trimmingCharacters(in: .whitespaces).isEmpty {
                 Text("Expenses will be logged under \"\(merchant.trimmingCharacters(in: .whitespaces))\" as merchant.")
             }
         }
@@ -507,6 +545,7 @@ struct RecurringRuleFormView: View {
                         .foregroundStyle(.secondary)
                 }
             }
+            .disabled(isVariable)
 
             // Time-of-day. The user toggles whether this rule has a
             // specific time. When off, the rule is "general" / all-day —
@@ -862,6 +901,7 @@ struct RecurringRuleFormView: View {
         rule.note = note.isEmpty ? nil : note
         rule.isPaused = isPaused
         rule.confirmationRequired = confirmationRequired
+        rule.isVariable = isVariable
         rule.hasSpecificTime = hasSpecificTime
         // Persist pausedUntil only if user has both paused and chosen a
         // resume date. Otherwise clear it (covers: not paused, or paused

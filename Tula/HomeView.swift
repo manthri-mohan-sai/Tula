@@ -49,6 +49,8 @@ struct HomeView: View {
     @State private var smartParseInFlight: Int = 0
     @State private var heroTapPulse: Bool = false
     @State private var dismissedInsightIDs: Set<String> = []
+    @State private var dismissedUpcomingKeys: Set<String> = []
+    @State private var recurringSuggestionToCreate: RecurringSuggestion?
 
     @AppStorage("lastUsedAccountID") private var lastUsedAccountID: String = ""
     @AppStorage("budgetAlertsEnabled") private var budgetAlertsEnabled: Bool = false
@@ -107,19 +109,18 @@ struct HomeView: View {
     private var upcomingRecurring: [(rule: RecurringRule, date: Date)] {
         let calendar = Calendar.current
         let now = Date.now
-        let horizon = calendar.date(byAdding: .day, value: 7, to: now) ?? now
+        let tomorrow = calendar.date(byAdding: .day, value: 2, to: calendar.startOfDay(for: now)) ?? now
 
         return allRecurringRules
             .filter { !$0.isPaused }
             .compactMap { rule -> (RecurringRule, Date)? in
                 guard let next = RecurringEngine.nextDueDate(for: rule),
-                      next <= horizon else { return nil }
-                // Suppress if user already logged this rule's expense today
-                // (or for the due date — supports rules due tomorrow that
-                // the user pre-paid).
+                      next < tomorrow else { return nil }
                 if isRuleFulfilled(rule, forDueDate: next, calendar: calendar) {
                     return nil
                 }
+                let key = "\(rule.id)_\(Int(next.timeIntervalSince1970))"
+                if dismissedUpcomingKeys.contains(key) { return nil }
                 return (rule, next)
             }
             .sorted { $0.1 < $1.1 }
@@ -130,11 +131,14 @@ struct HomeView: View {
     /// rules (auto-generate rules handle themselves). Capped at 5 to
     /// avoid flooding the home screen if a rule was ignored for weeks.
     private var overdueRecurring: [(rule: RecurringRule, date: Date)] {
+        let calendar = Calendar.current
+        let yesterday = calendar.date(byAdding: .day, value: -1, to: calendar.startOfDay(for: .now)) ?? .now
         var result: [(RecurringRule, Date)] = []
         for rule in allRecurringRules where !rule.isPaused && rule.kind == .expense {
             let dates = RecurringEngine.overdueDates(for: rule)
             for date in dates {
-                if !isRuleFulfilled(rule, forDueDate: date, calendar: Calendar.current) {
+                guard date >= yesterday else { continue }
+                if !isRuleFulfilled(rule, forDueDate: date, calendar: calendar) {
                     result.append((rule, date))
                 }
             }
@@ -241,7 +245,8 @@ struct HomeView: View {
         InsightEngine.generate(
             expenses: allExpenses,
             accounts: allAccounts,
-            currencyCode: currencyCode
+            currencyCode: currencyCode,
+            recurringRules: allRecurringRules
         )
         .filter { $0.kind != .streak }
     }
@@ -400,6 +405,9 @@ struct HomeView: View {
             }
             .sheet(isPresented: $showingRecurring) {
                 RecurringRulesView()
+            }
+            .sheet(item: $recurringSuggestionToCreate) { suggestion in
+                RecurringRuleFormView(suggestion: suggestion)
             }
             .sheet(isPresented: $showingOverdueOnly) {
                 RecurringRulesView(showOnlyOverdue: true)
@@ -1226,7 +1234,19 @@ struct HomeView: View {
                     handleContextTap(context)
                 }
             ) {
-                contextRowBody(for: context, showHint: true)
+                contextRowBody(
+                    for: context,
+                    showHint: true,
+                    onDismiss: {
+                        Haptics.tap()
+                        let keys = Set(upcomingRecurring.map {
+                            "\($0.rule.id)_\(Int($0.date.timeIntervalSince1970))"
+                        })
+                        _ = withAnimation(AppAnimation.snappy) {
+                            dismissedUpcomingKeys.formUnion(keys)
+                        }
+                    }
+                )
             }
         case .overdue(let rule, let date):
             SwipeableContextRow(
@@ -1478,13 +1498,24 @@ struct HomeView: View {
             showingOverdueOnly = true
         case .insight(let insight):
             switch insight.kind {
+            case .recurringSuggestion:
+                if let suggestion = insight.suggestion {
+                    recurringSuggestionToCreate = suggestion
+                }
             case .todayTotal, .biggestToday, .quietToday:
                 let cal = Calendar.current
                 let start = cal.startOfDay(for: .now)
                 let end = cal.date(bySettingHour: 23, minute: 59, second: 59, of: .now) ?? .now
                 allExpensesFilter = ExpenseFilter(dateRange: .custom(start: start, end: end))
                 showingAllExpenses = true
-            case .monthPace, .bigSpender, .categoryAlert:
+            case .categoryAlert:
+                var filter = ExpenseFilter(dateRange: .thisMonth)
+                if let catID = insight.categoryID {
+                    filter.categoryIDs = [catID]
+                }
+                allExpensesFilter = filter
+                showingAllExpenses = true
+            case .monthPace, .bigSpender:
                 allExpensesFilter = ExpenseFilter(dateRange: .thisMonth)
                 showingAllExpenses = true
             default:

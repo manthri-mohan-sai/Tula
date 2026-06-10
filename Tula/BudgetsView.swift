@@ -1,6 +1,5 @@
 import SwiftUI
 import SwiftData
-import Charts
 
 /// Top-level budgets screen. Always shows the OverallBudgetCard pinned at
 /// the top (even when no budgets exist), then individual category budgets
@@ -84,8 +83,57 @@ struct BudgetsView: View {
         return orderedPeriods.compactMap { p in
             let items = budgets
                 .filter { $0.period == p && $0.category != nil }
-                .sorted { $0.createdAt > $1.createdAt }
+                .sorted { a, b in
+                    a.progress(in: expenses) > b.progress(in: expenses)
+                }
             return items.isEmpty ? nil : (p, items)
+        }
+    }
+
+    // MARK: - Budget Callout
+
+    private var budgetCallout: some View {
+        let overCount = allCategoryBudgets.filter { $0.status(in: expenses) == .overBudget }.count
+        let warningCount = allCategoryBudgets.filter { $0.status(in: expenses) == .warning }.count
+        let attentionCount = overCount + warningCount
+
+        return Group {
+            if attentionCount > 0 {
+                HStack(spacing: 10) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.subheadline)
+                        .foregroundStyle(overCount > 0 ? .red : .orange)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("\(attentionCount) budget\(attentionCount == 1 ? "" : "s") need\(attentionCount == 1 ? "s" : "") attention")
+                            .font(.subheadline.weight(.semibold))
+                        if overCount > 0 && warningCount > 0 {
+                            Text("\(overCount) over budget · \(warningCount) near limit")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    Spacer()
+                }
+                .padding(12)
+                .background(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill((overCount > 0 ? Color.red : Color.orange).opacity(0.1))
+                )
+            } else {
+                HStack(spacing: 10) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.subheadline)
+                        .foregroundStyle(.green)
+                    Text("All budgets on track")
+                        .font(.subheadline.weight(.medium))
+                    Spacer()
+                }
+                .padding(12)
+                .background(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(Color.green.opacity(0.1))
+                )
+            }
         }
     }
 
@@ -132,7 +180,8 @@ struct BudgetsView: View {
         .sheet(isPresented: $showingOverallEdit) {
             BudgetFormView(existingBudget: overallBudget,
                            categoryAutoTotal: categoryMonthlySum,
-                           lockedScope: true)
+                           lockedScope: true,
+                           initialScope: .overall)
         }
         .sheet(item: $editingBudget) { b in
             BudgetFormView(existingBudget: b,
@@ -151,6 +200,7 @@ struct BudgetsView: View {
                 displayTotal:      overallDisplayTotal,
                 uncategorized:     uncategorizedAmount,
                 totalMonthlySpent: totalMonthlySpent,
+                expenses:          expenses,
                 currencyCode:      currencyCode
             ) {
                 showingOverallEdit = true
@@ -169,30 +219,28 @@ struct BudgetsView: View {
                 if sectionedBudgets.isEmpty {
                     categoryEmptyPrompt
                 } else {
+                    budgetCallout
+
                     ForEach(sectionedBudgets, id: \.period) { section in
-                        VStack(alignment: .leading, spacing: 10) {
+                        VStack(alignment: .leading, spacing: 14) {
                             Text(section.period.displayName)
                                 .font(.subheadline.weight(.semibold))
                                 .foregroundStyle(.secondary)
                                 .padding(.horizontal, 4)
 
                             ForEach(section.budgets) { budget in
-                                Button {
-                                    Haptics.tap()
-                                    editingBudget = budget
+                                NavigationLink {
+                                    BudgetTransactionsView(
+                                        budget: budget,
+                                        expenses: expenses,
+                                        currencyCode: currencyCode
+                                    )
                                 } label: {
                                     BudgetCard(budget: budget,
                                                expenses: expenses,
                                                currencyCode: currencyCode)
                                 }
                                 .buttonStyle(.plain)
-                                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                                    Button(role: .destructive) {
-                                        delete(budget)
-                                    } label: {
-                                        Label("Delete", systemImage: "trash")
-                                    }
-                                }
                             }
                         }
                     }
@@ -269,44 +317,9 @@ struct OverallBudgetCard: View {
     let displayTotal:      Double
     let uncategorized:     Double
     let totalMonthlySpent: Double
+    let expenses:          [Expense]
     let currencyCode:      String
     let onEdit:            () -> Void
-
-    // MARK: - Pie data
-
-    /// One slice per category budget (monthly-equivalent amount) plus an
-    /// optional Uncategorized slice. A single placeholder keeps the chart
-    /// from rendering empty when no budgets exist.
-    private var pieSlices: [PieSlice] {
-        var slices = categoryBudgets
-            .map { b in
-                PieSlice(
-                    name:   b.displayName,
-                    period: b.period,
-                    amount: monthlyEquivalent(b),
-                    color:  Color(hex: b.category?.colorHex ?? "#D97706")
-                )
-            }
-            .sorted { $0.amount > $1.amount }
-
-        if uncategorized > 0 {
-            slices.append(PieSlice(
-                name:   "Uncategorized",
-                period: nil,
-                amount: uncategorized,
-                color:  Color(uiColor: .tertiarySystemFill)
-            ))
-        }
-
-        // Guard: if everything is zero (or list is empty), show a placeholder.
-        if slices.isEmpty || slices.allSatisfy({ $0.amount == 0 }) {
-            return [PieSlice(name: "No budgets yet",
-                             period: nil,
-                             amount: 1,
-                             color: Color(uiColor: .tertiarySystemFill))]
-        }
-        return slices
-    }
 
     private var progress: Double {
         guard displayTotal > 0 else { return 0 }
@@ -315,13 +328,69 @@ struct OverallBudgetCard: View {
 
     private var isOverBudget: Bool { progress > 1.0 }
 
+    private var daysElapsedThisMonth: Int {
+        let cal = Calendar.current
+        guard let start = cal.dateInterval(of: .month, for: .now)?.start else { return 1 }
+        let days = cal.dateComponents([.day], from: start, to: cal.startOfDay(for: .now)).day ?? 0
+        return max(1, days + 1)
+    }
+
+    private var daysRemainingThisMonth: Int {
+        let cal = Calendar.current
+        guard let end = cal.dateInterval(of: .month, for: .now)?.end else { return 0 }
+        return max(0, cal.dateComponents([.day], from: .now, to: end).day ?? 0)
+    }
+
+    private var dailyAvgSpend: Double {
+        totalMonthlySpent / Double(daysElapsedThisMonth)
+    }
+
+    private var dailyAllowance: Double? {
+        let remaining = displayTotal - totalMonthlySpent
+        guard remaining > 0, daysRemainingThisMonth > 0 else { return nil }
+        return remaining / Double(daysRemainingThisMonth)
+    }
+
+    private var lastMonthSpent: Double {
+        let cal = Calendar.current
+        guard let lastMonth = cal.date(byAdding: .month, value: -1, to: .now),
+              let window = cal.dateInterval(of: .month, for: lastMonth) else { return 0 }
+        return expenses
+            .filter { $0.date >= window.start && $0.date < window.end }
+            .reduce(0) { $0 + $1.amount }
+    }
+
+    private var vsLastMonth: (pct: Int, isUp: Bool)? {
+        guard lastMonthSpent > 0 else { return nil }
+        let change = ((totalMonthlySpent - lastMonthSpent) / lastMonthSpent) * 100
+        let pct = Int(abs(change))
+        guard pct > 0 else { return nil }
+        return (pct, change >= 0)
+    }
+
+    private var topCategory: (name: String, amount: Double, color: Color)? {
+        let cal = Calendar.current
+        guard let window = cal.dateInterval(of: .month, for: .now) else { return nil }
+        let monthExpenses = expenses.filter { $0.date >= window.start && $0.date < window.end }
+        let grouped = Dictionary(grouping: monthExpenses, by: { $0.category?.name ?? "Uncategorized" })
+        guard let top = grouped.max(by: {
+            $0.value.reduce(0) { $0 + $1.amount } < $1.value.reduce(0) { $0 + $1.amount }
+        }) else { return nil }
+        let amount = top.value.reduce(0) { $0 + $1.amount }
+        let color = Color(hex: top.value.first?.category?.colorHex ?? "#D97706")
+        return (top.key, amount, color)
+    }
+
     // MARK: - Body
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             headerRow
             Divider()
-            bodyRow
+            amountRow
+            if displayTotal > 0 {
+                overallStatBoxes
+            }
             if categoryBudgets.isEmpty {
                 Text("Add category budgets below to start allocating your spending.")
                     .font(.caption)
@@ -329,9 +398,8 @@ struct OverallBudgetCard: View {
             } else {
                 legendRows
             }
-            if displayTotal > 0 {
-                Divider()
-                progressSection
+            if let comparison = vsLastMonth {
+                comparisonRow(comparison)
             }
         }
         .padding(16)
@@ -344,15 +412,10 @@ struct OverallBudgetCard: View {
     // MARK: - Header
 
     private var headerRow: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "infinity")
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(Color.tulaBrandFallback)
-                .frame(width: 30, height: 30)
-                .background(Color.tulaBrandFallback.opacity(0.15), in: Circle())
-
-            Text("Total Budget")
-                .font(.headline)
+        HStack {
+            Text("Monthly Overview")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.secondary)
 
             Spacer()
 
@@ -360,20 +423,25 @@ struct OverallBudgetCard: View {
                 Haptics.tap()
                 onEdit()
             } label: {
-                Text("Edit")
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(Color.tulaBrandFallback)
+                HStack(spacing: 4) {
+                    Image(systemName: "pencil")
+                        .font(.caption2.weight(.bold))
+                    Text("Edit")
+                        .font(.caption.weight(.semibold))
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(Color.tulaBrandFallback.opacity(0.12), in: Capsule())
+                .foregroundStyle(Color.tulaBrandFallback)
             }
             .buttonStyle(.plain)
         }
     }
 
-    // MARK: - Body row (total budget amount + donut chart)
+    // MARK: - Amount Row
 
-    private var bodyRow: some View {
-        HStack(alignment: .center, spacing: 16) {
-
-            // Left: total budget
+    private var amountRow: some View {
+        HStack(alignment: .bottom) {
             VStack(alignment: .leading, spacing: 4) {
                 Text(Currency.format(displayTotal, code: currencyCode))
                     .font(.title2.bold())
@@ -385,107 +453,181 @@ struct OverallBudgetCard: View {
                 Text("Total Budget")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-
-                if displayTotal == 0 {
-                    Text("No budgets set yet")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                }
             }
 
             Spacer()
 
-            // Right: donut chart
-            Chart(pieSlices) { slice in
-                SectorMark(
-                    angle:        .value("Amount", slice.amount),
-                    innerRadius:  .ratio(0.70),
-                    angularInset: 1.5
-                )
-                .foregroundStyle(slice.color)
-                .cornerRadius(3)
-            }
-            .frame(width: 110, height: 110)
-        }
-    }
-
-    // MARK: - Legend
-
-    private var legendRows: some View {
-        VStack(spacing: 6) {
-            ForEach(pieSlices) { slice in
-                if slice.name != "No budgets yet" {
-                    HStack(spacing: 8) {
-                        Circle()
-                            .fill(slice.color)
-                            .frame(width: 8, height: 8)
-
-                        Text(slice.name)
-                            .font(.subheadline)
-                            .foregroundStyle(.primary)
-                            .lineLimit(1)
-
-                        // Period badge for non-monthly budgets
-                        if let period = slice.period, period != .monthly {
-                            Text(period.rawValue)
-                                .font(.caption2.weight(.medium))
-                                .padding(.horizontal, 5)
-                                .padding(.vertical, 2)
-                                .background(.quaternary, in: Capsule())
-                                .foregroundStyle(.secondary)
-                        }
-
-                        Spacer(minLength: 4)
-
-                        Text(Currency.format(slice.amount, code: currencyCode))
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(.primary)
+            if displayTotal > 0 {
+                VStack(alignment: .trailing) {
+                    if isOverBudget {
+                        Text(Currency.format(totalMonthlySpent - displayTotal, code: currencyCode))
+                            .font(.title3.weight(.semibold))
+                            .foregroundStyle(.red)
                             .monospacedDigit()
+                        Text("Over budget")
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    } else {
+                        let remaining = displayTotal - totalMonthlySpent
+                        Text(Currency.format(remaining, code: currencyCode))
+                            .font(.title3.weight(.semibold))
+                            .foregroundStyle(progress >= 0.75 ? .orange : .primary)
+                            .monospacedDigit()
+                        Text("Remaining")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
                 }
             }
         }
     }
 
-    // MARK: - Progress
+    // MARK: - Stat Boxes
 
-    private var progressSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            BudgetProgressBar(progress: progress, isOverBudget: isOverBudget)
+    private var overallStatBoxes: some View {
+        HStack(spacing: 10) {
+            overallStatBox(
+                value: Currency.format(dailyAvgSpend, code: currencyCode),
+                label: "Daily Avg",
+                color: .primary
+            )
 
-            HStack {
-                if isOverBudget {
-                    Text("Over by \(Currency.format(totalMonthlySpent - displayTotal, code: currencyCode)) this month")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.red)
-                        .monospacedDigit()
-                } else {
-                    Text("Spent \(Currency.format(totalMonthlySpent, code: currencyCode)) of \(Currency.format(displayTotal, code: currencyCode)) this month")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .monospacedDigit()
-                }
+            if let allowance = dailyAllowance {
+                overallStatBox(
+                    value: Currency.format(allowance, code: currencyCode),
+                    label: "Per Day Left",
+                    color: progress >= 0.75 ? .orange : .primary
+                )
+            } else if isOverBudget {
+                overallStatBox(
+                    value: "—",
+                    label: "Over Budget",
+                    color: .red
+                )
+            }
+
+            overallStatBox(
+                value: daysRemainingThisMonth == 0 ? "Last Day" : "\(daysRemainingThisMonth)",
+                label: daysRemainingThisMonth == 1 ? "Day Left" : "Days Left",
+                color: .primary
+            )
+        }
+    }
+
+    private func overallStatBox(value: String, label: String, color: Color) -> some View {
+        VStack(spacing: 3) {
+            Text(value)
+                .font(.system(size: 15, weight: .semibold, design: .rounded))
+                .foregroundStyle(color)
+                .monospacedDigit()
+                .lineLimit(1)
+                .minimumScaleFactor(0.65)
+            Text(label)
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 10)
+        .background(Color(uiColor: .tertiarySystemFill).opacity(0.5),
+                    in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+
+    // MARK: - Comparison Row
+
+    private func comparisonRow(_ comparison: (pct: Int, isUp: Bool)) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: comparison.isUp ? "arrow.up.right" : "arrow.down.right")
+                .font(.caption2.weight(.bold))
+                .foregroundStyle(comparison.isUp ? .red : .green)
+            Text("\(comparison.pct)% \(comparison.isUp ? "more" : "less") than last month")
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.secondary)
+
+            if let top = topCategory {
                 Spacer()
-                let remaining = max(0, displayTotal - totalMonthlySpent)
-                if remaining > 0 {
-                    Text("\(Currency.format(remaining, code: currencyCode)) left")
+                HStack(spacing: 4) {
+                    Circle()
+                        .fill(top.color)
+                        .frame(width: 6, height: 6)
+                    Text("Top: \(top.name)")
                         .font(.caption.weight(.medium))
-                        .foregroundStyle(progress >= 0.75 ? .orange : .secondary)
-                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
                 }
             }
         }
     }
-}
 
-// MARK: - Pie Slice
+    // MARK: - Stacked Bar + Legend (iCloud-style)
 
-private struct PieSlice: Identifiable {
-    let id     = UUID()
-    let name:   String
-    let period: BudgetPeriod?
-    let amount: Double
-    let color:  Color
+    @State private var barAnimated = false
+
+    private var spentSortedBudgets: [Budget] {
+        categoryBudgets
+            .filter { $0.spent(in: expenses) > 0 }
+            .sorted { $0.spent(in: expenses) > $1.spent(in: expenses) }
+    }
+
+    private var legendRows: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Spending")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.primary)
+                Spacer()
+                Text("\(Currency.format(totalMonthlySpent, code: currencyCode)) of \(Currency.format(displayTotal, code: currencyCode))")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+
+            GeometryReader { geo in
+                HStack(spacing: 1.5) {
+                    ForEach(spentSortedBudgets) { budget in
+                        let spent = budget.spent(in: expenses)
+                        let fraction = displayTotal > 0 ? min(spent / displayTotal, 1.0) : 0
+                        let catColor = Color(hex: budget.category?.colorHex ?? "#D97706")
+
+                        RoundedRectangle(cornerRadius: 2, style: .continuous)
+                            .fill(catColor)
+                            .frame(width: barAnimated ? max(2, geo.size.width * fraction) : 0)
+                    }
+                }
+            }
+            .frame(height: 18)
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(Color(uiColor: .tertiarySystemFill))
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+            .onAppear {
+                withAnimation(.easeOut(duration: 0.8).delay(0.15)) {
+                    barAnimated = true
+                }
+            }
+
+            let columns = [GridItem(.flexible(), alignment: .leading),
+                           GridItem(.flexible(), alignment: .leading)]
+            LazyVGrid(columns: columns, alignment: .leading, spacing: 4) {
+                ForEach(spentSortedBudgets) { budget in
+                    let spent = budget.spent(in: expenses)
+                    let pct = totalMonthlySpent > 0 ? Int(spent / totalMonthlySpent * 100) : 0
+                    let catColor = Color(hex: budget.category?.colorHex ?? "#D97706")
+
+                    HStack(spacing: 5) {
+                        Circle()
+                            .fill(catColor)
+                            .frame(width: 8, height: 8)
+                        Text("\(budget.displayName) \(pct)%")
+                            .font(.caption)
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+                    }
+                }
+            }
+
+        }
+    }
 }
 
 // MARK: - Budget Card
@@ -527,6 +669,15 @@ struct BudgetCard: View {
         case .overPace:             return Color.tulaBrandFallback
         case .overBudget:           return .red
         }
+    }
+
+    private var projectedOvershoot: Double? {
+        guard pace == .overPace else { return nil }
+        let elapsed = budget.elapsedFraction()
+        guard elapsed > 0.05 else { return nil }
+        let projected = spent / elapsed
+        let overshoot = projected - budget.amount
+        return overshoot > 0 ? overshoot : nil
     }
 
     /// Expenses inside the current period, filtered to this budget's scope.
@@ -647,30 +798,38 @@ struct BudgetCard: View {
     /// key actionable number) and days left. Swaps to "over by" messaging
     /// when the cap is breached.
     private var footerRow: some View {
-        HStack(spacing: 6) {
-            if pace == .overBudget {
-                Text("Over by \(Currency.format(abs(remaining), code: currencyCode))")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.red)
-                    .monospacedDigit()
-            } else if let allowance = dailyAllowance {
-                Text("\(Currency.format(allowance, code: currencyCode))/day")
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(.primary)
-                    .monospacedDigit()
-                Text("·")
-                    .foregroundStyle(.tertiary)
-                Text(daysLeftLabel)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .monospacedDigit()
-            } else {
-                Text(daysLeftLabel)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                if pace == .overBudget {
+                    Text("Over by \(Currency.format(abs(remaining), code: currencyCode))")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.red)
+                        .monospacedDigit()
+                } else if let allowance = dailyAllowance {
+                    Text("\(Currency.format(allowance, code: currencyCode))/day")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.primary)
+                        .monospacedDigit()
+                    Text("·")
+                        .foregroundStyle(.tertiary)
+                    Text(daysLeftLabel)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                } else {
+                    Text(daysLeftLabel)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
+                Spacer()
+            }
+            if let overshoot = projectedOvershoot {
+                Text("Projected \(Currency.format(overshoot, code: currencyCode)) over budget")
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(Color.tulaBrandFallback)
                     .monospacedDigit()
             }
-            Spacer()
         }
     }
 
@@ -778,6 +937,245 @@ private struct BreakdownRow: View {
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.primary)
                 .monospacedDigit()
+        }
+    }
+}
+
+// MARK: - Budget Transactions View
+
+struct BudgetTransactionsView: View {
+    let budget: Budget
+    let expenses: [Expense]
+    let currencyCode: String
+
+    @State private var showingEdit = false
+    @State private var animatedProgress: Double = 0
+
+    private var periodExpenses: [Expense] {
+        let window = budget.currentPeriodWindow()
+        return expenses
+            .filter { $0.date >= window.start && $0.date < window.end }
+            .filter { exp in
+                guard let cat = budget.category else { return true }
+                return exp.category?.id == cat.id
+            }
+            .sorted { $0.date > $1.date }
+    }
+
+    private var spent: Double { budget.spent(in: expenses) }
+    private var rem: Double { budget.remaining(in: expenses) }
+    private var progressValue: Double { budget.progress(in: expenses) }
+    private var isOverBudget: Bool { budget.status(in: expenses) == .overBudget }
+
+    private var iconColor: Color {
+        if let cat = budget.category {
+            return Color(hex: cat.colorHex)
+        }
+        return Color.tulaBrandFallback
+    }
+
+    private var iconKey: String {
+        budget.category?.iconKey ?? "infinity"
+    }
+
+    private var percentText: String {
+        "\(Int(min(progressValue, 9.99) * 100))%"
+    }
+
+    private var ringColor: Color { isOverBudget ? .red : iconColor }
+    private var daysLeft: Int { budget.daysRemaining() }
+
+    private var dailyAllowance: Double? {
+        guard daysLeft > 0, rem > 0 else { return nil }
+        return rem / Double(daysLeft)
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 0) {
+                heroHeader
+                transactionsSection
+                    .padding(.top, 20)
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 20)
+            }
+        }
+        .background {
+            VStack(spacing: 0) {
+                LinearGradient(
+                    colors: [ringColor.opacity(0.10), ringColor.opacity(0.04), Color.tulaBackground],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                .frame(height: 420)
+                Color.tulaBackground
+            }
+            .ignoresSafeArea()
+        }
+        .toolbarBackground(.hidden, for: .navigationBar)
+        .navigationTitle(budget.displayName)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    Haptics.tap()
+                    showingEdit = true
+                } label: {
+                    Text("Edit")
+                        .font(.subheadline.weight(.medium))
+                }
+            }
+        }
+        .sheet(isPresented: $showingEdit) {
+            BudgetFormView(existingBudget: budget)
+        }
+    }
+
+    // MARK: - Hero Header
+
+    private var heroHeader: some View {
+        VStack(spacing: 20) {
+            ZStack {
+                Circle()
+                    .stroke(ringColor.opacity(0.12), lineWidth: 14)
+
+                Circle()
+                    .trim(from: 0, to: min(animatedProgress, 1.0))
+                    .stroke(
+                        ringColor,
+                        style: StrokeStyle(lineWidth: 14, lineCap: .round)
+                    )
+                    .rotationEffect(.degrees(-90))
+                    .shadow(color: ringColor.opacity(0.3), radius: 6, y: 2)
+
+                Image(systemName: iconKey)
+                    .font(.system(size: 28, weight: .semibold))
+                    .foregroundStyle(ringColor)
+            }
+            .frame(width: 110, height: 110)
+
+            VStack(spacing: 4) {
+                Text(Currency.format(spent, code: currencyCode))
+                    .font(.system(size: 34, weight: .bold, design: .rounded))
+                    .monospacedDigit()
+                    .contentTransition(.numericText(value: spent))
+
+                Text("of \(Currency.format(budget.amount, code: currencyCode)) \(budget.period.shortLabel)")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+
+            statBoxes
+
+            if isOverBudget {
+                Text("Over by \(Currency.format(abs(rem), code: currencyCode))")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.red)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 6)
+                    .background(Color.red.opacity(0.1), in: Capsule())
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 28)
+        .padding(.horizontal, 16)
+        .onAppear {
+            withAnimation(.easeOut(duration: 0.8)) {
+                animatedProgress = progressValue
+            }
+        }
+    }
+
+    // MARK: - Stat Boxes
+
+    private var statBoxes: some View {
+        HStack(spacing: 12) {
+            if let allowance = dailyAllowance {
+                statBox(
+                    title: Currency.format(allowance, code: currencyCode),
+                    subtitle: "Per Day Left",
+                    color: .primary
+                )
+            } else if isOverBudget {
+                statBox(
+                    title: percentText,
+                    subtitle: "Budget Used",
+                    color: .red
+                )
+            } else {
+                statBox(
+                    title: Currency.format(rem, code: currencyCode),
+                    subtitle: "Remaining",
+                    color: .primary
+                )
+            }
+
+            statBox(
+                title: daysLeft == 0 ? "Last Day" : "\(daysLeft)",
+                subtitle: daysLeft == 0 ? "" : daysLeft == 1 ? "Day Left" : "Days Left",
+                color: .primary
+            )
+        }
+    }
+
+    private func statBox(title: String, subtitle: String, color: Color) -> some View {
+        VStack(spacing: 3) {
+            Text(title)
+                .font(.system(size: 17, weight: .semibold, design: .rounded))
+                .foregroundStyle(color)
+                .monospacedDigit()
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+            if !subtitle.isEmpty {
+                Text(subtitle)
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 12)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    // MARK: - Transactions Section
+
+    private var transactionsSection: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("\(periodExpenses.count) transaction\(periodExpenses.count == 1 ? "" : "s") \(budget.period.shortLabel)")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .textCase(.uppercase)
+                .kerning(0.3)
+                .padding(.horizontal, 16)
+                .padding(.bottom, 10)
+
+            if periodExpenses.isEmpty {
+                VStack(spacing: 10) {
+                    Image(systemName: "tray")
+                        .font(.system(size: 28, weight: .light))
+                        .foregroundStyle(.tertiary)
+                    Text("No spending \(budget.period.shortLabel)")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 40)
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(Array(periodExpenses.enumerated()), id: \.element.id) { idx, expense in
+                        ExpenseRow(expense: expense)
+                            .padding(.horizontal, 14)
+                        if idx < periodExpenses.count - 1 {
+                            Divider()
+                                .padding(.leading, 66)
+                        }
+                    }
+                }
+                .background(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(Color.tulaCardSurface)
+                )
+            }
         }
     }
 }
