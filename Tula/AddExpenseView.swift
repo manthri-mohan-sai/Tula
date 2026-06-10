@@ -851,12 +851,13 @@ struct AddExpenseView: View {
             } label: {
                 Image(uiImage: image)
                     .resizable()
-                    .aspectRatio(contentMode: .fill)
+                    .scaledToFit()
                     .frame(maxWidth: .infinity)
-                    .frame(height: 180)
-                    .clipped()
+                    .frame(maxHeight: 240)
+                    .background(Color.black.opacity(0.04))
             }
             .buttonStyle(.plain)
+            .contentShape(Rectangle())
 
             HStack(spacing: Spacing.sm) {
                 VStack(alignment: .leading, spacing: 2) {
