@@ -675,6 +675,10 @@ struct BudgetCard: View {
         guard pace == .overPace else { return nil }
         let elapsed = budget.elapsedFraction()
         guard elapsed > 0.05 else { return nil }
+        // Lump-sum guard: if budget is nearly used but only 1-2 transactions,
+        // the linear projection is meaningless (e.g. a single monthly transfer).
+        // Many transactions (shopping, food) = real pattern, keep projecting.
+        if progressValue >= 0.9 && periodExpenses.count <= 2 { return nil }
         let projected = spent / elapsed
         let overshoot = projected - budget.amount
         return overshoot > 0 ? overshoot : nil
@@ -804,6 +808,16 @@ struct BudgetCard: View {
                     Text("Over by \(Currency.format(abs(remaining), code: currencyCode))")
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.red)
+                        .monospacedDigit()
+                } else if remaining <= 0 {
+                    Text("Budget fully used")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.orange)
+                    Text("·")
+                        .foregroundStyle(.tertiary)
+                    Text(daysLeftLabel)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                         .monospacedDigit()
                 } else if let allowance = dailyAllowance {
                     Text("\(Currency.format(allowance, code: currencyCode))/day")
