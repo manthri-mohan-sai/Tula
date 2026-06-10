@@ -831,26 +831,20 @@ struct BudgetCard: View {
             Circle()
                 .stroke(ringColor.opacity(0.15), lineWidth: lineWidth)
 
-            // First lap — dim when the ring has wrapped so the second
-            // lap reads clearly on top (same visual logic as Health).
+            // First lap — always full color.
             Circle()
                 .trim(from: 0, to: firstLap)
-                .stroke(
-                    ringColor.opacity(hasOverflow ? 0.35 : 1.0),
-                    style: StrokeStyle(lineWidth: lineWidth, lineCap: .round)
-                )
+                .stroke(ringColor, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
                 .rotationEffect(.degrees(-90))
 
-            // Second lap (overflow) — full color with a soft glow tip.
+            // Second lap — same color drawn on top; dark drop-shadow at its
+            // leading cap creates the illusion the ring is lifting over itself.
             if hasOverflow {
                 Circle()
                     .trim(from: 0, to: secondLap)
-                    .stroke(
-                        ringColor,
-                        style: StrokeStyle(lineWidth: lineWidth, lineCap: .round)
-                    )
+                    .stroke(ringColor, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
                     .rotationEffect(.degrees(-90))
-                    .shadow(color: ringColor.opacity(0.55), radius: 4)
+                    .shadow(color: .black.opacity(0.35), radius: 4)
             }
         }
         .frame(width: ringSize, height: ringSize)
@@ -1160,26 +1154,20 @@ struct BudgetTransactionsView: View {
                 Circle()
                     .stroke(ringColor.opacity(0.12), lineWidth: 14)
 
-                // First lap
+                // First lap — always full color.
                 Circle()
                     .trim(from: 0, to: min(animatedProgress, 1.0))
-                    .stroke(
-                        ringColor.opacity(progressValue > 1.0 ? 0.35 : 1.0),
-                        style: StrokeStyle(lineWidth: 14, lineCap: .round)
-                    )
+                    .stroke(ringColor, style: StrokeStyle(lineWidth: 14, lineCap: .round))
                     .rotationEffect(.degrees(-90))
-                    .shadow(color: ringColor.opacity(0.3), radius: 6, y: 2)
 
-                // Second lap (overflow)
+                // Second lap — same color on top; dark drop-shadow separates
+                // the leading edge visually from the first lap beneath it.
                 if progressValue > 1.0 {
                     Circle()
                         .trim(from: 0, to: max(0, min(animatedProgress - 1.0, 1.0)))
-                        .stroke(
-                            ringColor,
-                            style: StrokeStyle(lineWidth: 14, lineCap: .round)
-                        )
+                        .stroke(ringColor, style: StrokeStyle(lineWidth: 14, lineCap: .round))
                         .rotationEffect(.degrees(-90))
-                        .shadow(color: ringColor.opacity(0.55), radius: 6, y: 2)
+                        .shadow(color: .black.opacity(0.35), radius: 6)
                 }
 
                 Image(systemName: iconKey)
