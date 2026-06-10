@@ -590,9 +590,13 @@ struct OverallBudgetCard: View {
 
                         RoundedRectangle(cornerRadius: 2, style: .continuous)
                             .fill(catColor)
-                            .frame(width: barAnimated ? max(2, geo.size.width * fraction) : 0)
+                            .frame(width: max(2, geo.size.width * fraction))
                     }
                 }
+                // Animate the whole bar with a scale transform instead of
+                // animating individual frame widths — pure GPU transform,
+                // no layout recalculation per frame = no jitter.
+                .scaleEffect(x: barAnimated ? 1 : 0, anchor: .leading)
             }
             .frame(height: 18)
             .background(
@@ -601,7 +605,7 @@ struct OverallBudgetCard: View {
             )
             .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
             .onAppear {
-                withAnimation(.easeOut(duration: 0.8).delay(0.15)) {
+                withAnimation(.spring(response: 0.65, dampingFraction: 0.82).delay(0.15)) {
                     barAnimated = true
                 }
             }
