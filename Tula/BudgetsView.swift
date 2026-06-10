@@ -909,7 +909,7 @@ struct BudgetProgressBar: View {
                 Capsule()
                     .fill(fillColor)
                     .frame(width: geo.size.width * clamped)
-                    .animation(.easeOut(duration: 0.4), value: clamped)
+                    .animation(.easeOut(duration: 0.8), value: clamped)
             }
         }
         .frame(height: height)
