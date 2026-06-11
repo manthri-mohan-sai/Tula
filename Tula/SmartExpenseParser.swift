@@ -439,7 +439,7 @@ enum SmartExpenseParser {
     /// Only used when `ReceiptParsingModeStorage.selected == .directImage`
     /// and a cloud provider is active. Apple FM always uses OCR text.
     /// - Parameter skipResize: Pass `true` when the image has already been
-    ///   optimised by `ShareSession.prepareImageForGemini`. CloudAIParser will
+    ///   optimised by `CloudAIParser.prepareImageForGemini`. CloudAIParser will
     ///   skip its internal resizeImageData pass, eliminating a second lossy
     ///   JPEG encode. Default `false` preserves the existing main-app behaviour.
     static func parseReceiptImage(_ imageData: Data,

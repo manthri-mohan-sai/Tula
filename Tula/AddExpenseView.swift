@@ -75,6 +75,7 @@ struct AddExpenseView: View {
     /// Once the user types in a field, it leaves this set.
     @State private var ocrExtractedFields: Set<OCRField> = []
     @State private var scanErrorMessage: String?
+    @State private var canRetryAIGate: Bool = false
     enum OCRField: Hashable { case amount, merchant }
 
     /// Image picker presentation state. `.camera` shows the camera UI;
@@ -892,10 +893,20 @@ struct AddExpenseView: View {
                                 .foregroundStyle(.secondary)
                         }
                     } else if let errorMsg = scanErrorMessage {
-                        Text(errorMsg)
-                            .font(.caption)
-                            .foregroundStyle(.red)
-                            .lineLimit(2)
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(errorMsg)
+                                .font(.caption)
+                                .foregroundStyle(.red)
+                                .lineLimit(2)
+                            if canRetryAIGate {
+                                Button("Retry AI") {
+                                    runReceiptOCR(on: image, forceCloudAI: true)
+                                }
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(Color.tulaBrandFallback)
+                                .buttonStyle(.plain)
+                            }
+                        }
                     } else if !ocrExtractedFields.isEmpty {
                         Text(ocrSummaryText)
                             .font(.caption)
@@ -988,8 +999,9 @@ struct AddExpenseView: View {
     /// an amount or merchant before the OCR finishes, we don't clobber
     /// their data. Late OCR finishes that arrive after editing are
     /// silently ignored for those fields.
-    private func runReceiptOCR(on image: UIImage) {
+    private func runReceiptOCR(on image: UIImage, forceCloudAI: Bool = false) {
         receiptOCRInFlight = true
+        canRetryAIGate = false
         let beforeAmount = amount
         let beforeMerchant = merchant
         let beforeNote = note
@@ -1008,6 +1020,13 @@ struct AddExpenseView: View {
         let isDirectImageMode = SmartExpenseParser.hasCloudVision
 
         Task.detached(priority: .userInitiated) {
+            let gateResult: ReceiptStorage.ReceiptLikelihoodResult?
+            if isDirectImageMode && !forceCloudAI {
+                gateResult = await ReceiptStorage.likelyExpenseDocument(from: image)
+            } else {
+                gateResult = nil
+            }
+
             // For cloud AI with direct image mode: send the photo straight
             // to the AI — no OCR needed. The AI reads the image itself.
             // For Apple FM: run OCR first, then send the text to FM.
@@ -1023,6 +1042,9 @@ struct AddExpenseView: View {
                     guard SmartExpenseParser.isAvailable else { return nil }
 
                     if isDirectImageMode {
+                        if let gateResult, !gateResult.shouldCallAI {
+                            return nil
+                        }
                         guard let optimizedData = CloudAIParser.prepareImageForGemini(image) else { return nil }
                         return await SmartExpenseParser.parseReceiptImage(
                             optimizedData,
@@ -1053,11 +1075,19 @@ struct AddExpenseView: View {
             await MainActor.run {
                 receiptOCRInFlight = false
 
-                if smartResult == nil && (isDirectImageMode || regexResult == nil) {
+                if isDirectImageMode,
+                   let gateResult,
+                   !gateResult.shouldCallAI,
+                   !forceCloudAI {
+                    scanErrorMessage = "\(gateResult.reason) Tap Retry AI if this is a receipt."
+                    canRetryAIGate = true
+                } else if smartResult == nil && (isDirectImageMode || regexResult == nil) {
                     scanErrorMessage = CloudAIParser.lastParseError
                         ?? "Couldn't read this receipt. Enter details manually."
+                    canRetryAIGate = false
                 } else {
                     scanErrorMessage = nil
+                    canRetryAIGate = false
                 }
 
                 // AMOUNT

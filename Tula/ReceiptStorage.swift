@@ -252,6 +252,127 @@ enum ReceiptStorage {
         }
     }
 
+    /// Result of the local pre-AI image gate. Used to decide whether we
+    /// should call cloud vision parsing for a direct image.
+    struct ReceiptLikelihoodResult: Sendable {
+        let shouldCallAI: Bool
+        let score: Int
+        let reason: String
+        let documentType: DocumentType
+        let rawTextLength: Int
+        let keywordHits: Int
+        let hasMoneyPattern: Bool
+    }
+
+    /// Conservative local gate for direct-image mode.
+    ///
+    /// Goal: block obvious non-receipt photos before we send image bytes
+    /// to cloud AI, while keeping false-rejects low for real receipts.
+    static func likelyExpenseDocument(from image: UIImage,
+                                      extensionSafe: Bool = false) async -> ReceiptLikelihoodResult {
+        let ocrLines = await quickOCRLinesForGate(image, extensionSafe: extensionSafe)
+        let normalized = ocrLines.joined(separator: "\n").lowercased()
+        let docType = classifyDocument(from: ocrLines)
+
+        let receiptKeywords: [String] = [
+            "receipt", "invoice", "bill", "total", "grand total", "amount",
+            "amount paid", "amount due", "txn", "transaction", "upi", "gst",
+            "cgst", "sgst", "igst", "paid to", "order id", "order total"
+        ]
+        let keywordHits = receiptKeywords.reduce(into: 0) { count, keyword in
+            if normalized.contains(keyword) { count += 1 }
+        }
+
+        let hasCurrencyToken = normalized.contains("rs")
+            || normalized.contains("inr")
+            || normalized.contains("\u{20B9}")
+
+        let hasMoneyPattern = normalized.range(
+            of: #"(?i)(₹|rs\.?|inr)\s*\d{1,7}(?:[.,]\d{1,2})?|\b(total|amount|paid|due|bill)\b[^\n]{0,20}\d{1,7}(?:[.,]\d{1,2})?"#,
+            options: .regularExpression
+        ) != nil
+
+        let digitCount = normalized.unicodeScalars.reduce(into: 0) { count, scalar in
+            if CharacterSet.decimalDigits.contains(scalar) { count += 1 }
+        }
+
+        var score = 0
+        if normalized.count >= 60 { score += 1 }
+        if normalized.count < 20 { score -= 3 }
+
+        if keywordHits >= 2 { score += 2 }
+        else if keywordHits == 1 { score += 1 }
+        else { score -= 2 }
+
+        if hasMoneyPattern { score += 3 }
+        else { score -= 2 }
+
+        if hasCurrencyToken { score += 1 }
+
+        if docType != .generic { score += 2 }
+        else { score -= 1 }
+
+        if digitCount >= 8 { score += 1 }
+        if digitCount < 4 { score -= 1 }
+
+        if ocrLines.count >= 4 { score += 1 }
+        if ocrLines.count <= 1 { score -= 1 }
+
+        let allow = score >= 3
+            || (hasMoneyPattern && keywordHits >= 1)
+            || (docType != .generic && (hasMoneyPattern || keywordHits >= 1))
+
+        let reason: String
+        if allow {
+            reason = "Receipt-like text detected."
+        } else if normalized.isEmpty {
+            reason = "This image does not seem to contain readable receipt text."
+        } else if !hasMoneyPattern {
+            reason = "Couldn't find total/amount patterns in this image."
+        } else {
+            reason = "This image looks unrelated to bills or receipts."
+        }
+
+        return ReceiptLikelihoodResult(
+            shouldCallAI: allow,
+            score: score,
+            reason: reason,
+            documentType: docType,
+            rawTextLength: normalized.count,
+            keywordHits: keywordHits,
+            hasMoneyPattern: hasMoneyPattern
+        )
+    }
+
+    private static func quickOCRLinesForGate(_ image: UIImage,
+                                             extensionSafe: Bool) async -> [String] {
+        let source = extensionSafe ? downscaleForOCR(image, maxDimension: 2200) : image
+        guard let cgImage = source.cgImage else { return [] }
+
+        let observations: [VNRecognizedTextObservation] = await withCheckedContinuation { continuation in
+            let request = VNRecognizeTextRequest { request, _ in
+                let results = request.results as? [VNRecognizedTextObservation] ?? []
+                continuation.resume(returning: results)
+            }
+            request.recognitionLevel = .fast
+            request.usesLanguageCorrection = false
+            request.recognitionLanguages = ["en-IN", "en-US"]
+            let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
+            do {
+                try handler.perform([request])
+            } catch {
+                continuation.resume(returning: [])
+            }
+        }
+
+        return observations
+            .compactMap { $0.topCandidates(1).first?.string }
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .prefix(90)
+            .map { $0 }
+    }
+
     /// Preprocess a receipt photo to improve Vision OCR accuracy. Runs a
     /// CoreImage filter chain that addresses the most common causes of
     /// poor recognition on real-world receipts: thermal-paper fade, low

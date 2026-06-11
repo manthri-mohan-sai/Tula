@@ -96,6 +96,7 @@ final class ShareSession: ObservableObject {
     /// parsing phase based on `ParseResult.confidenceReason`.
     /// Nil = high confidence = no banner.
     @Published var parseWarning: String?
+    @Published var canRetryAIGate: Bool = false
     @Published var items: [ReceiptLineItem] = []
     @Published var discount: Double = 0
     @Published var tax: Double = 0
@@ -259,13 +260,17 @@ final class ShareSession: ObservableObject {
     /// which downscales the image and skips CoreImage preprocessing.
     /// Share extensions have a ~120MB memory ceiling; full-page hospital
     /// bill screenshots will blow past it if processed at full res.
-    private func runImagePipeline(image: UIImage) {
+    private func runImagePipeline(image: UIImage, forceCloudAI: Bool = false) {
         phase = .parsing
         let isDirectImageMode = SmartExpenseParser.hasCloudVision
 
         Task.detached(priority: .userInitiated) { [weak self] in
             do {
-                try await self?.runImagePipelineInner(image: image, isDirectImageMode: isDirectImageMode)
+                try await self?.runImagePipelineInner(
+                    image: image,
+                    isDirectImageMode: isDirectImageMode,
+                    forceCloudAI: forceCloudAI
+                )
             } catch {
                 await MainActor.run {
                     self?.phase = .failed("Parsing failed")
@@ -274,11 +279,20 @@ final class ShareSession: ObservableObject {
         }
     }
 
-    private func runImagePipelineInner(image: UIImage, isDirectImageMode: Bool) async throws {
+    private func runImagePipelineInner(image: UIImage,
+                                       isDirectImageMode: Bool,
+                                       forceCloudAI: Bool) async throws {
         await MainActor.run { [weak self] in self?.parsingStatus = "Preparing image…" }
 
         let categoryEntries = await Self.loadCategoryEntries()
         let fmContext = await Self.loadFMContext()
+
+        let gateResult: ReceiptStorage.ReceiptLikelihoodResult?
+        if isDirectImageMode && !forceCloudAI {
+            gateResult = await ReceiptStorage.likelyExpenseDocument(from: image, extensionSafe: true)
+        } else {
+            gateResult = nil
+        }
 
         let regexResult: ReceiptStorage.ParseResult?
         if isDirectImageMode {
@@ -300,6 +314,9 @@ final class ShareSession: ObservableObject {
                 guard SmartExpenseParser.isAvailable else { return nil }
 
                 if isDirectImageMode {
+                    if let gateResult, !gateResult.shouldCallAI {
+                        return nil
+                    }
                     // Prepare a single optimised JPEG — screenshot-aware size +
                     // quality, optional grayscale for thermal receipts. Passing
                     // skipResize: true tells CloudAIParser not to re-encode,
@@ -393,6 +410,12 @@ final class ShareSession: ObservableObject {
         )
 
         let warning: String? = await {
+            if isDirectImageMode,
+               let gateResult,
+               !gateResult.shouldCallAI,
+               !forceCloudAI {
+                return "\(gateResult.reason) Tap Retry AI if this is a receipt."
+            }
             if smartResult == nil {
                 return await MainActor.run { CloudAIParser.lastParseError }
                     ?? "Could not read receipt. Check your connection or try again."
@@ -420,12 +443,22 @@ final class ShareSession: ObservableObject {
             self.categoryName = resolvedCategoryName
             self.usedSmartParser = smartResult != nil
             self.parseWarning = warning
+            self.canRetryAIGate = isDirectImageMode
+                && (gateResult?.shouldCallAI == false)
+                && !forceCloudAI
             self.parsingStatus = ""
             self.availableCategories = categoryNames
             self.availableAccounts = accountEntries
             self.selectedAccountName = matchedAccountName
             self.phase = .preview
         }
+    }
+
+    func retryAIGateBypass() {
+        guard case .image(let image) = content else { return }
+        parseWarning = nil
+        canRetryAIGate = false
+        runImagePipeline(image: image, forceCloudAI: true)
     }
 
     /// Text pipeline: smart parser only (no OCR needed). Used for SMS,

@@ -152,15 +152,25 @@ struct ShareRootView: View {
     /// the parsed values are correct even when our heuristics are
     /// uncertain. The banner is a heads-up, not a gate.
     private func warningBanner(_ text: String) -> some View {
-        HStack(spacing: 10) {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .font(.subheadline)
-                .foregroundStyle(.orange)
-            Text(text)
-                .font(.footnote)
-                .foregroundStyle(.primary)
-                .multilineTextAlignment(.leading)
-            Spacer(minLength: 0)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.subheadline)
+                    .foregroundStyle(.orange)
+                Text(text)
+                    .font(.footnote)
+                    .foregroundStyle(.primary)
+                    .multilineTextAlignment(.leading)
+                Spacer(minLength: 0)
+            }
+            if session.canRetryAIGate {
+                Button("Retry AI") {
+                    session.retryAIGateBypass()
+                }
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(brand)
+                .buttonStyle(.plain)
+            }
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
