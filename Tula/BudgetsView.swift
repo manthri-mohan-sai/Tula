@@ -742,7 +742,7 @@ struct BudgetCard: View {
         breakdown.first?.amount ?? 1
     }
 
-    @State private var animatedRingProgress: Double = 0
+
 
     private var percentText: String {
         let pct = Int(min(progressValue, 9.99) * 100)
@@ -805,54 +805,14 @@ struct BudgetCard: View {
                 .fill(Color.tulaCardSurface)
         )
         .contentShape(Rectangle())
-        .onAppear {
-            // Animate a continuous 0→progressValue value so the overflow
-            // lap only begins once the first lap (100%) completes.
-            let duration = progressValue > 1.0 ? 1.1 : 0.65
-            withAnimation(.spring(response: duration, dampingFraction: 0.82).delay(0.15)) {
-                animatedRingProgress = progressValue
-            }
-        }
+
     }
 
     // MARK: - Ring
 
     private var budgetRing: some View {
-        let ringSize: CGFloat  = 56
-        let lineWidth: CGFloat = 9
-        let hasOverflow = animatedRingProgress > 1.0
-        // Fraction through the current lap (0…<1).
-        // truncatingRemainder returns 0 when landing exactly on a boundary
-        // (100%, 200%…), so treat that as 1.0 = a completed full circle.
-        let rawFraction = animatedRingProgress.truncatingRemainder(dividingBy: 1.0)
-        let lapFraction = (rawFraction == 0 && animatedRingProgress >= 1.0) ? 1.0 : rawFraction
-
-        return ZStack {
-            // Track
-            Circle()
-                .stroke(ringColor.opacity(0.10), lineWidth: lineWidth)
-
-            if !hasOverflow {
-                // First lap only — full color, no shadow needed.
-                Circle()
-                    .trim(from: 0, to: lapFraction)
-                    .stroke(ringColor, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
-                    .rotationEffect(.degrees(-90))
-            } else {
-                // All completed laps rendered as one dim full ring underneath.
-                Circle()
-                    .stroke(ringColor.opacity(0.40), lineWidth: lineWidth)
-
-                // Active (partial) lap on top — full color + shadow so it
-                // visually lifts off the dim ring at every 100% crossing.
-                Circle()
-                    .trim(from: 0, to: lapFraction)
-                    .stroke(ringColor, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
-                    .rotationEffect(.degrees(-90))
-                    .shadow(color: .black.opacity(0.90), radius: 6)
-            }
-        }
-        .frame(width: ringSize, height: ringSize)
+        ActivityRingView(progress: progressValue, ringColor: ringColor, lineWidth: 12)
+            .frame(width: 56, height: 56)
     }
 
     // MARK: - Footer
@@ -1069,7 +1029,7 @@ struct BudgetTransactionsView: View {
     let currencyCode: String
 
     @State private var showingEdit = false
-    @State private var animatedProgress: Double = 0
+
 
     private var periodExpenses: [Expense] {
         let window = budget.currentPeriodWindow()
@@ -1154,29 +1114,10 @@ struct BudgetTransactionsView: View {
     // MARK: - Hero Header
 
     private var heroHeader: some View {
-        VStack(spacing: 20) {
+        return VStack(spacing: 20) {
             ZStack {
-                Circle()
-                    .stroke(ringColor.opacity(0.12), lineWidth: 14)
-
-                // First lap — always full color.
-                Circle()
-                    .trim(from: 0, to: min(animatedProgress, 1.0))
-                    .stroke(animatedProgress > 1.0 ? ringColor.opacity(0.35) : ringColor,
-                            style: StrokeStyle(lineWidth: 14, lineCap: .round))
-                    .rotationEffect(.degrees(-90))
-
-                // Active lap (works for any N): current lap fraction on top
-                // with a shadow to separate it from the dim ring beneath.
-                if animatedProgress > 1.0 {
-                    let raw = animatedProgress.truncatingRemainder(dividingBy: 1.0)
-                    let lapFrac = (raw == 0 && animatedProgress >= 1.0) ? 1.0 : raw
-                    Circle()
-                        .trim(from: 0, to: lapFrac)
-                        .stroke(ringColor, style: StrokeStyle(lineWidth: 14, lineCap: .round))
-                        .rotationEffect(.degrees(-90))
-                        .shadow(color: .black.opacity(0.35), radius: 6)
-                }
+                ActivityRingView(progress: progressValue, ringColor: ringColor,
+                                 lineWidth: 18, trackOpacity: 0.15)
 
                 Image(systemName: iconKey)
                     .font(.system(size: 28, weight: .semibold))
@@ -1207,14 +1148,10 @@ struct BudgetTransactionsView: View {
             }
         }
         .frame(maxWidth: .infinity)
-        .padding(.vertical, 28)
+        .padding(.top, 28)
+        .padding(.bottom, 6)
         .padding(.horizontal, 16)
-        .onAppear {
-            let duration = progressValue > 1.0 ? 1.1 : 0.8
-            withAnimation(.spring(response: duration, dampingFraction: 0.82)) {
-                animatedProgress = progressValue
-            }
-        }
+
     }
 
     // MARK: - Stat Boxes
@@ -1320,3 +1257,4 @@ private extension String {
         isEmpty ? nil : self
     }
 }
+
