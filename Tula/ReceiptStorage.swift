@@ -268,9 +268,41 @@ enum ReceiptStorage {
     ///
     /// Goal: block obvious non-receipt photos before we send image bytes
     /// to cloud AI, while keeping false-rejects low for real receipts.
+    ///
+    /// Two-stage strategy:
+    ///   1. Fast OCR pass for latency.
+    ///   2. Accurate OCR pass only if fast pass says "block".
+    ///
+    /// This keeps the common path quick while rescuing borderline real
+    /// receipts that `.fast` occasionally under-reads.
     static func likelyExpenseDocument(from image: UIImage,
                                       extensionSafe: Bool = false) async -> ReceiptLikelihoodResult {
-        let ocrLines = await quickOCRLinesForGate(image, extensionSafe: extensionSafe)
+        let fastLines = await quickOCRLinesForGate(
+            image,
+            extensionSafe: extensionSafe,
+            recognitionLevel: .fast
+        )
+        let fastResult = evaluateReceiptLikelihood(from: fastLines)
+        if fastResult.shouldCallAI {
+            return fastResult
+        }
+
+        // Escalate only when fast pass blocks.
+        let accurateLines = await quickOCRLinesForGate(
+            image,
+            extensionSafe: extensionSafe,
+            recognitionLevel: .accurate
+        )
+        let accurateResult = evaluateReceiptLikelihood(from: accurateLines)
+        if accurateResult.shouldCallAI {
+            return accurateResult
+        }
+
+        // Both passes blocked: return the stronger (higher-score) result.
+        return accurateResult.score >= fastResult.score ? accurateResult : fastResult
+    }
+
+    private static func evaluateReceiptLikelihood(from ocrLines: [String]) -> ReceiptLikelihoodResult {
         let normalized = ocrLines.joined(separator: "\n").lowercased()
         let docType = classifyDocument(from: ocrLines)
 
@@ -345,7 +377,8 @@ enum ReceiptStorage {
     }
 
     private static func quickOCRLinesForGate(_ image: UIImage,
-                                             extensionSafe: Bool) async -> [String] {
+                                             extensionSafe: Bool,
+                                             recognitionLevel: VNRequestTextRecognitionLevel) async -> [String] {
         let source = extensionSafe ? downscaleForOCR(image, maxDimension: 2200) : image
         guard let cgImage = source.cgImage else { return [] }
 
@@ -354,7 +387,7 @@ enum ReceiptStorage {
                 let results = request.results as? [VNRecognizedTextObservation] ?? []
                 continuation.resume(returning: results)
             }
-            request.recognitionLevel = .fast
+            request.recognitionLevel = recognitionLevel
             request.usesLanguageCorrection = false
             request.recognitionLanguages = ["en-IN", "en-US"]
             let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
