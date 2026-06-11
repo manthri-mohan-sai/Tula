@@ -340,6 +340,146 @@ struct ShowMonthlySpendIntent: AppIntent {
     }
 }
 
+// MARK: - SpendingTopicEntity
+
+/// An `AppEntity` representing a spending topic (category, merchant, or keyword).
+/// Required because `AppShortcut` phrases only allow `AppEntity` / `AppEnum`
+/// parameter types for inline Siri interpolation (not plain `String`).
+struct SpendingTopicEntity: AppEntity {
+    var id: String
+
+    static var typeDisplayRepresentation: TypeDisplayRepresentation = "Spending Topic"
+
+    var displayRepresentation: DisplayRepresentation {
+        DisplayRepresentation(title: "\(id)")
+    }
+
+    static var defaultQuery = SpendingTopicQuery()
+}
+
+/// Provides dynamic suggestions from the user's actual categories, and also
+/// accepts arbitrary text so the user can search by merchant or item name.
+struct SpendingTopicQuery: EntityStringQuery {
+    func entities(for identifiers: [String]) async throws -> [SpendingTopicEntity] {
+        identifiers.map { SpendingTopicEntity(id: $0) }
+    }
+
+    func entities(matching string: String) async throws -> [SpendingTopicEntity] {
+        let categories = await fetchCategoryNames()
+        let query = string.lowercased()
+        var results = categories
+            .filter { $0.lowercased().contains(query) }
+            .map { SpendingTopicEntity(id: $0) }
+
+        // Always offer the raw search term so users can search by
+        // merchant or note text that isn't a category name.
+        if !results.contains(where: { $0.id.lowercased() == query }) {
+            results.insert(SpendingTopicEntity(id: string), at: 0)
+        }
+        return results
+    }
+
+    func suggestedEntities() async throws -> [SpendingTopicEntity] {
+        let categories = await fetchCategoryNames()
+        return categories.map { SpendingTopicEntity(id: $0) }
+    }
+
+    @MainActor
+    private func fetchCategoryNames() -> [String] {
+        guard let context = try? sharedModelContext() else { return [] }
+        let all = (try? context.fetch(FetchDescriptor<Category>())) ?? []
+        return all.filter { !$0.isArchived }.map(\.name)
+    }
+}
+
+// MARK: - QuerySpendingIntent
+
+/// Answers questions like "How much did I spend on shopping this month?"
+/// Searches across category names, merchant names, and expense notes.
+struct QuerySpendingIntent: AppIntent {
+    static var title: LocalizedStringResource = "Query Spending"
+
+    static var description = IntentDescription(
+        """
+        Ask how much you spent on a specific category, merchant, or item \
+        this month. For example: "How much did I spend on groceries?" or \
+        "How much did I spend on Swiggy?"
+        """,
+        categoryName: "Insights"
+    )
+
+    static var openAppWhenRun: Bool = false
+    static var isDiscoverable: Bool = true
+
+    @Parameter(
+        title: "Topic",
+        description: "Category, merchant, or item to search for (e.g. shopping, groceries, milk, Swiggy).",
+        requestValueDialog: IntentDialog("What do you want to check spending for?")
+    )
+    var topic: SpendingTopicEntity
+
+    static var parameterSummary: some ParameterSummary {
+        Summary("How much did I spend on \(\.$topic)")
+    }
+
+    @MainActor
+    func perform() async throws -> some IntentResult & ProvidesDialog {
+        let context = try sharedModelContext()
+
+        let calendar = Calendar.current
+        guard let monthStart = calendar.dateInterval(of: .month, for: .now)?.start else {
+            return .result(dialog: IntentDialog("Couldn't calculate this month."))
+        }
+
+        // Fetch all expenses this month.
+        let descriptor = FetchDescriptor<Expense>(
+            predicate: #Predicate { $0.date >= monthStart }
+        )
+        let expenses = (try? context.fetch(descriptor)) ?? []
+
+        let searchTerm = topic.id
+        let query = searchTerm.lowercased().trimmingCharacters(in: .whitespaces)
+
+        // Guard: empty query would match everything via String.contains("").
+        guard !query.isEmpty else {
+            let month = Date.now.formatted(.dateTime.month(.wide))
+            return .result(dialog: IntentDialog("Please tell me what you'd like to check — for example, \"shopping\" or \"groceries\"."))
+        }
+
+        // Match against category name, merchant, or note.
+        // Require minimum 2 chars to avoid spurious single-letter matches.
+        let matched = expenses.filter { expense in
+            if let catName = expense.category?.name.lowercased(),
+               catName.contains(query) || (query.count >= 3 && query.contains(catName)) {
+                return true
+            }
+            if let merchant = expense.merchant?.lowercased(),
+               merchant.contains(query) || (query.count >= 3 && query.contains(merchant)) {
+                return true
+            }
+            if let note = expense.note?.lowercased(),
+               note.contains(query) {
+                return true
+            }
+            return false
+        }
+
+        let total = matched.reduce(0) { $0 + $1.amount }
+        let count = matched.count
+        let code = UserDefaults.standard.string(forKey: "primaryCurrencyCode") ?? "INR"
+        let totalFormatted = Currency.format(total, code: code)
+        let month = Date.now.formatted(.dateTime.month(.wide))
+
+        if count == 0 {
+            return .result(dialog: IntentDialog("You haven't spent anything on \(searchTerm) in \(month)."))
+        } else if count == 1 {
+            return .result(dialog: IntentDialog("You spent \(totalFormatted) on \(searchTerm) in \(month)."))
+        } else {
+            return .result(dialog: IntentDialog("You spent \(totalFormatted) on \(searchTerm) in \(month) across \(count) transactions."))
+        }
+    }
+}
+
 // MARK: - Shared Helpers
 
 /// Builds (or rebuilds) a ModelContext pointing at the same database the app uses.
@@ -471,16 +611,39 @@ struct TulaShortcuts: AppShortcutsProvider {
             intent: ShowMonthlySpendIntent(),
             phrases: [
                 "How much have I spent this month in \(.applicationName)",
-                "How much I spent in \(.applicationName)",
+                "How much did I spend this month in \(.applicationName)",
                 "Show my monthly spend in \(.applicationName)",
                 "Show this month in \(.applicationName)",
                 "\(.applicationName) monthly total",
                 "\(.applicationName) monthly spend",
                 "\(.applicationName) this month",
-                "\(.applicationName) how much"
+                "Total spend this month in \(.applicationName)"
             ],
             shortTitle: "Monthly Spend",
             systemImageName: "chart.bar.fill"
+        )
+
+        AppShortcut(
+            intent: QuerySpendingIntent(),
+            phrases: [
+                // Natural "how much" queries
+                "How much did I spend on \(\.$topic) in \(.applicationName)",
+                "How much I spent on \(\.$topic) in \(.applicationName)",
+                "How much have I spent on \(\.$topic) in \(.applicationName)",
+                // App-name-first (feels like calling the app)
+                "\(.applicationName) how much did I spend on \(\.$topic)",
+                "\(.applicationName) how much on \(\.$topic)",
+                "\(.applicationName) spending on \(\.$topic)",
+                "\(.applicationName) \(\.$topic) spending",
+                // "Show / check" verbs
+                "Show \(\.$topic) spending in \(.applicationName)",
+                "Check \(\.$topic) spend in \(.applicationName)",
+                // "What" queries
+                "What did I spend on \(\.$topic) in \(.applicationName)",
+                "\(\.$topic) spending in \(.applicationName)"
+            ],
+            shortTitle: "Query Spending",
+            systemImageName: "magnifyingglass"
         )
     }
 }

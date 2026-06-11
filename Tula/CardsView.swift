@@ -45,6 +45,18 @@ struct CardsView: View {
     /// scrolls the carousel; the user swiping updates it from the system.
     @State private var activeCardID: UUID?
 
+    /// The color of the currently active card, used for the gradient
+    /// backdrop. Tracked separately so the gradient animates smoothly
+    /// as the carousel snaps between cards.
+    private var activeCardColor: Color {
+        guard let id = activeCardID,
+              let account = displayAccounts.first(where: { $0.id == id }) else {
+            return displayAccounts.first.map { Color(hex: $0.colorHex).cardified() }
+                ?? Color.tulaBrandFallback
+        }
+        return Color(hex: account.colorHex).cardified()
+    }
+
     // MARK: - Sorting
 
     /// Most-recently-used first so the carousel opens on the user's most
@@ -151,7 +163,26 @@ struct CardsView: View {
             }
             .padding(.bottom, Spacing.xxxl)
         }
-        .background(Color.tulaBackground)
+        .background {
+            ZStack {
+                Color.tulaBackground
+                VStack(spacing: 0) {
+                    LinearGradient(
+                        colors: [
+                            activeCardColor.opacity(0.25),
+                            activeCardColor.opacity(0.08),
+                            Color.clear
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                    .frame(height: 420)
+                    Spacer(minLength: 0)
+                }
+            }
+            .ignoresSafeArea()
+            .animation(.spring(response: 0.5, dampingFraction: 0.85), value: activeCardID)
+        }
         .navigationTitle("Accounts")
         .tulaNavigationSubtitle(subtitleText)
         .navigationBarTitleDisplayMode(.large)

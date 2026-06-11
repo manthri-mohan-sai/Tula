@@ -379,7 +379,8 @@ final class ShareSession: ObservableObject {
         }()
 
         let (categoryNames, accountEntries, matchedAccountName) = await Self.loadPickerData(
-            paymentMode: smartResult?.paymentMode
+            paymentMode: smartResult?.paymentMode,
+            cardLast4: smartResult?.cardLast4
         )
 
         await MainActor.run { [weak self] in
@@ -442,7 +443,7 @@ final class ShareSession: ObservableObject {
                 fmSuggestion: fmCategory
             )
 
-            let (categoryNames, accountEntries, _) = await Self.loadPickerData(paymentMode: nil)
+            let (categoryNames, accountEntries, _) = await Self.loadPickerData(paymentMode: nil, cardLast4: nil)
 
             await MainActor.run { [weak self] in
                 guard let self else { return }
@@ -635,7 +636,7 @@ final class ShareSession: ObservableObject {
         }
     }
 
-    private static func loadPickerData(paymentMode: String?) async -> (
+    private static func loadPickerData(paymentMode: String?, cardLast4: String?) async -> (
         categories: [String],
         accounts: [(name: String, id: UUID)],
         matchedAccount: String?
@@ -657,19 +658,39 @@ final class ShareSession: ObservableObject {
             let accounts = (try? context.fetch(accDescriptor))?.filter { !$0.isArchived } ?? []
             let accEntries = accounts.map { (name: $0.name, id: $0.id) }
 
-            var matched: String? = nil
-            if let mode = paymentMode?.lowercased(), !mode.isEmpty {
-                let match = accounts.first { acc in
-                    let name = acc.name.lowercased()
-                    return name.contains(mode) || mode.contains(name)
-                        || (mode.contains("cash") && name.contains("cash"))
-                        || (mode.contains("upi") && (name.contains("upi") || name.contains("gpay") || name.contains("phonepe") || name.contains("paytm")))
-                        || ((mode.contains("card") || mode.contains("credit") || mode.contains("debit")) && (name.contains("card") || name.contains("credit") || name.contains("debit")))
+            // Strategy 1: card_last4 exact match (strongest signal).
+            // Gemini extracted the last 4 digits directly from the receipt.
+            if let digits = cardLast4, digits.count == 4 {
+                if let match = accounts.first(where: { $0.last4Digits == digits }) {
+                    return (catNames, accEntries, match.name)
                 }
-                matched = match?.name
             }
 
-            return (catNames, accEntries, matched)
+            // Strategy 2: name-word match against paymentMode.
+            if let mode = paymentMode?.lowercased(), !mode.isEmpty {
+                let generic: Set<String> = [
+                    "bank", "card", "credit", "debit", "cash", "wallet",
+                    "account", "savings", "current", "the", "my", "upi"
+                ]
+                var bestAccount: Account?
+                var bestScore = 0
+                for account in accounts {
+                    let words = account.name
+                        .lowercased()
+                        .components(separatedBy: .alphanumerics.inverted)
+                        .filter { $0.count >= 3 && !generic.contains($0) }
+                    let score = words.filter { mode.contains($0) }.count
+                    if score > bestScore {
+                        bestScore = score
+                        bestAccount = account
+                    }
+                }
+                if let match = bestAccount {
+                    return (catNames, accEntries, match.name)
+                }
+            }
+
+            return (catNames, accEntries, nil)
         }
     }
 

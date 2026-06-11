@@ -149,7 +149,6 @@ struct BudgetsView: View {
             .pickerStyle(.segmented)
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
-            .background(Color.tulaBackground)
 
             // Tab content
             if selectedTab == .overall {
@@ -158,7 +157,18 @@ struct BudgetsView: View {
                 categoryTab
             }
         }
-        .background(Color.tulaBackground)
+        .background {
+            VStack(spacing: 0) {
+                LinearGradient(
+                    colors: [Color.tulaBrandFallback.opacity(0.12), Color.tulaBrandFallback.opacity(0.05), Color.tulaBackground],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                .frame(height: 400)
+                Color.tulaBackground
+            }
+            .ignoresSafeArea()
+        }
         .navigationTitle("Budgets")
         .navigationBarTitleDisplayMode(.large)
         .toolbar {
@@ -1024,11 +1034,14 @@ private struct BreakdownRow: View {
 // MARK: - Budget Transactions View
 
 struct BudgetTransactionsView: View {
+    @Environment(\.modelContext) private var context
     let budget: Budget
     let expenses: [Expense]
     let currencyCode: String
 
     @State private var showingEdit = false
+    @State private var editingExpense: Expense?
+    @State private var expenseToDelete: Expense?
 
 
     private var periodExpenses: [Expense] {
@@ -1062,7 +1075,13 @@ struct BudgetTransactionsView: View {
         "\(Int(min(progressValue, 9.99) * 100))%"
     }
 
-    private var ringColor: Color { isOverBudget ? .red : iconColor }
+    private var status: Budget.Status { budget.status(in: expenses) }
+
+    private var ringColor: Color {
+        if status == .overBudget { return .red }
+        if status == .warning { return .orange }
+        return iconColor
+    }
     private var daysLeft: Int { budget.daysRemaining() }
 
     private var dailyAllowance: Double? {
@@ -1108,6 +1127,27 @@ struct BudgetTransactionsView: View {
         }
         .sheet(isPresented: $showingEdit) {
             BudgetFormView(existingBudget: budget)
+        }
+        .sheet(item: $editingExpense) { expense in
+            AddExpenseView(existingExpense: expense)
+        }
+        .alert("Delete Expense?",
+               isPresented: Binding(
+                   get: { expenseToDelete != nil },
+                   set: { if !$0 { expenseToDelete = nil } }
+               )
+        ) {
+            Button("Cancel", role: .cancel) { expenseToDelete = nil }
+            Button("Delete", role: .destructive) {
+                if let expense = expenseToDelete {
+                    deleteExpense(expense)
+                    expenseToDelete = nil
+                }
+            }
+        } message: {
+            if let expense = expenseToDelete {
+                Text("This will permanently remove \(Currency.format(expense.amount, code: currencyCode)) from \(expense.merchant ?? "this expense").")
+            }
         }
     }
 
@@ -1229,21 +1269,55 @@ struct BudgetTransactionsView: View {
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 40)
             } else {
-                VStack(spacing: 0) {
+                List {
                     ForEach(Array(periodExpenses.enumerated()), id: \.element.id) { idx, expense in
-                        ExpenseRow(expense: expense)
-                            .padding(.horizontal, 14)
-                        if idx < periodExpenses.count - 1 {
-                            Divider()
-                                .padding(.leading, 66)
+                        Button {
+                            Haptics.tap()
+                            editingExpense = expense
+                        } label: {
+                            ExpenseRow(expense: expense)
+                                .padding(.horizontal, 14)
+                        }
+                        .buttonStyle(.plain)
+                        .listRowInsets(EdgeInsets())
+                        .listRowBackground(Color.tulaCardSurface)
+                        .listRowSeparator(idx == periodExpenses.count - 1 ? .hidden : .visible, edges: .bottom)
+                        .alignmentGuide(.listRowSeparatorLeading) { _ in 64 }
+                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                            Button(role: .destructive) {
+                                expenseToDelete = expense
+                            } label: {
+                                Label("Delete", systemImage: "trash")
+                            }
+                            .labelStyle(.iconOnly)
+
+                            Button {
+                                editingExpense = expense
+                            } label: {
+                                Label("Edit", systemImage: "pencil")
+                            }
+                            .tint(.blue)
+                            .labelStyle(.iconOnly)
                         }
                     }
                 }
-                .background(
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .fill(Color.tulaCardSurface)
-                )
+                .listStyle(.plain)
+                .scrollContentBackground(.hidden)
+                .scrollDisabled(true)
+                .frame(height: CGFloat(periodExpenses.count) * 72)
+                .background(Color.tulaCardSurface)
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
             }
+        }
+    }
+
+    // MARK: - Delete
+
+    private func deleteExpense(_ expense: Expense) {
+        Haptics.warning()
+        withAnimation(.easeInOut(duration: 0.3)) {
+            context.delete(expense)
+            try? context.save()
         }
     }
 }

@@ -144,6 +144,7 @@ struct SettingsView: View {
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(.tertiary)
                 }
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .sheet(isPresented: $showingThemePicker, onDismiss: {
@@ -255,6 +256,7 @@ struct SettingsView: View {
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.tertiary)
                 }
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
         } header: {
@@ -302,6 +304,7 @@ struct SettingsView: View {
                             .foregroundStyle(.tertiary)
                     }
                 }
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .disabled(!smartParsingEnabled || smartTestInFlight)
@@ -415,6 +418,7 @@ struct SettingsView: View {
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.tertiary)
                 }
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .sheet(isPresented: $showingCloudConfig) {
@@ -521,6 +525,7 @@ struct SettingsView: View {
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.tertiary)
                 }
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .sheet(isPresented: $showingGeminiConfig) {
@@ -804,6 +809,7 @@ struct SettingsView: View {
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(.tertiary)
             }
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
     }

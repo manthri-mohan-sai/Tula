@@ -81,6 +81,18 @@ struct HomeView: View {
         todaysExpenses.reduce(0) { $0 + $1.amount }
     }
 
+    /// Accent color for the page gradient — top-spending category this month,
+    /// falling back to brand color when there's no spending yet.
+    private var pageAccentColor: Color {
+        let grouped = Dictionary(grouping: thisMonthExpenses, by: { $0.category?.colorHex })
+        guard let top = grouped.max(by: {
+            $0.value.reduce(0) { $0 + $1.amount } < $1.value.reduce(0) { $0 + $1.amount }
+        }), let hex = top.key else {
+            return Color.tulaBrandFallback
+        }
+        return Color(hex: hex)
+    }
+
     /// Count of expenses missing a category — the Quick Log voice flow can
     /// land here when the parser can't infer the category. Surfaced as a
     /// banner above Recent so the user can triage in one tap.
@@ -329,16 +341,23 @@ struct HomeView: View {
                 .padding(.bottom, Spacing.lg)
                 .animation(AppAnimation.snappy, value: smartParseInFlight)
             }
-            .background(Color.tulaBackground)
+            .background {
+                VStack(spacing: 0) {
+                    LinearGradient(
+                        colors: [pageAccentColor.opacity(0.12), pageAccentColor.opacity(0.05), Color.tulaBackground],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                    .frame(height: 400)
+                    Color.tulaBackground
+                }
+                .ignoresSafeArea()
+                .onTapGesture { hideKeyboard() }
+            }
             // Dismiss keyboard the instant the user starts scrolling — same
             // pattern as AddExpense and Apple's stock forms. Was previously
             // `.interactively` which required dragging past a threshold.
             .scrollDismissesKeyboard(.immediately)
-            // Tap anywhere on the background also dismisses keyboard.
-            .background(
-                Color.tulaBackground
-                    .onTapGesture { hideKeyboard() }
-            )
             .navigationTitle("Tula")
             .navigationBarTitleDisplayMode(.large)
             .toolbar {

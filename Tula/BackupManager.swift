@@ -16,7 +16,7 @@ import CryptoKit
 // MARK: - DTOs
 
 struct BackupBundle: Codable {
-    var schemaVersion: Int = 1
+    var schemaVersion: Int = 2
     var exportedAt: Date = .now
     var accounts: [AccountDTO]
     var categories: [CategoryDTO]
@@ -24,6 +24,8 @@ struct BackupBundle: Codable {
     var transfers: [TransferDTO]
     var recurringRules: [RecurringRuleDTO]
     var merchantRules: [MerchantRuleDTO]
+    /// Added in schema v2. Optional so v1 backups still decode.
+    var budgets: [BudgetDTO]?
 }
 
 struct AccountDTO: Codable {
@@ -38,6 +40,7 @@ struct AccountDTO: Codable {
     let createdAt: Date
     let creditLimit: Double?
     let openingBalance: Double
+    let last4Digits: String?     // Added in schema v2
 }
 
 struct CategoryDTO: Codable {
@@ -62,6 +65,8 @@ struct ExpenseDTO: Codable {
     let categoryID: UUID?
     let accountID: UUID?
     let recurringRuleID: UUID?
+    /// Receipt image JPEG data. Optional so v1 backups (without images) decode.
+    let receiptImageData: Data?
 }
 
 struct TransferDTO: Codable {
@@ -93,6 +98,15 @@ struct RecurringRuleDTO: Codable {
     let accountID: UUID?
     let fromAccountID: UUID?
     let toAccountID: UUID?
+    // v2 fields — optional so v1 backups decode cleanly
+    let weekdaysMask: Int?
+    let customInterval: Int?
+    let customUnitRaw: String?
+    let pausedUntil: Date?
+    let merchant: String?
+    let hasSpecificTime: Bool?
+    let confirmationRequired: Bool?
+    let isVariable: Bool?
 }
 
 struct MerchantRuleDTO: Codable {
@@ -102,6 +116,16 @@ struct MerchantRuleDTO: Codable {
     let createdAt: Date
     let categoryID: UUID?
     let accountID: UUID?
+}
+
+struct BudgetDTO: Codable {
+    let id: UUID
+    let amount: Double
+    let periodRaw: String
+    let startDate: Date
+    let isActive: Bool
+    let createdAt: Date
+    let categoryID: UUID?
 }
 
 // MARK: - Backup Manager
@@ -189,13 +213,14 @@ enum BackupManager {
     }
 
     @MainActor
-    private static func buildBundle(from context: ModelContext) throws -> BackupBundle {
+    private static func buildBundle(from context: ModelContext, includeAttachments: Bool = true) throws -> BackupBundle {
         let accounts = (try? context.fetch(FetchDescriptor<Account>())) ?? []
         let categories = (try? context.fetch(FetchDescriptor<Category>())) ?? []
         let expenses = (try? context.fetch(FetchDescriptor<Expense>())) ?? []
         let transfers = (try? context.fetch(FetchDescriptor<Transfer>())) ?? []
         let recurringRules = (try? context.fetch(FetchDescriptor<RecurringRule>())) ?? []
         let merchantRules = (try? context.fetch(FetchDescriptor<MerchantRule>())) ?? []
+        let budgets = (try? context.fetch(FetchDescriptor<Budget>())) ?? []
 
         guard !accounts.isEmpty || !expenses.isEmpty else {
             throw BackupError.noData
@@ -204,18 +229,19 @@ enum BackupManager {
         return BackupBundle(
             accounts: accounts.map(AccountDTO.from),
             categories: categories.map(CategoryDTO.from),
-            expenses: expenses.map(ExpenseDTO.from),
+            expenses: expenses.map { ExpenseDTO.from($0, includeAttachment: includeAttachments) },
             transfers: transfers.map(TransferDTO.from),
             recurringRules: recurringRules.map(RecurringRuleDTO.from),
-            merchantRules: merchantRules.map(MerchantRuleDTO.from)
+            merchantRules: merchantRules.map(MerchantRuleDTO.from),
+            budgets: budgets.map(BudgetDTO.from)
         )
     }
 
     // MARK: - Export
 
     @MainActor
-    static func exportBackup(from context: ModelContext, passphrase: String) throws -> Data {
-        let bundle = try buildBundle(from: context)
+    static func exportBackup(from context: ModelContext, passphrase: String, includeAttachments: Bool = true) throws -> Data {
+        let bundle = try buildBundle(from: context, includeAttachments: includeAttachments)
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         let jsonData = try encoder.encode(bundle)
@@ -264,6 +290,7 @@ enum BackupManager {
             account.id = dto.id
             account.isArchived = dto.isArchived
             account.createdAt = dto.createdAt
+            account.last4Digits = dto.last4Digits
             context.insert(account)
             accountByID[dto.id] = account
         }
@@ -317,6 +344,15 @@ enum BackupManager {
             rule.account = dto.accountID.flatMap { accountByID[$0] }
             rule.fromAccount = dto.fromAccountID.flatMap { accountByID[$0] }
             rule.toAccount = dto.toAccountID.flatMap { accountByID[$0] }
+            // v2 fields — fall back to defaults for v1 backups
+            rule.weekdaysMask = dto.weekdaysMask ?? 0
+            rule.customInterval = dto.customInterval ?? 1
+            rule.customUnitRaw = dto.customUnitRaw ?? CustomIntervalUnit.month.rawValue
+            rule.pausedUntil = dto.pausedUntil
+            rule.merchant = dto.merchant
+            rule.hasSpecificTime = dto.hasSpecificTime ?? false
+            rule.confirmationRequired = dto.confirmationRequired ?? false
+            rule.isVariable = dto.isVariable ?? false
             context.insert(rule)
             ruleByID[dto.id] = rule
         }
@@ -336,6 +372,7 @@ enum BackupManager {
             expense.rawInput = dto.rawInput
             expense.createdAt = dto.createdAt
             expense.recurringRule = dto.recurringRuleID.flatMap { ruleByID[$0] }
+            expense.receiptImageData = dto.receiptImageData
             context.insert(expense)
         }
 
@@ -355,6 +392,21 @@ enum BackupManager {
             context.insert(transfer)
         }
 
+        // Budgets (v2) — absent in v1 backups, so default to empty.
+        for dto in bundle.budgets ?? [] {
+            let period = BudgetPeriod(rawValue: dto.periodRaw) ?? .monthly
+            let budget = Budget(
+                amount: dto.amount,
+                category: dto.categoryID.flatMap { categoryByID[$0] },
+                period: period,
+                startDate: dto.startDate
+            )
+            budget.id = dto.id
+            budget.isActive = dto.isActive
+            budget.createdAt = dto.createdAt
+            context.insert(budget)
+        }
+
         try context.save()
     }
 
@@ -367,6 +419,9 @@ enum BackupManager {
         }
         for transfer in (try? context.fetch(FetchDescriptor<Transfer>())) ?? [] {
             context.delete(transfer)
+        }
+        for budget in (try? context.fetch(FetchDescriptor<Budget>())) ?? [] {
+            context.delete(budget)
         }
         for rule in (try? context.fetch(FetchDescriptor<RecurringRule>())) ?? [] {
             context.delete(rule)
@@ -480,7 +535,8 @@ extension AccountDTO {
             id: a.id, name: a.name, kind: a.kind.rawValue,
             currencyCode: a.currencyCode, iconKey: a.iconKey, colorHex: a.colorHex,
             isArchived: a.isArchived, sortOrder: a.sortOrder, createdAt: a.createdAt,
-            creditLimit: a.creditLimit, openingBalance: a.openingBalance
+            creditLimit: a.creditLimit, openingBalance: a.openingBalance,
+            last4Digits: a.last4Digits
         )
     }
 }
@@ -497,13 +553,14 @@ extension CategoryDTO {
 
 extension ExpenseDTO {
     @MainActor
-    static func from(_ e: Expense) -> ExpenseDTO {
+    static func from(_ e: Expense, includeAttachment: Bool = true) -> ExpenseDTO {
         ExpenseDTO(
             id: e.id, amount: e.amount, date: e.date,
             merchant: e.merchant, note: e.note, rawInput: e.rawInput,
             source: e.source.rawValue, createdAt: e.createdAt,
             categoryID: e.category?.id, accountID: e.account?.id,
-            recurringRuleID: e.recurringRule?.id
+            recurringRuleID: e.recurringRule?.id,
+            receiptImageData: includeAttachment ? e.receiptImageData : nil
         )
     }
 }
@@ -530,7 +587,11 @@ extension RecurringRuleDTO {
             isPaused: r.isPaused, note: r.note, createdAt: r.createdAt,
             lastGeneratedDate: r.lastGeneratedDate,
             categoryID: r.category?.id, accountID: r.account?.id,
-            fromAccountID: r.fromAccount?.id, toAccountID: r.toAccount?.id
+            fromAccountID: r.fromAccount?.id, toAccountID: r.toAccount?.id,
+            weekdaysMask: r.weekdaysMask, customInterval: r.customInterval,
+            customUnitRaw: r.customUnitRaw, pausedUntil: r.pausedUntil,
+            merchant: r.merchant, hasSpecificTime: r.hasSpecificTime,
+            confirmationRequired: r.confirmationRequired, isVariable: r.isVariable
         )
     }
 }
@@ -545,3 +606,14 @@ extension MerchantRuleDTO {
         )
     }
 }
+extension BudgetDTO {
+    @MainActor
+    static func from(_ b: Budget) -> BudgetDTO {
+        BudgetDTO(
+            id: b.id, amount: b.amount, periodRaw: b.periodRaw,
+            startDate: b.startDate, isActive: b.isActive,
+            createdAt: b.createdAt, categoryID: b.category?.id
+        )
+    }
+}
+

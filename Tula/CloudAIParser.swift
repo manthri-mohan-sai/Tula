@@ -371,7 +371,10 @@ enum CloudAIParser {
         \(contextSection)
         "amount": GRAND TOTAL the customer paid (number). Look for "Total"/"Grand Total"/"Bill Total"/"Amount Paid" near the bottom.
 
-        "merchant": Business name from the receipt header, title-cased (string). \
+        "merchant": The BUSINESS/SHOP name, title-cased (string). \
+        **POS terminal receipts** (Pine Labs, Paytm, Worldline): the bank logo/name at the TOP \
+        (HDFC Bank, ICICI, SBI, etc.) is the ACQUIRING BANK — NOT the merchant. The merchant \
+        is printed BELOW it (e.g. "S N AUTO", "APOLLO PHARMACY"). Extract THAT name. \
         For delivery apps (Swiggy/Zomato/Blinkit), use the RESTAURANT name, not the app. \
         **INDIAN CONTEXT**: "Hotel" in India usually means RESTAURANT, not accommodation. \
         "Subbaiah Gari Hotel", "Udupi Hotel", "Sagar Hotel" are all restaurants.
@@ -393,6 +396,7 @@ enum CloudAIParser {
         "date": YYYY-MM-DD. Indian dates are DD/MM/YYYY (day first). null if missing.
         "time": HH:MM (24h). null if missing.
         "payment_mode": Cash/Card/UPI/etc. null if not visible.
+        "card_last4": last 4 digits of the card number if visible (e.g. "9068" from ************9068 or ****9068 or XXXX-5678). Also check CARD NO / A/C NO fields. ONLY the 4 digits. null if not visible.
         """
     }
 
@@ -523,7 +527,7 @@ enum CloudAIParser {
         You are a JSON-only receipt parser. You MUST respond with ONLY a single valid JSON object. \
         No explanations, no markdown, no code fences, no extra text before or after the JSON.
 
-        Schema: {"amount":number,"merchant":string|null,"date":"YYYY-MM-DD"|null,"time":"HH:MM"|null,"category":string|null,"payment_mode":string|null,"items":[{"name":string,"price":number}]}
+        Schema: {"amount":number,"merchant":string|null,"date":"YYYY-MM-DD"|null,"time":"HH:MM"|null,"category":string|null,"payment_mode":string|null,"card_last4":string|null,"items":[{"name":string,"price":number}]}
 
         You are TULA's senior receipt parser. Your output goes DIRECTLY \
         into the user's expense database with no review. Wrong values \
@@ -537,7 +541,13 @@ enum CloudAIParser {
           value, printed verbatim on the receipt. NEVER sum two values \
           to derive it.
 
-        - **merchant**: business / place name. Title-cased. \
+        - **merchant**: the BUSINESS / SHOP where the purchase was made. Title-cased. \
+          **CRITICAL for POS terminal receipts** (Pine Labs, Paytm POS, \
+          Worldline, Ingenico, BharatPe): the bank name/logo at the TOP \
+          (HDFC Bank, ICICI, SBI, Axis, IndusInd, etc.) is the ACQUIRING \
+          BANK that processes the card transaction — it is NOT the merchant. \
+          The actual merchant name is printed BELOW the bank name (e.g. \
+          "S N AUTO GROUND FLOOR…" or "APOLLO PHARMACY…"). Extract THAT. \
           For delivery apps (Swiggy/Zomato/Blinkit), use the RESTAURANT name, \
           not the app. If NO clear business name appears, INFER a GENERIC \
           PLACE TYPE from the items: "Restaurant", "Pharmacy", "Grocery Store", etc.
@@ -560,7 +570,16 @@ enum CloudAIParser {
           null if no tax visible.
 
         - **payment_mode**: how the customer paid — "Cash", "Card", "UPI", \
-          etc. null if not visible on the receipt.
+          etc. Include the bank/card brand name when visible (e.g. \
+          "IndusInd Credit Card", "HDFC Debit Card", "Visa"). \
+          null if not visible on the receipt.
+
+        - **card_last4**: the last 4 digits of the card/account number \
+          when visible on the receipt. Common masked formats: \
+          ************9068, ****1234, XXXX-XXXX-XXXX-5678, \
+          "ending 1234", "last 4: 5678". Also check near labels like \
+          "CARD NO", "A/C NO", "PAN". Return ONLY the 4 digits as a \
+          string (e.g. "9068"). null if no card number is visible.
 
         - **category**: pick ONE from the list below. Decide by WHAT WAS \
           PURCHASED, not the business type. Meals/food/dishes/drinks → "Food". \
@@ -602,6 +621,9 @@ enum CloudAIParser {
         let time = json["time"] as? String
         let category = json["category"] as? String
         let paymentMode = json["payment_mode"] as? String
+        let rawCardLast4 = (json["card_last4"] as? String)?
+            .filter(\.isNumber)
+        let cardLast4 = rawCardLast4.flatMap { $0.count >= 4 ? String($0.suffix(4)) : nil }
 
         let discount = flexDouble(json["discount"])
         let tax = flexDouble(json["tax"])
@@ -629,6 +651,7 @@ enum CloudAIParser {
             time: time,
             category: category,
             paymentMode: paymentMode,
+            cardLast4: cardLast4,
             items: items,
             discount: discount,
             tax: tax
@@ -690,6 +713,9 @@ enum CloudAIParser {
             paymentMode = nil
         }
 
+        // cardLast4 passes through from the initial decode
+        let cardLast4 = result.cardLast4
+
         return ReceiptSmartParseResult(
             amount: amount,
             merchant: merchant,
@@ -697,6 +723,7 @@ enum CloudAIParser {
             time: time,
             category: category,
             paymentMode: paymentMode,
+            cardLast4: cardLast4,
             items: items,
             discount: result.discount,
             tax: result.tax
@@ -754,11 +781,12 @@ enum CloudAIParser {
         "type": "OBJECT",
         "properties": [
             "amount": ["type": "NUMBER", "description": "Grand total amount paid"],
-            "merchant": ["type": "STRING", "description": "Business or store name from the receipt"],
+            "merchant": ["type": "STRING", "description": "Business or store name. For POS receipts: the shop name BELOW the bank logo, NOT the bank name itself."],
             "date": ["type": "STRING", "description": "Date in YYYY-MM-DD format", "nullable": true],
             "time": ["type": "STRING", "description": "Time in HH:MM (24h) format from the receipt", "nullable": true],
             "category": ["type": "STRING", "description": "Expense category from the provided list"],
-            "payment_mode": ["type": "STRING", "description": "Payment method: Cash, Card, UPI, etc.", "nullable": true],
+            "payment_mode": ["type": "STRING", "description": "Payment method: Cash, Card, UPI, etc. On POS receipts include CARD TYPE (Visa/Master/RuPay) and APP label (e.g. 'Visa Credit').", "nullable": true],
+            "card_last4": ["type": "STRING", "description": "Last 4 digits of the card number (e.g. '9068' from ************9068). Look for masked card numbers, CARD NO fields. Only the 4 digits.", "nullable": true],
             "discount": ["type": "NUMBER", "description": "Total discount amount (positive number)", "nullable": true],
             "tax": ["type": "NUMBER", "description": "Total tax amount (GST/CGST/SGST/VAT/service charge combined)", "nullable": true],
             "items": [

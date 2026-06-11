@@ -14,9 +14,12 @@ struct BackupRestoreView: View {
     @State private var passphrase: String = ""
     @State private var confirmPassphrase: String = ""
 
-    @State private var exportData: Data?
-    @State private var showingShareSheet = false
+    @State private var isExporting = false
+    @State private var includeAttachments = true
+    @State private var exportShareItem: ExportShareItem?
     @State private var exportError: String?
+
+    @State private var isRestoring = false
 
     @State private var showingImportPicker = false
     /// Raw bytes of the picked backup file. We read these *inside* the
@@ -52,10 +55,26 @@ struct BackupRestoreView: View {
                     Button("Done") { dismiss() }
                 }
             }
-            .sheet(isPresented: $showingShareSheet) {
-                if let data = exportData {
-                    ShareSheetView(data: data)
+            .disabled(isExporting || isRestoring)
+            .overlay {
+                if isExporting || isRestoring {
+                    ZStack {
+                        Color(.systemBackground).opacity(0.6)
+                            .ignoresSafeArea()
+                        VStack(spacing: 12) {
+                            ProgressView()
+                                .controlSize(.large)
+                            Text(isExporting ? "Creating backup…" : "Restoring…")
+                                .font(.subheadline.weight(.medium))
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(24)
+                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    }
                 }
+            }
+            .sheet(item: $exportShareItem) { item in
+                ShareSheetView(data: item.data)
             }
             .fileImporter(
                 isPresented: $showingImportPicker,
@@ -110,6 +129,15 @@ struct BackupRestoreView: View {
                 .foregroundStyle(.secondary)
             }
 
+            Toggle(isOn: $includeAttachments) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Include receipt photos")
+                    Text("Larger file size when enabled")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
             Button {
                 runExport()
             } label: {
@@ -120,7 +148,7 @@ struct BackupRestoreView: View {
                 .frame(maxWidth: .infinity)
                 .foregroundStyle(canExport ? Color.tulaBrandFallback : .secondary)
             }
-            .disabled(!canExport)
+            .disabled(!canExport || isExporting)
 
             if let error = exportError {
                 Text(error)
@@ -158,15 +186,20 @@ struct BackupRestoreView: View {
     }
 
     private func runExport() {
-        do {
-            let data = try BackupManager.exportBackup(from: context, passphrase: passphrase)
-            exportData = data
-            exportError = nil
-            Haptics.success()
-            showingShareSheet = true
-        } catch {
-            exportError = error.localizedDescription
-            Haptics.error()
+        isExporting = true
+        Task {
+            // Yield so SwiftUI renders the loading overlay before blocking work.
+            await Task.yield()
+            do {
+                let data = try BackupManager.exportBackup(from: context, passphrase: passphrase, includeAttachments: includeAttachments)
+                exportError = nil
+                Haptics.success()
+                exportShareItem = ExportShareItem(data: data)
+            } catch {
+                exportError = error.localizedDescription
+                Haptics.error()
+            }
+            isExporting = false
         }
     }
 
@@ -226,19 +259,36 @@ struct BackupRestoreView: View {
             restoreError = "Backup file is missing — try selecting it again."
             return
         }
-        do {
-            try BackupManager.importBackup(data, into: context, passphrase: restorePassphrase)
-            Haptics.success()
-            restoreSuccess = true
-        } catch let error as BackupError {
-            restoreError = error.errorDescription
-            Haptics.error()
-        } catch {
-            restoreError = error.localizedDescription
-            Haptics.error()
-        }
+        isRestoring = true
+        let pw = restorePassphrase
         restorePassphrase = ""
+        Task {
+            // Yield so SwiftUI renders the loading overlay before blocking work.
+            await Task.yield()
+            do {
+                try BackupManager.importBackup(data, into: context, passphrase: pw)
+                Haptics.success()
+                restoreSuccess = true
+            } catch let error as BackupError {
+                restoreError = error.errorDescription
+                Haptics.error()
+            } catch {
+                restoreError = error.localizedDescription
+                Haptics.error()
+            }
+            isRestoring = false
+        }
     }
+}
+
+// MARK: - Export Share Item
+
+/// Identifiable wrapper so `.sheet(item:)` can tie the share sheet's
+/// lifecycle to the data's existence — no race between a Bool flag
+/// and the Data arriving.
+struct ExportShareItem: Identifiable {
+    let id = UUID()
+    let data: Data
 }
 
 // MARK: - Share Sheet

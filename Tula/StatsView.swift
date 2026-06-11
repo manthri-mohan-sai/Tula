@@ -50,6 +50,13 @@ struct StatsView: View {
     // unfiltered or are informational.
     @State private var navPath = NavigationPath()
 
+    /// Last chart point the user inspected — persists after finger lift so
+    /// the user can tap the drill-down pill below the chart.
+    @State private var pinnedChartDate: Date?
+
+    /// Drives the staggered fill animation for category proportion bars.
+    @State private var categoryBarsAppeared: Bool = false
+
     // MARK: - Period Math
 
     /// Returns the date range for the current period at the current offset.
@@ -218,6 +225,52 @@ struct StatsView: View {
 
     private var hasAnySpend: Bool { totalThisPeriod > 0 }
 
+    /// Single most interesting pattern from the data — shown as a pill
+    /// between the insight grid and the chart. Returns nil when nothing
+    /// noteworthy is detected (avoids a "meh" callout).
+    private var insightCallout: String? {
+        guard hasAnySpend else { return nil }
+
+        // 1. No-spend streak (day-level periods only, past days only)
+        if period != .sixMonths {
+            let today = Calendar.current.startOfDay(for: .now)
+            let cutoff = Calendar.current.date(byAdding: .day, value: 1, to: today) ?? today
+            let zeroCount = chartData.filter { $0.total == 0 && $0.label < cutoff }.count
+            let periodWord = period == .week ? "week" : "month"
+            if zeroCount >= 3 {
+                return "\(zeroCount) no-spend days this \(periodWord)"
+            }
+        }
+
+        // 2. Weekend vs weekday ratio
+        if !weekdayData.isEmpty {
+            let weekendIDs: Set<Int> = [1, 7]  // Sun=1, Sat=7
+            let weekendTotal = weekdayData.filter { weekendIDs.contains($0.weekday) }.reduce(0.0) { $0 + $1.total }
+            let weekdayTotal = weekdayData.filter { !weekendIDs.contains($0.weekday) }.reduce(0.0) { $0 + $1.total }
+            if weekdayTotal > 0 {
+                let ratio = (weekendTotal / 2) / (weekdayTotal / 5)
+                if ratio >= 1.8 {
+                    return "Weekends cost \(String(format: "%.1f", ratio))x more per day"
+                } else if ratio <= 0.5 {
+                    return "Weekdays cost \(String(format: "%.1f", 1 / ratio))x more per day"
+                }
+            }
+        }
+
+        // 3. Spending pace vs previous period
+        if let trend = trendVsPrevious, isCurrentPeriod {
+            let pct = Int(abs(trend * 100).rounded())
+            let periodWord = period == .week ? "week" : "month"
+            if trend > 0.15 {
+                return "Spending \(pct)% faster than last \(periodWord)"
+            } else if trend < -0.15 {
+                return "\(pct)% under last \(periodWord)'s pace"
+            }
+        }
+
+        return nil
+    }
+
     // MARK: - Body
 
     var body: some View {
@@ -228,6 +281,7 @@ struct StatsView: View {
                     heroCard
                     if hasAnySpend {
                         insightGrid
+                        insightCalloutPill
                         chartCard
                         if !weekdayData.isEmpty { weekdayChartCard }
                         if !categoryBreakdown.isEmpty { categoryBreakdownCard }
@@ -240,7 +294,18 @@ struct StatsView: View {
                 .padding(.top, Spacing.md)
                 .padding(.bottom, Spacing.lg)
             }
-            .background(Color(uiColor: .systemGroupedBackground))
+            .background {
+                VStack(spacing: 0) {
+                    LinearGradient(
+                        colors: [Color.tulaBrandFallback.opacity(0.12), Color.tulaBrandFallback.opacity(0.05), Color.tulaBackground],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                    .frame(height: 400)
+                    Color.tulaBackground
+                }
+                .ignoresSafeArea()
+            }
             .navigationTitle("Stats")
             // Stats is a data-dense screen — the large-title bar (iOS 26
             // makes this ~100pt tall) eats real estate the period picker
@@ -255,6 +320,26 @@ struct StatsView: View {
                 Haptics.selection()
                 withAnimation(AppAnimation.gentle) {
                     periodOffset = 0
+                    pinnedChartDate = nil
+                    categoryBarsAppeared = false
+                }
+            }
+            .onChange(of: periodOffset) { _, _ in
+                // Reset chart/category state whenever the period window
+                // moves — keeps stale data from lingering across windows.
+                // Wrapped in withAnimation so removals are smooth.
+                withAnimation(AppAnimation.snappy) {
+                    pinnedChartDate = nil
+                }
+                categoryBarsAppeared = false
+            }
+            .onChange(of: chartSelectedDate) { old, new in
+                // When the user lifts their finger, persist the last
+                // selected point so the drill-down pill stays visible.
+                if new == nil, let old {
+                    withAnimation(AppAnimation.snappy) {
+                        pinnedChartDate = old
+                    }
                 }
             }
         }
@@ -323,6 +408,31 @@ struct StatsView: View {
                         endPoint: .bottomTrailing
                     )
                 )
+        )
+        .contentShape(Rectangle())
+        .gesture(
+            DragGesture(minimumDistance: 40)
+                .onEnded { value in
+                    let h = value.translation.width
+                    let v = value.translation.height
+                    guard abs(h) > abs(v) * 1.5 else { return }
+                    if h < 0 {
+                        guard !isCurrentPeriod else { return }
+                        Haptics.tap()
+                        withAnimation(AppAnimation.gentle) {
+                            periodOffset += 1
+                            pinnedChartDate = nil
+                            categoryBarsAppeared = false
+                        }
+                    } else {
+                        Haptics.tap()
+                        withAnimation(AppAnimation.gentle) {
+                            periodOffset -= 1
+                            pinnedChartDate = nil
+                            categoryBarsAppeared = false
+                        }
+                    }
+                }
         )
     }
 
@@ -472,6 +582,9 @@ struct StatsView: View {
                             isInteractive: isInteractive)
             }
             .buttonStyle(InsightCardButtonStyle())
+            .contextMenu {
+                insightContextMenuItems(for: filter)
+            }
         } else {
             insightCard(label: label, value: value, detail: detail,
                         icon: icon, color: color,
@@ -496,6 +609,63 @@ struct StatsView: View {
         var f = ExpenseFilter.empty
         f.dateRange = .custom(start: start, end: end)
         return f
+    }
+
+    /// Filter for a chart data point — day for week/month, or full month
+    /// for 6M view.
+    private func chartDateFilter(for date: Date) -> ExpenseFilter {
+        let cal = Calendar.current
+        if period == .sixMonths {
+            let monthStart = cal.dateInterval(of: .month, for: date)?.start ?? date
+            let monthEnd = cal.date(byAdding: .month, value: 1, to: monthStart) ?? monthStart
+            var f = ExpenseFilter.empty
+            f.dateRange = .custom(start: monthStart, end: monthEnd)
+            return f
+        } else {
+            return biggestDayFilter(for: date)
+        }
+    }
+
+    /// Human-readable label for a chart data point date.
+    private func chartDateLabel(_ date: Date) -> String {
+        if period == .sixMonths {
+            return date.formatted(.dateTime.month(.abbreviated))
+        } else {
+            return date.formatted(.dateTime.weekday(.abbreviated).day().month(.abbreviated))
+        }
+    }
+
+    /// Top expenses matching a filter — used for context menu previews on
+    /// insight tiles so the user can peek before committing to drill-down.
+    private func topExpenses(for filter: ExpenseFilter, limit: Int = 3) -> [Expense] {
+        Array(
+            rangeExpenses
+                .filter { filter.matches($0) }
+                .sorted { $0.amount > $1.amount }
+                .prefix(limit)
+        )
+    }
+
+    /// Context menu content for insight tiles — shows top expenses as a
+    /// quick preview, plus a "View all" action.
+    @ViewBuilder
+    private func insightContextMenuItems(for filter: ExpenseFilter) -> some View {
+        let top = topExpenses(for: filter, limit: 3)
+        if !top.isEmpty {
+            Section {
+                ForEach(Array(top.enumerated()), id: \.offset) { _, expense in
+                    let title = expense.merchant ?? expense.note ?? "—"
+                    let amount = Currency.format(expense.amount, code: currencyCode)
+                    let icon = expense.category?.iconKey ?? "circle"
+                    Label("\(title) · \(amount)", systemImage: icon)
+                }
+            }
+        }
+        Button {
+            navPath.append(filter)
+        } label: {
+            Label("View all expenses", systemImage: "list.bullet")
+        }
     }
 
     /// Filter matching the currently-selected stats period — used as the
@@ -558,6 +728,30 @@ struct StatsView: View {
             RoundedRectangle(cornerRadius: CornerRadius.medium, style: .continuous)
                 .fill(Color.tulaCardSurface)
         )
+        .contentShape(Rectangle())
+    }
+
+    // MARK: - Insight Callout
+
+    @ViewBuilder
+    private var insightCalloutPill: some View {
+        if let insight = insightCallout {
+            HStack(spacing: 6) {
+                Image(systemName: "lightbulb.fill")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.yellow)
+                Text(insight)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, Spacing.md)
+            .padding(.vertical, Spacing.sm)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: CornerRadius.small, style: .continuous)
+                    .fill(Color.yellow.opacity(0.08))
+            )
+        }
     }
 
     // MARK: - Chart
@@ -567,10 +761,43 @@ struct StatsView: View {
             SectionHeader(title: chartSectionTitle)
 
             Card(padding: Spacing.md, cornerRadius: CornerRadius.medium) {
-                if period == .sixMonths {
-                    barChart
-                } else {
-                    areaChart
+                VStack(spacing: Spacing.sm) {
+                    if period == .sixMonths {
+                        barChart
+                    } else {
+                        areaChart
+                    }
+
+                    // Persistent drill-down pill — appears after the user
+                    // inspects a chart point and lifts their finger.
+                    if let pinned = pinnedChartDate,
+                       let point = nearestPoint(to: pinned) {
+                        Button {
+                            Haptics.tap()
+                            navPath.append(chartDateFilter(for: point.label))
+                            pinnedChartDate = nil
+                        } label: {
+                            HStack(spacing: 6) {
+                                Image(systemName: "arrow.right.circle.fill")
+                                    .font(.caption)
+                                Text("View \(chartDateLabel(point.label)) expenses")
+                                    .font(.caption.weight(.medium))
+                                Spacer()
+                                Text(Currency.format(point.total, code: currencyCode))
+                                    .font(.caption.weight(.semibold))
+                                    .monospacedDigit()
+                            }
+                            .foregroundStyle(Color.tulaBrandFallback)
+                            .padding(.horizontal, Spacing.sm)
+                            .padding(.vertical, Spacing.sm)
+                            .background(
+                                RoundedRectangle(cornerRadius: CornerRadius.small, style: .continuous)
+                                    .fill(Color.tulaBrandFallback.opacity(0.08))
+                            )
+                        }
+                        .buttonStyle(.plain)
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                    }
                 }
             }
         }
@@ -608,6 +835,18 @@ struct StatsView: View {
                 .foregroundStyle(Color.tulaBrandFallback)
                 .lineStyle(StrokeStyle(lineWidth: 2.5, lineCap: .round))
                 .interpolationMethod(.monotone)
+
+                // Zero-spend day marker — small dot on the axis so
+                // "no data" and "zero spend" are visually distinct.
+                // Only show for past/today — future days aren't "no-spend."
+                if item.total == 0 && item.label <= Date.now {
+                    PointMark(
+                        x: .value("Day", item.label, unit: .day),
+                        y: .value("Spent", 0)
+                    )
+                    .foregroundStyle(Color.gray.opacity(0.35))
+                    .symbolSize(18)
+                }
             }
 
             // Selection indicators — only when user is actively touching.
@@ -904,11 +1143,6 @@ struct StatsView: View {
 
             Card(padding: 0, cornerRadius: CornerRadius.medium) {
                 VStack(spacing: 0) {
-                    // Donut header — proportional slices for the top 5
-                    // categories, "Other" for the rest. Center shows the
-                    // period total so the donut both anchors the view
-                    // and answers the "how much in total" question
-                    // without needing to look elsewhere.
                     categoryDonutHeader
                         .padding(.horizontal, Spacing.md)
                         .padding(.top, Spacing.md)
@@ -923,7 +1157,7 @@ struct StatsView: View {
                             f.categoryIDs = [item.category.id]
                             navPath.append(f)
                         } label: {
-                            categoryRow(item.category, amount: item.amount)
+                            categoryRow(item.category, amount: item.amount, index: index)
                         }
                         .buttonStyle(InsightRowButtonStyle())
                         if index != categoryBreakdown.count - 1 {
@@ -931,6 +1165,12 @@ struct StatsView: View {
                         }
                     }
                 }
+            }
+        }
+        .onAppear {
+            guard !categoryBarsAppeared else { return }
+            withAnimation(.spring(response: 0.6, dampingFraction: 0.8).delay(0.15)) {
+                categoryBarsAppeared = true
             }
         }
     }
@@ -1021,16 +1261,22 @@ struct StatsView: View {
     /// Wider, more readable category row — the subtle bar runs as a background
     /// fill on the left fraction of the row, so the proportion is visible
     /// without sacrificing space for the data.
-    private func categoryRow(_ category: Category, amount: Double) -> some View {
+    private func categoryRow(_ category: Category, amount: Double, index: Int = 0) -> some View {
         let color = Color(hex: category.colorHex)
         let fraction = totalThisPeriod > 0 ? amount / totalThisPeriod : 0
         let percent = Int((fraction * 100).rounded())
+        let animatedFraction = categoryBarsAppeared ? fraction : 0
 
         return GeometryReader { geo in
             ZStack(alignment: .leading) {
-                Rectangle()
+                UnevenRoundedRectangle()
                     .fill(color.opacity(0.08))
-                    .frame(width: geo.size.width * fraction)
+                    .frame(width: geo.size.width * animatedFraction)
+                    .animation(
+                        .spring(response: 0.6, dampingFraction: 0.8)
+                            .delay(Double(index) * 0.06),
+                        value: categoryBarsAppeared
+                    )
 
                 HStack(spacing: Spacing.md) {
                     ZStack {
@@ -1064,6 +1310,7 @@ struct StatsView: View {
             }
         }
         .frame(height: 52)
+        .contentShape(Rectangle())
     }
 
     // MARK: - Top Merchants
@@ -1123,6 +1370,7 @@ struct StatsView: View {
         }
         .padding(.horizontal, Spacing.md)
         .padding(.vertical, Spacing.sm + 2)
+        .contentShape(Rectangle())
     }
 
     // MARK: - Empty State

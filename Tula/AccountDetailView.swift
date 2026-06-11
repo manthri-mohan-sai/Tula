@@ -50,7 +50,18 @@ struct AccountDetailView: View {
             .padding(.horizontal, Spacing.lg)
             .padding(.bottom, Spacing.lg)
         }
-        .background(Color(uiColor: .systemGroupedBackground))
+        .background {
+            VStack(spacing: 0) {
+                LinearGradient(
+                    colors: [color.opacity(0.14), color.opacity(0.05), Color.tulaBackground],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                .frame(height: 400)
+                Color.tulaBackground
+            }
+            .ignoresSafeArea()
+        }
         .navigationTitle(account.name)
         .navigationBarTitleDisplayMode(.inline)
         .sheet(isPresented: $showingPayBill) {

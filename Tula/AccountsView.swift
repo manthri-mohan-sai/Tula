@@ -210,6 +210,7 @@ struct AccountFormView: View {
     @State private var openingBalance: Double
     @State private var creditLimit: Double
     @State private var hasCreditLimit: Bool
+    @State private var last4Digits: String
 
     @State private var showingDeleteConfirm = false
 
@@ -223,6 +224,7 @@ struct AccountFormView: View {
             _openingBalance = State(initialValue: account.openingBalance)
             _creditLimit = State(initialValue: account.creditLimit ?? 0)
             _hasCreditLimit = State(initialValue: account.creditLimit != nil)
+            _last4Digits = State(initialValue: account.last4Digits ?? "")
         } else {
             _name = State(initialValue: "")
             _kind = State(initialValue: .bank)
@@ -231,6 +233,7 @@ struct AccountFormView: View {
             _openingBalance = State(initialValue: 0)
             _creditLimit = State(initialValue: 0)
             _hasCreditLimit = State(initialValue: false)
+            _last4Digits = State(initialValue: "")
         }
     }
 
@@ -247,6 +250,25 @@ struct AccountFormView: View {
                     TextField("e.g. HDFC Bank, ICICI CC", text: $name)
                         .textInputAutocapitalization(.words)
                         .autocorrectionDisabled()
+                }
+
+                if kind == .bank || kind == .creditCard {
+                    Section {
+                        TextField("e.g. 1234", text: $last4Digits)
+                            .keyboardType(.numberPad)
+                            .onChange(of: last4Digits) { _, newValue in
+                                let digits = newValue.filter(\.isNumber)
+                                if digits.count > 4 {
+                                    last4Digits = String(digits.prefix(4))
+                                } else if digits != newValue {
+                                    last4Digits = digits
+                                }
+                            }
+                    } header: {
+                        Text("Last 4 Digits")
+                    } footer: {
+                        Text("Optional. Helps auto-match this account when scanning receipts.")
+                    }
                 }
 
                 if !isEditing {
@@ -424,12 +446,15 @@ struct AccountFormView: View {
     }
 
     private func save() {
+        let trimmedDigits = last4Digits.trimmingCharacters(in: .whitespaces)
+        let finalLast4: String? = trimmedDigits.isEmpty ? nil : trimmedDigits
         if let existingAccount {
             existingAccount.name = name
             existingAccount.iconKey = iconKey
             existingAccount.colorHex = colorHex
             existingAccount.openingBalance = openingBalance
             existingAccount.creditLimit = hasCreditLimit && creditLimit > 0 ? creditLimit : nil
+            existingAccount.last4Digits = finalLast4
         } else {
             let account = Account(
                 name: name,

@@ -274,9 +274,11 @@ struct ExpenseItemsSheet: View {
                 .padding(.horizontal, 4)
             Image(uiImage: image)
                 .resizable()
-                .aspectRatio(contentMode: .fit)
-                .frame(maxHeight: 240)
+                .aspectRatio(contentMode: .fill)
+                .frame(maxWidth: .infinity)
+                .frame(height: 300)
                 .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                 .shadow(color: .black.opacity(0.12), radius: 8, y: 4)
         }
     }

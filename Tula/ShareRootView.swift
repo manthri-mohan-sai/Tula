@@ -26,6 +26,7 @@ struct ShareRootView: View {
             content
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        .tint(brand)
     }
 
     // MARK: - Header
@@ -376,7 +377,7 @@ struct ShareRootView: View {
     }
 
     private var categoryPickerRow: some View {
-        let (icon, color) = categoryIconAndColor(for: session.categoryName)
+        let icon = categoryIcon(for: session.categoryName)
         return Menu {
             ForEach(session.availableCategories, id: \.self) { name in
                 Button {
@@ -394,7 +395,7 @@ struct ShareRootView: View {
             HStack(spacing: 12) {
                 Image(systemName: icon)
                     .font(.subheadline)
-                    .foregroundStyle(color)
+                    .foregroundStyle(.secondary)
                     .frame(width: 24)
                 Text("Category")
                     .font(.subheadline)
@@ -412,6 +413,7 @@ struct ShareRootView: View {
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
         }
+        .tint(.primary)
     }
 
     private var accountPickerRow: some View {
@@ -450,35 +452,40 @@ struct ShareRootView: View {
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
         }
+        .tint(.primary)
     }
 
-    /// Map a category name to an icon + color for preview purposes.
+    /// Map a category name to an outlined icon for the row.
     /// Best-effort visual matching against common labels. The actual
     /// category object gets resolved against SwiftData at save time
     /// (see ShareSession.performSave), so this is purely cosmetic.
-    private func categoryIconAndColor(for name: String?) -> (icon: String, color: Color) {
-        guard let raw = name?.lowercased() else { return ("tag.fill", .secondary) }
+    private func categoryIcon(for name: String?) -> String {
+        guard let raw = name?.lowercased() else { return "tag" }
         switch true {
         case raw.contains("food") || raw.contains("dining") || raw.contains("restaurant"):
-            return ("fork.knife", .orange)
+            return "fork.knife"
         case raw.contains("grocer"):
-            return ("basket.fill", .green)
+            return "basket"
         case raw.contains("transport") || raw.contains("travel") || raw.contains("taxi"):
-            return ("car.fill", .blue)
+            return "car"
+        case raw.contains("fuel"):
+            return "fuelpump"
         case raw.contains("health") || raw.contains("medical") || raw.contains("pharma"):
-            return ("cross.case.fill", .red)
+            return "cross.case"
         case raw.contains("shop"):
-            return ("bag.fill", .purple)
+            return "bag"
         case raw.contains("entertain"):
-            return ("tv.fill", .pink)
+            return "tv"
         case raw.contains("util") || raw.contains("bill"):
-            return ("bolt.fill", .yellow)
-        case raw.contains("home"):
-            return ("house.fill", .teal)
+            return "bolt"
+        case raw.contains("home") || raw.contains("rent"):
+            return "house"
         case raw.contains("educ"):
-            return ("book.fill", .indigo)
+            return "book"
+        case raw.contains("personal") || raw.contains("care"):
+            return "scissors"
         default:
-            return ("tag.fill", brand)
+            return "tag"
         }
     }
 
@@ -525,14 +532,18 @@ struct ShareRootView: View {
     /// Receipt photo preview with paperclip caption confirming it'll
     /// be attached on save. Subtle shadow gives a polaroid-like feel.
     /// Capped at 140pt height so portrait receipts don't dominate.
+    @State private var showingReceiptFullscreen = false
+
     private func receiptPreview(_ image: UIImage) -> some View {
         VStack(spacing: 6) {
             Image(uiImage: image)
                 .resizable()
-                .aspectRatio(contentMode: .fit)
-                .frame(maxHeight: 140)
-                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                .shadow(color: .black.opacity(0.15), radius: 8, y: 4)
+                .aspectRatio(contentMode: .fill)
+                .frame(maxWidth: .infinity)
+                .frame(height: 160)
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .onTapGesture { showingReceiptFullscreen = true }
             HStack(spacing: 4) {
                 Image(systemName: "paperclip")
                     .font(.caption2.weight(.semibold))
@@ -540,6 +551,20 @@ struct ShareRootView: View {
                     .font(.caption.weight(.medium))
             }
             .foregroundStyle(.secondary)
+        }
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color(.secondarySystemBackground))
+        )
+        .fullScreenCover(isPresented: $showingReceiptFullscreen) {
+            ZStack {
+                Color.black.ignoresSafeArea()
+                Image(uiImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .ignoresSafeArea()
+            }
+            .onTapGesture { showingReceiptFullscreen = false }
         }
     }
 
@@ -572,6 +597,7 @@ struct ShareRootView: View {
                     .foregroundStyle(.secondary)
                     .padding(.vertical, 2)
             }
+            .buttonStyle(.plain)
         }
         .padding(.horizontal, 16)
         .padding(.bottom, 12)

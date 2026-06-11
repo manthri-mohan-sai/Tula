@@ -420,6 +420,7 @@ enum SmartExpenseParser {
                 time: nil,
                 category: fm.category,
                 paymentMode: nil,
+                cardLast4: nil,
                 items: fm.items.map { ReceiptLineItem(name: $0.name, price: $0.price) },
                 discount: nil,
                 tax: nil
@@ -1016,6 +1017,7 @@ struct ReceiptSmartParseResult: Codable, Sendable {
     let time: String?
     let category: String?
     let paymentMode: String?
+    let cardLast4: String?
     let items: [ReceiptLineItem]
     let discount: Double?
     let tax: Double?

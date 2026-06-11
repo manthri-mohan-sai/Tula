@@ -863,13 +863,14 @@ struct AddExpenseView: View {
             } label: {
                 Image(uiImage: image)
                     .resizable()
-                    .scaledToFit()
+                    .aspectRatio(contentMode: .fill)
                     .frame(maxWidth: .infinity)
-                    .frame(maxHeight: 240)
+                    .frame(height: 240)
+                    .clipShape(RoundedRectangle(cornerRadius: CornerRadius.medium, style: .continuous))
+                    .contentShape(Rectangle())
                     .background(Color.black.opacity(0.04))
             }
             .buttonStyle(.plain)
-            .contentShape(Rectangle())
 
             HStack(spacing: Spacing.sm) {
                 VStack(alignment: .leading, spacing: 2) {
@@ -1199,6 +1200,21 @@ struct AddExpenseView: View {
                         }
                     }
                 }
+
+                // ACCOUNT: try to match a card/bank name from the receipt
+                // to one of the user's accounts. Sources checked in order:
+                //   1. FM-extracted paymentMode ("IndusInd Credit Card")
+                //   2. Raw OCR text (catches "HDFC BANK" printed on receipt)
+                // Only override if the user hasn't manually picked yet.
+                if let matched = resolveAccountFromReceipt(
+                    paymentMode: smartResult?.paymentMode,
+                    cardLast4: smartResult?.cardLast4,
+                    rawText: isDirectImageMode ? nil : regexResult?.rawText
+                ) {
+                    withAnimation(.snappy(duration: 0.25)) {
+                        selectedAccount = matched
+                    }
+                }
             }
         }
     }
@@ -1227,6 +1243,49 @@ struct AddExpenseView: View {
             }
             .sorted { $0.name.count < $1.name.count }
         return overlaps.first
+    }
+
+    /// Match the receipt's card/bank info to one of the user's accounts.
+    /// Three strategies, tried in priority order:
+    /// 1. **Gemini card_last4** - AI extracted the last 4 digits directly.
+    ///    Exact match against account.last4Digits.
+    /// 2. **Name-word match on paymentMode** — distinctive words from the
+    ///    account name ("IndusInd", "HDFC") matched against the AI's
+    ///    paymentMode string (e.g. "IndusInd Credit Card").
+    /// 3. **Name-word match on raw OCR text** (FM mode only).
+    private func resolveAccountFromReceipt(paymentMode: String?, cardLast4: String?, rawText: String?) -> Account? {
+        // Strategy 1: direct last-4-digit match from Gemini.
+        if let digits = cardLast4, digits.count == 4 {
+            for account in activeAccounts {
+                guard let acctDigits = account.last4Digits, acctDigits.count == 4 else { continue }
+                if acctDigits == digits { return account }
+            }
+        }
+
+        // Strategy 2 & 3: name-word fuzzy match.
+        var haystack = ""
+        if let pm = paymentMode { haystack += " " + pm.lowercased() }
+        if let raw = rawText { haystack += " " + raw.lowercased() }
+        guard !haystack.isEmpty else { return nil }
+
+        let generic: Set<String> = [
+            "bank", "card", "credit", "debit", "cash", "wallet",
+            "account", "savings", "current", "the", "my", "upi"
+        ]
+        var bestAccount: Account?
+        var bestScore = 0
+        for account in activeAccounts {
+            let words = account.name
+                .lowercased()
+                .components(separatedBy: .alphanumerics.inverted)
+                .filter { $0.count >= 3 && !generic.contains($0) }
+            let score = words.filter { haystack.contains($0) }.count
+            if score > bestScore {
+                bestScore = score
+                bestAccount = account
+            }
+        }
+        return bestAccount
     }
 
     private func parseFMDate(_ string: String?, time timeString: String? = nil) -> Date? {

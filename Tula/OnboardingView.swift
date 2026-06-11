@@ -21,15 +21,16 @@ struct OnboardingView: View {
 
     /// Total number of swipeable pages. Drives the "Continue" vs
     /// "Get Started" label on the action button.
-    private let totalPages = 4
+    private let totalPages = 5
 
     var body: some View {
         VStack(spacing: 0) {
             TabView(selection: $page) {
                 introPage.tag(0)
-                featuresPage.tag(1)
-                permissionsPage.tag(2)
-                currencyPage.tag(3)
+                capturePage.tag(1)
+                insightsPage.tag(2)
+                permissionsPage.tag(3)
+                currencyPage.tag(4)
             }
             .tabViewStyle(.page(indexDisplayMode: .always))
             .indexViewStyle(.page(backgroundDisplayMode: .always))
@@ -71,14 +72,14 @@ struct OnboardingView: View {
         }
     }
 
-    private var featuresPage: some View {
+    private var capturePage: some View {
         VStack(spacing: Spacing.lg) {
             Spacer()
 
-            Text("Designed for speed")
+            Text("Capture in seconds")
                 .font(.title2.weight(.bold))
 
-            Text("Three ways to capture every expense in under five seconds.")
+            Text("Three fast ways to log every expense.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -98,8 +99,49 @@ struct OnboardingView: View {
                     detail: "Tap the mic or use Siri to add expenses hands-free."
                 )
                 featureRow(
-                    icon: "arrow.clockwise.circle.fill",
+                    icon: "doc.text.viewfinder",
+                    color: .indigo,
+                    title: "Receipt Scan",
+                    detail: "Snap a receipt — items, total, and merchant are extracted instantly."
+                )
+            }
+            .padding(.horizontal, Spacing.lg)
+            .padding(.top, Spacing.md)
+
+            Spacer()
+            Spacer()
+        }
+    }
+
+    private var insightsPage: some View {
+        VStack(spacing: Spacing.lg) {
+            Spacer()
+
+            Text("Know your money")
+                .font(.title2.weight(.bold))
+
+            Text("Insights that surface on their own — no digging required.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, Spacing.lg)
+
+            VStack(spacing: Spacing.md) {
+                featureRow(
+                    icon: "chart.xyaxis.line",
+                    color: .teal,
+                    title: "Smart Stats",
+                    detail: "Swipe through months, tap charts to drill down, and spot trends."
+                )
+                featureRow(
+                    icon: "circle.dotted.circle",
                     color: .orange,
+                    title: "Budget Rings",
+                    detail: "Set spending limits by category and watch your progress live."
+                )
+                featureRow(
+                    icon: "arrow.clockwise.circle.fill",
+                    color: .green,
                     title: "Recurring",
                     detail: "Rent, subscriptions, EMIs — auto-logged each month."
                 )

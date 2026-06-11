@@ -30,6 +30,10 @@ final class Account {
     /// to track "I have ₹X in my wallet right now"). Defaults to 0.
     var openingBalance: Double = 0
 
+    /// Optional last 4 digits of the card/account number.
+    /// Used by receipt scanning to auto-match payment method.
+    var last4Digits: String? = nil
+
     @Relationship(deleteRule: .cascade, inverse: \Expense.account)
     var expenses: [Expense] = []
 

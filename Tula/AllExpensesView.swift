@@ -126,6 +126,18 @@ struct AllExpensesView: View {
             }
         }
         .animation(.snappy(duration: 0.25), value: filter.hasAnyFilter)
+        .background {
+            VStack(spacing: 0) {
+                LinearGradient(
+                    colors: [Color.tulaBrandFallback.opacity(0.12), Color.tulaBrandFallback.opacity(0.05), Color.tulaBackground],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                .frame(height: 400)
+                Color.tulaBackground
+            }
+            .ignoresSafeArea()
+        }
         .navigationTitle("Activity")
         .tulaNavigationSubtitle(subtitleText)
         .navigationBarTitleDisplayMode(.inline)
@@ -256,6 +268,7 @@ struct AllExpensesView: View {
         }
         .listStyle(.insetGrouped)
         .listSectionSpacing(.compact)
+        .scrollContentBackground(.hidden)
         .scrollDismissesKeyboard(.immediately)
     }
 
