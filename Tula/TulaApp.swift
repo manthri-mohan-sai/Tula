@@ -1,6 +1,7 @@
 import SwiftUI
 import SwiftData
 import WidgetKit
+import AppIntents
 
 @main
 struct TulaApp: App {
@@ -17,6 +18,7 @@ struct TulaApp: App {
     /// holds an optional closure that, when set, routes OCR through
     /// VisionKit; when nil (share extension) it falls through to Vision.
     init() {
+        TulaShortcuts.updateAppShortcutParameters()
         ReceiptStorage.visionKitRecognizer = { image in
             await recognizeTextWithVisionKit(image)
         }
@@ -187,6 +189,8 @@ struct TulaApp: App {
                     upcomingRecurrings: buildUpcomingRecurrings(in: context)
                 )
                 NotificationManager.refreshDailyReminder(using: context)
+                // Tell Siri to re-index App Shortcuts (picks up new categories etc.)
+                TulaShortcuts.updateAppShortcutParameters()
             } else if newPhase == .background {
                 appDelegate.scheduleWidgetRefresh()
                 let ctx = ModelContext(sharedContainer)

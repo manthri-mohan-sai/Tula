@@ -299,9 +299,7 @@ struct ShowTodaySpendIntent: AppIntent {
 
 // MARK: - ShowMonthlySpendIntent
 
-/// A simpler intent that doesn't take parameters — just reports the user's
-/// current monthly spend. Useful from Siri ("How much have I spent this month?")
-/// and as a complication on the Lock Screen via Shortcuts widgets.
+/// Reports total monthly spend. Simple, no parameters.
 struct ShowMonthlySpendIntent: AppIntent {
     static var title: LocalizedStringResource = "Monthly Spend"
 
@@ -340,71 +338,19 @@ struct ShowMonthlySpendIntent: AppIntent {
     }
 }
 
-// MARK: - SpendingTopicEntity
+// MARK: - CheckSpendingIntent
 
-/// An `AppEntity` representing a spending topic (category, merchant, or keyword).
-/// Required because `AppShortcut` phrases only allow `AppEntity` / `AppEnum`
-/// parameter types for inline Siri interpolation (not plain `String`).
-struct SpendingTopicEntity: AppEntity {
-    var id: String
-
-    static var typeDisplayRepresentation: TypeDisplayRepresentation = "Spending Topic"
-
-    var displayRepresentation: DisplayRepresentation {
-        DisplayRepresentation(title: "\(id)")
-    }
-
-    static var defaultQuery = SpendingTopicQuery()
-}
-
-/// Provides dynamic suggestions from the user's actual categories, and also
-/// accepts arbitrary text so the user can search by merchant or item name.
-struct SpendingTopicQuery: EntityStringQuery {
-    func entities(for identifiers: [String]) async throws -> [SpendingTopicEntity] {
-        identifiers.map { SpendingTopicEntity(id: $0) }
-    }
-
-    func entities(matching string: String) async throws -> [SpendingTopicEntity] {
-        let categories = await fetchCategoryNames()
-        let query = string.lowercased()
-        var results = categories
-            .filter { $0.lowercased().contains(query) }
-            .map { SpendingTopicEntity(id: $0) }
-
-        // Always offer the raw search term so users can search by
-        // merchant or note text that isn't a category name.
-        if !results.contains(where: { $0.id.lowercased() == query }) {
-            results.insert(SpendingTopicEntity(id: string), at: 0)
-        }
-        return results
-    }
-
-    func suggestedEntities() async throws -> [SpendingTopicEntity] {
-        let categories = await fetchCategoryNames()
-        return categories.map { SpendingTopicEntity(id: $0) }
-    }
-
-    @MainActor
-    private func fetchCategoryNames() -> [String] {
-        guard let context = try? sharedModelContext() else { return [] }
-        let all = (try? context.fetch(FetchDescriptor<Category>())) ?? []
-        return all.filter { !$0.isArchived }.map(\.name)
-    }
-}
-
-// MARK: - QuerySpendingIntent
-
-/// Answers questions like "How much did I spend on shopping this month?"
-/// Searches across category names, merchant names, and expense notes.
-struct QuerySpendingIntent: AppIntent {
-    static var title: LocalizedStringResource = "Query Spending"
+/// Answers "How much did I spend on shopping/groceries/milk this month?"
+/// Separate intent from ShowMonthlySpendIntent to avoid Siri routing confusion.
+///
+/// Matches the topic against (in spirit-of-the-question order):
+/// categories, merchants, notes, and **account names** — so
+/// "How much did I spend on IndusInd card in Tula" works too.
+struct CheckSpendingIntent: AppIntent {
+    static var title: LocalizedStringResource = "Check Spending"
 
     static var description = IntentDescription(
-        """
-        Ask how much you spent on a specific category, merchant, or item \
-        this month. For example: "How much did I spend on groceries?" or \
-        "How much did I spend on Swiggy?"
-        """,
+        "Check how much you spent on a category, merchant, item, or account this month.",
         categoryName: "Insights"
     )
 
@@ -413,13 +359,13 @@ struct QuerySpendingIntent: AppIntent {
 
     @Parameter(
         title: "Topic",
-        description: "Category, merchant, or item to search for (e.g. shopping, groceries, milk, Swiggy).",
+        description: "What to check spending for.",
         requestValueDialog: IntentDialog("What do you want to check spending for?")
     )
-    var topic: SpendingTopicEntity
+    var topic: SpendingTopic
 
     static var parameterSummary: some ParameterSummary {
-        Summary("How much did I spend on \(\.$topic)")
+        Summary("Check spending for \(\.$topic)")
     }
 
     @MainActor
@@ -431,35 +377,27 @@ struct QuerySpendingIntent: AppIntent {
             return .result(dialog: IntentDialog("Couldn't calculate this month."))
         }
 
-        // Fetch all expenses this month.
         let descriptor = FetchDescriptor<Expense>(
             predicate: #Predicate { $0.date >= monthStart }
         )
         let expenses = (try? context.fetch(descriptor)) ?? []
 
-        let searchTerm = topic.id
-        let query = searchTerm.lowercased().trimmingCharacters(in: .whitespaces)
+        let query = topic.rawValue.lowercased()
 
-        // Guard: empty query would match everything via String.contains("").
-        guard !query.isEmpty else {
-            let month = Date.now.formatted(.dateTime.month(.wide))
-            return .result(dialog: IntentDialog("Please tell me what you'd like to check — for example, \"shopping\" or \"groceries\"."))
-        }
-
-        // Match against category name, merchant, or note.
-        // Require minimum 2 chars to avoid spurious single-letter matches.
         let matched = expenses.filter { expense in
-            if let catName = expense.category?.name.lowercased(),
-               catName.contains(query) || (query.count >= 3 && query.contains(catName)) {
-                return true
+            // Category: exact match (case-insensitive)
+            if let catName = expense.category?.name.lowercased(), !catName.isEmpty {
+                if catName == query || catName.contains(query) { return true }
             }
-            if let merchant = expense.merchant?.lowercased(),
-               merchant.contains(query) || (query.count >= 3 && query.contains(merchant)) {
-                return true
+            // Merchant: substring match
+            if let merchant = expense.merchant?.lowercased(), !merchant.isEmpty {
+                if merchant == query || merchant.contains(query) { return true }
             }
-            if let note = expense.note?.lowercased(),
-               note.contains(query) {
-                return true
+            // Note: word-level match (avoids false positives from substrings)
+            if let note = expense.note?.lowercased(), !note.isEmpty {
+                let words = note.split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+                    .map(String.init)
+                if words.contains(query) { return true }
             }
             return false
         }
@@ -469,15 +407,167 @@ struct QuerySpendingIntent: AppIntent {
         let code = UserDefaults.standard.string(forKey: "primaryCurrencyCode") ?? "INR"
         let totalFormatted = Currency.format(total, code: code)
         let month = Date.now.formatted(.dateTime.month(.wide))
+        let label = topic == .bills ? "Bills & Utilities" : topic.rawValue.capitalized
 
         if count == 0 {
-            return .result(dialog: IntentDialog("You haven't spent anything on \(searchTerm) in \(month)."))
+            return .result(dialog: IntentDialog("You haven't spent anything on \(label) in \(month)."))
         } else if count == 1 {
-            return .result(dialog: IntentDialog("You spent \(totalFormatted) on \(searchTerm) in \(month)."))
+            return .result(dialog: IntentDialog("You spent \(totalFormatted) on \(label) in \(month)."))
         } else {
-            return .result(dialog: IntentDialog("You spent \(totalFormatted) on \(searchTerm) in \(month) across \(count) transactions."))
+            return .result(dialog: IntentDialog("You spent \(totalFormatted) on \(label) in \(month) across \(count) transactions."))
         }
     }
+}
+
+// MARK: - ShowAccountSpendingIntent
+
+/// Reports this month's spending broken down by account/card.
+/// No parameters — Siri resolves it immediately without a picker.
+struct ShowAccountSpendingIntent: AppIntent {
+    static var title: LocalizedStringResource = "Account Spending"
+
+    static var description = IntentDescription(
+        "Show how much you've spent on each account or card this month.",
+        categoryName: "Insights"
+    )
+
+    static var openAppWhenRun: Bool = false
+    static var isDiscoverable: Bool = true
+
+    @MainActor
+    func perform() async throws -> some IntentResult & ProvidesDialog {
+        let context = try sharedModelContext()
+
+        let calendar = Calendar.current
+        guard let monthStart = calendar.dateInterval(of: .month, for: .now)?.start else {
+            return .result(dialog: IntentDialog("Couldn't calculate this month."))
+        }
+
+        let descriptor = FetchDescriptor<Expense>(
+            predicate: #Predicate { $0.date >= monthStart }
+        )
+        let expenses = (try? context.fetch(descriptor)) ?? []
+        let code = UserDefaults.standard.string(forKey: "primaryCurrencyCode") ?? "INR"
+        let month = Date.now.formatted(.dateTime.month(.wide))
+
+        guard !expenses.isEmpty else {
+            return .result(dialog: IntentDialog("No expenses logged in \(month) yet."))
+        }
+
+        // Group by account name
+        var byAccount: [(name: String, total: Double, count: Int)] = []
+        var grouped: [String: (total: Double, count: Int)] = [:]
+        for expense in expenses {
+            let name = expense.account?.name ?? "Unknown"
+            let existing = grouped[name] ?? (total: 0, count: 0)
+            grouped[name] = (total: existing.total + expense.amount, count: existing.count + 1)
+        }
+        byAccount = grouped.map { (name: $0.key, total: $0.value.total, count: $0.value.count) }
+            .sorted { $0.total > $1.total }
+
+        if byAccount.count == 1 {
+            let a = byAccount[0]
+            let formatted = Currency.format(a.total, code: code)
+            return .result(dialog: IntentDialog("In \(month), you spent \(formatted) on \(a.name) across \(a.count) transactions."))
+        }
+
+        // Multiple accounts — list top entries
+        let lines = byAccount.prefix(5).map { a in
+            "\(a.name): \(Currency.format(a.total, code: code))"
+        }
+        let summary = lines.joined(separator: ", ")
+        let total = Currency.format(expenses.reduce(0) { $0 + $1.amount }, code: code)
+        return .result(dialog: IntentDialog("In \(month) you spent \(total) total. \(summary)."))
+    }
+}
+
+// MARK: - ShowCardDuesIntent
+
+/// Reports outstanding dues on all credit cards.
+/// No parameters — Siri resolves it immediately without a picker.
+struct ShowCardDuesIntent: AppIntent {
+    static var title: LocalizedStringResource = "Card Dues"
+
+    static var description = IntentDescription(
+        "Show outstanding dues on your credit cards.",
+        categoryName: "Insights"
+    )
+
+    static var openAppWhenRun: Bool = false
+    static var isDiscoverable: Bool = true
+
+    @MainActor
+    func perform() async throws -> some IntentResult & ProvidesDialog {
+        let context = try sharedModelContext()
+
+        let accountDescriptor = FetchDescriptor<Account>(
+            predicate: #Predicate { $0.isArchived == false }
+        )
+        let accounts = (try? context.fetch(accountDescriptor)) ?? []
+        let creditCards = accounts.filter { $0.kind == .creditCard }
+        let code = UserDefaults.standard.string(forKey: "primaryCurrencyCode") ?? "INR"
+
+        guard !creditCards.isEmpty else {
+            return .result(dialog: IntentDialog("You don't have any credit cards set up in Tula."))
+        }
+
+        let lines = creditCards.map { card in
+            let due = card.derivedBalance
+            let dueFormatted = Currency.format(abs(due), code: code)
+            if due <= 0 {
+                return "\(card.name): no dues"
+            } else if let limit = card.creditLimit, limit > 0 {
+                let limitFormatted = Currency.format(limit, code: code)
+                return "\(card.name): \(dueFormatted) due of \(limitFormatted) limit"
+            } else {
+                return "\(card.name): \(dueFormatted) due"
+            }
+        }
+
+        if creditCards.count == 1 {
+            let msg = lines[0]
+            return .result(dialog: IntentDialog("\(msg)."))
+        }
+
+        let msg = lines.joined(separator: ". ")
+        return .result(dialog: IntentDialog("\(msg)."))
+    }
+}
+
+// MARK: - SpendingTopic (AppEnum)
+
+/// Compile-time enum of spending topics. AppEnum values are baked into the
+/// binary metadata — Siri indexes them without any runtime calls.
+/// Note: AppEntity with dynamic values does NOT work for Siri voice on
+/// this device — only static AppEnum cases are resolved inline.
+enum SpendingTopic: String, AppEnum {
+    case food, groceries, transport, shopping, entertainment
+    case bills, rent, health, education, travel
+    case personalCare = "personal care"
+    case milk, coffee, fuel, dining, snacks, subscriptions, clothing
+
+    static var typeDisplayRepresentation: TypeDisplayRepresentation = "Category"
+
+    static var caseDisplayRepresentations: [SpendingTopic: DisplayRepresentation] = [
+        .food: "Food",
+        .groceries: "Groceries",
+        .transport: "Transport",
+        .shopping: "Shopping",
+        .entertainment: "Entertainment",
+        .bills: "Bills & Utilities",
+        .rent: "Rent",
+        .health: "Health",
+        .education: "Education",
+        .travel: "Travel",
+        .personalCare: "Personal Care",
+        .milk: "Milk",
+        .coffee: "Coffee",
+        .fuel: "Fuel",
+        .dining: "Dining",
+        .snacks: "Snacks",
+        .subscriptions: "Subscriptions",
+        .clothing: "Clothing",
+    ]
 }
 
 // MARK: - Shared Helpers
@@ -538,7 +628,16 @@ enum IntentError: Error, CustomLocalizedStringResourceConvertible {
 ///
 /// Note: Apple requires `\(.applicationName)` somewhere in every phrase —
 /// without it the phrase won't be recognized. The app's display name from
-/// Info.plist becomes the substitution.
+/// Info.plist becomes the substitution. Users must therefore say "in Tula"
+/// (or similar) as part of the question; bare "how much did I spend on milk"
+/// can never route here.
+///
+/// **IMPORTANT — call `TulaShortcuts.updateAppShortcutParameters()`:**
+/// 1. Once on app launch (e.g. in `TulaApp.init` or first `onAppear`), and
+/// 2. After any create/rename/archive of a Category or Account.
+/// Siri caches `\(\.$topic)` values from `suggestedEntities()` at index
+/// time; without this call, new categories/accounts won't be recognized
+/// in spoken phrases until iOS reindexes on its own schedule.
 struct TulaShortcuts: AppShortcutsProvider {
 
     /// Bright accent for the Shortcuts app tile.
@@ -548,42 +647,14 @@ struct TulaShortcuts: AppShortcutsProvider {
         AppShortcut(
             intent: LogExpenseIntent(),
             phrases: [
-                // Direct "log" verb
                 "Log expense in \(.applicationName)",
-                "Log expense to \(.applicationName)",
-                "Log in \(.applicationName)",
-                "Log a expense in \(.applicationName)",
-                "Log a spend in \(.applicationName)",
-                "\(.applicationName) log",
-                "\(.applicationName) log expense",
-                "\(.applicationName) log a expense",
-                // "Add" verb
-                "Add expense to \(.applicationName)",
                 "Add expense in \(.applicationName)",
-                "Add to \(.applicationName)",
-                "Add a expense in \(.applicationName)",
-                "\(.applicationName) add",
-                "\(.applicationName) add expense",
-                // "Spent / spend" verb (very natural in Indian English)
                 "Spent in \(.applicationName)",
-                "I spent in \(.applicationName)",
-                "Spend in \(.applicationName)",
-                "Spend on \(.applicationName)",
+                "\(.applicationName) log expense",
+                "\(.applicationName) add expense",
                 "\(.applicationName) spent",
-                "\(.applicationName) I spent",
-                // "Track" verb
                 "Track expense in \(.applicationName)",
-                "Track spend in \(.applicationName)",
-                "Track a spend in \(.applicationName)",
-                "\(.applicationName) track",
-                "\(.applicationName) track expense",
-                // "Note / record / save"
-                "Note expense in \(.applicationName)",
                 "Record expense in \(.applicationName)",
-                "Save expense in \(.applicationName)",
-                "\(.applicationName) note",
-                "\(.applicationName) record",
-                // Bare app + intent
                 "\(.applicationName) expense",
                 "\(.applicationName) new expense"
             ],
@@ -595,11 +666,8 @@ struct TulaShortcuts: AppShortcutsProvider {
             intent: ShowTodaySpendIntent(),
             phrases: [
                 "How much have I spent today in \(.applicationName)",
-                "How much I spent today in \(.applicationName)",
                 "Show today's spend in \(.applicationName)",
-                "Show me today in \(.applicationName)",
                 "\(.applicationName) today",
-                "\(.applicationName) today's spend",
                 "\(.applicationName) how much today",
                 "What did I spend today in \(.applicationName)"
             ],
@@ -613,37 +681,45 @@ struct TulaShortcuts: AppShortcutsProvider {
                 "How much have I spent this month in \(.applicationName)",
                 "How much did I spend this month in \(.applicationName)",
                 "Show my monthly spend in \(.applicationName)",
-                "Show this month in \(.applicationName)",
-                "\(.applicationName) monthly total",
                 "\(.applicationName) monthly spend",
-                "\(.applicationName) this month",
-                "Total spend this month in \(.applicationName)"
+                "\(.applicationName) this month"
             ],
             shortTitle: "Monthly Spend",
             systemImageName: "chart.bar.fill"
         )
 
         AppShortcut(
-            intent: QuerySpendingIntent(),
+            intent: CheckSpendingIntent(),
             phrases: [
-                // Natural "how much" queries
                 "How much did I spend on \(\.$topic) in \(.applicationName)",
-                "How much I spent on \(\.$topic) in \(.applicationName)",
-                "How much have I spent on \(\.$topic) in \(.applicationName)",
-                // App-name-first (feels like calling the app)
-                "\(.applicationName) how much did I spend on \(\.$topic)",
-                "\(.applicationName) how much on \(\.$topic)",
-                "\(.applicationName) spending on \(\.$topic)",
-                "\(.applicationName) \(\.$topic) spending",
-                // "Show / check" verbs
-                "Show \(\.$topic) spending in \(.applicationName)",
-                "Check \(\.$topic) spend in \(.applicationName)",
-                // "What" queries
-                "What did I spend on \(\.$topic) in \(.applicationName)",
+                "Check \(\.$topic) spending in \(.applicationName)",
                 "\(\.$topic) spending in \(.applicationName)"
             ],
-            shortTitle: "Query Spending",
+            shortTitle: "Check Spending",
             systemImageName: "magnifyingglass"
         )
+
+        AppShortcut(
+            intent: ShowAccountSpendingIntent(),
+            phrases: [
+                "Show card spending in \(.applicationName)",
+                "Spending by card in \(.applicationName)",
+                "\(.applicationName) account breakdown"
+            ],
+            shortTitle: "Card Spending",
+            systemImageName: "creditcard.fill"
+        )
+
+        AppShortcut(
+            intent: ShowCardDuesIntent(),
+            phrases: [
+                "What's due on my cards in \(.applicationName)",
+                "Card dues in \(.applicationName)",
+                "\(.applicationName) credit card dues"
+            ],
+            shortTitle: "Card Dues",
+            systemImageName: "indianrupeesign.arrow.circlepath"
+        )
+
     }
 }
