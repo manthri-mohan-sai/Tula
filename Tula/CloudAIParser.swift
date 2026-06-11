@@ -312,6 +312,7 @@ enum CloudAIParser {
                                    contextBlock: String = "",
                                    config: CloudAIConfig? = nil,
                                    skipResize: Bool = false) async -> ReceiptSmartParseResult? {
+        let parseStart = Date()
         let cfg = config ?? CloudAIConfig.load()
         guard !cfg.apiKey.isEmpty else {
             aiLog.error("parseReceiptImage: API key is empty")
@@ -324,6 +325,7 @@ enum CloudAIParser {
         // (ShareSession.prepareImageForGemini). Skip the re-encode to prevent
         // JPEG generation loss on small receipt digits.
         // skipResize = false (default) keeps the existing main-app camera path.
+        let prepStart = Date()
         let finalImageData: Data
         if skipResize {
             finalImageData = imageData
@@ -333,11 +335,15 @@ enum CloudAIParser {
             let resizedData = Self.resizeImageData(imageData, maxDimension: 1280, quality: 0.82)
             finalImageData  = resizedData ?? imageData
         }
+        let prepMs = Int(Date().timeIntervalSince(prepStart) * 1000)
 
-        aiLog.info("parseReceiptImage: image \(imageData.count / 1024)KB → \(finalImageData.count / 1024)KB (skipResize=\(skipResize))")
+        aiLog.info("parseReceiptImage: image \(imageData.count / 1024)KB → \(finalImageData.count / 1024)KB (skipResize=\(skipResize)), prep=\(prepMs)ms")
 
+        let b64Start = Date()
         let base64Image = finalImageData.base64EncodedString()
         let mimeType = finalImageData.detectMimeType()
+        let b64Ms = Int(Date().timeIntervalSince(b64Start) * 1000)
+        aiLog.info("parseReceiptImage: base64 built, time=\(b64Ms)ms")
 
         let systemPrompt: String
         if isGeminiConfig(cfg) {
@@ -353,19 +359,28 @@ enum CloudAIParser {
 
         await MainActor.run { lastParseError = nil }
 
+        let requestStart = Date()
         guard let json = await callImageChatCompletions(
             config: cfg,
             systemPrompt: systemPrompt,
             imageBase64: base64Image,
             mimeType: mimeType
         ) else {
+            let totalMs = Int(Date().timeIntervalSince(parseStart) * 1000)
+            aiLog.error("parseReceiptImage: failed, total=\(totalMs)ms")
             if await MainActor.run(body: { lastParseError }) == nil {
                 await MainActor.run { lastParseError = "Couldn't read the receipt. Try a clearer photo or enter details manually." }
             }
             return nil
         }
+        let requestMs = Int(Date().timeIntervalSince(requestStart) * 1000)
+        aiLog.info("parseReceiptImage: request+response=\(requestMs)ms")
 
+        let decodeStart = Date()
         let result = validateReceiptResult(decodeReceiptJSON(json))
+        let decodeMs = Int(Date().timeIntervalSince(decodeStart) * 1000)
+        let totalMs = Int(Date().timeIntervalSince(parseStart) * 1000)
+        aiLog.info("parseReceiptImage: decode+validate=\(decodeMs)ms, total=\(totalMs)ms, amount=\(result.amount, privacy: .public), merchantLen=\((result.merchant ?? "").count)")
         if result.amount <= 0 {
             await MainActor.run { lastParseError = "Couldn't find a total on this receipt. Please enter the amount manually." }
         }
@@ -775,6 +790,15 @@ enum CloudAIParser {
         "gemini-3.1-flash-lite",
     ]
 
+    // Speed-first chain for receipt image parsing.
+    private static let geminiImageSpeedModels = [
+        "gemini-2.5-flash-lite",
+        "gemini-2.5-flash",
+        "gemini-3.1-flash-lite",
+    ]
+
+    private static let imageModelTryCap = 2
+
     // MARK: - JSON Schemas for Gemini Native API
 
     private static let expenseSchema: [String: Any] = [
@@ -934,6 +958,7 @@ enum CloudAIParser {
         }
 
         request.httpBody = jsonData
+        let requestStart = Date()
 
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
@@ -941,6 +966,8 @@ enum CloudAIParser {
                 await MainActor.run { lastParseError = "No response from server. Check your internet connection." }
                 return nil
             }
+            let elapsedMs = Int(Date().timeIntervalSince(requestStart) * 1000)
+            aiLog.info("[ImageChat/OpenAI] status=\(httpResponse.statusCode), elapsed=\(elapsedMs)ms, body=\(jsonData.count / 1024)KB")
             guard httpResponse.statusCode == 200 else {
                 let errorBody = String(data: data, encoding: .utf8) ?? ""
                 aiLog.error("[ImageChat] HTTP \(httpResponse.statusCode): \(errorBody.prefix(300))")
@@ -1030,12 +1057,25 @@ enum CloudAIParser {
         label: String
     ) async -> [String: Any]? {
         let primaryModel = sanitizedGeminiModel(config.model)
-        var modelsToTry = [primaryModel]
-        for model in geminiFallbackModels where model != primaryModel {
-            modelsToTry.append(model)
+        let speedFirst = label == "Image"
+
+        var modelsToTry: [String]
+        if speedFirst {
+            var ordered = geminiImageSpeedModels
+            if !ordered.contains(primaryModel) {
+                ordered.append(primaryModel)
+            }
+            modelsToTry = Array(ordered.prefix(imageModelTryCap))
+        } else {
+            var ordered = [primaryModel]
+            for model in geminiFallbackModels where model != primaryModel {
+                ordered.append(model)
+            }
+            modelsToTry = ordered
         }
 
         var lastErrorMessage = "Couldn't read the receipt. Try a clearer photo or enter details manually."
+        aiLog.info("[\(label)] model order: \(modelsToTry.joined(separator: ", "))")
         for (index, model) in modelsToTry.enumerated() {
             let urlString = "https://generativelanguage.googleapis.com/v1beta/models/\(model):generateContent?key=\(config.apiKey)"
             guard let url = URL(string: urlString) else { continue }
@@ -1079,6 +1119,7 @@ enum CloudAIParser {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.timeoutInterval = 60
         request.httpBody = jsonData
+        let requestStart = Date()
 
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
@@ -1087,7 +1128,8 @@ enum CloudAIParser {
                 return .failed("No response from server. Check your internet connection.")
             }
 
-            aiLog.info("[\(label)] HTTP \(httpResponse.statusCode), responseSize=\(data.count)")
+            let elapsedMs = Int(Date().timeIntervalSince(requestStart) * 1000)
+            aiLog.info("[\(label)] HTTP \(httpResponse.statusCode), responseSize=\(data.count), elapsed=\(elapsedMs)ms")
 
             if httpResponse.statusCode == 429 || httpResponse.statusCode == 503 {
                 let errorBody = String(data: data, encoding: .utf8) ?? ""
