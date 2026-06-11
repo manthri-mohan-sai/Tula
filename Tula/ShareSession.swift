@@ -176,6 +176,18 @@ final class ShareSession: ObservableObject {
             // bitmap of 48MP+ photos which would exceed memory limits.
             let downscaled: UIImage? = autoreleasepool {
                 if let img = item as? UIImage {
+                    // Some apps deliver a pre-decoded UIImage directly.
+                    // UIGraphicsImageRenderer (used by downscaleForOCR) needs
+                    // BOTH the full-res bitmap and the scaled result in memory
+                    // simultaneously — 2× peak, OOM risk on large photos.
+                    // Re-encode to JPEG first (avoids holding a second bitmap),
+                    // then use ImageIO to thumbnail at decode time — the same
+                    // memory-safe path taken by the URL and Data branches below.
+                    if let jpegData = img.jpegData(compressionQuality: 0.85),
+                       let downsampled = downsampleImageData(jpegData) {
+                        return downsampled
+                    }
+                    // Last-resort fallback if JPEG encode fails.
                     return ReceiptStorage.downscaleForOCR(img)
                 }
                 if let url = item as? URL {
@@ -274,7 +286,11 @@ final class ShareSession: ObservableObject {
             await MainActor.run { [weak self] in self?.parsingStatus = "Analyzing receipt…" }
         } else {
             await MainActor.run { [weak self] in self?.parsingStatus = "Reading text from image…" }
-            let result = await ReceiptStorage.parse(image)
+            // parseForExtension is the memory-safe variant: skips the CoreImage
+            // filter chain (which holds 3-5\u00d7 image size in intermediates) and
+            // wraps Vision work in autoreleasepool. Calling parse() instead was
+            // the root cause of silent OOM kills on the share extension.
+            let result = await ReceiptStorage.parseForExtension(image)
             regexResult = result
             await MainActor.run { [weak self] in self?.parsingStatus = "Extracting details…" }
         }
@@ -283,9 +299,18 @@ final class ShareSession: ObservableObject {
             group.addTask {
                 guard SmartExpenseParser.isAvailable else { return nil }
 
-                if isDirectImageMode,
-                   let jpegData = image.jpegData(compressionQuality: 0.85) {
-                    return await SmartExpenseParser.parseReceiptImage(jpegData, categories: categoryEntries, contextBlock: fmContext)
+                if isDirectImageMode {
+                    // Prepare a single optimised JPEG — screenshot-aware size +
+                    // quality, optional grayscale for thermal receipts. Passing
+                    // skipResize: true tells CloudAIParser not to re-encode,
+                    // eliminating the old double-lossy-JPEG-pass.
+                    guard let optimizedData = CloudAIParser.prepareImageForGemini(image) else { return nil }
+                    return await SmartExpenseParser.parseReceiptImage(
+                        optimizedData,
+                        categories: categoryEntries,
+                        contextBlock: fmContext,
+                        skipResize: true
+                    )
                 }
 
                 guard let regexResult else { return nil }

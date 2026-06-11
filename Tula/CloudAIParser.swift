@@ -310,7 +310,8 @@ enum CloudAIParser {
     static func parseReceiptImage(_ imageData: Data,
                                    categories: [CategoryEntry],
                                    contextBlock: String = "",
-                                   config: CloudAIConfig? = nil) async -> ReceiptSmartParseResult? {
+                                   config: CloudAIConfig? = nil,
+                                   skipResize: Bool = false) async -> ReceiptSmartParseResult? {
         let cfg = config ?? CloudAIConfig.load()
         guard !cfg.apiKey.isEmpty else {
             aiLog.error("parseReceiptImage: API key is empty")
@@ -319,10 +320,21 @@ enum CloudAIParser {
         }
         aiLog.info("parseReceiptImage: starting, model=\(cfg.model), imageSize=\(imageData.count / 1024)KB, contextLen=\(contextBlock.count)")
 
-        let resizedData = Self.resizeImageData(imageData, maxDimension: 1280, quality: 0.65)
-        let finalImageData = resizedData ?? imageData
+        // skipResize = true → caller already produced an optimised JPEG
+        // (ShareSession.prepareImageForGemini). Skip the re-encode to prevent
+        // JPEG generation loss on small receipt digits.
+        // skipResize = false (default) keeps the existing main-app camera path.
+        let finalImageData: Data
+        if skipResize {
+            finalImageData = imageData
+        } else {
+            // Quality raised 0.65 → 0.82: the old value introduced blocking
+            // artifacts on dense receipt text (7-digit amounts, item columns).
+            let resizedData = Self.resizeImageData(imageData, maxDimension: 1280, quality: 0.82)
+            finalImageData  = resizedData ?? imageData
+        }
 
-        aiLog.info("parseReceiptImage: image \(imageData.count / 1024)KB → \(finalImageData.count / 1024)KB")
+        aiLog.info("parseReceiptImage: image \(imageData.count / 1024)KB → \(finalImageData.count / 1024)KB (skipResize=\(skipResize))")
 
         let base64Image = finalImageData.base64EncodedString()
         let mimeType = finalImageData.detectMimeType()
@@ -1236,6 +1248,90 @@ enum CloudAIParser {
         }
 
         return resized.jpegData(compressionQuality: quality)
+    }
+
+    // MARK: - Shared Image Preparation
+
+    /// Single, source-aware JPEG optimisation before the Gemini API call.
+    /// Shared by AddExpenseView (main app) and ShareSession (share extension)
+    /// so both get identical quality tuning.
+    ///
+    /// - Screenshots (UPI, order confirmations, app grabs): 1024px, JPEG 0.88.
+    ///   Detected by matching exact iOS rendered-pixel screen dimensions.
+    ///   Digital text is already crisp — higher quality preserves it.
+    /// - Narrow-portrait camera photos (thermal roll receipts): 1280px, JPEG
+    ///   0.80, converted to grayscale (DeviceGray CGContext, no CIContext GPU
+    ///   cost). Saves ~50% payload; thermal receipts carry no colour signal.
+    /// - Other camera photos: 1280px, JPEG 0.80, colour retained.
+    static func prepareImageForGemini(_ image: UIImage) -> Data? {
+        let size        = image.size
+        let longEdge    = max(size.width, size.height)
+        let shortEdge   = min(size.width, size.height)
+        let aspectRatio: CGFloat = longEdge > 0 ? shortEdge / longEdge : 1.0
+
+        // Exact rendered-pixel widths/heights of current iOS devices.
+        // Camera output is never exactly these values; screenshots always are.
+        let screenshotEdges: Set<CGFloat> = [
+            1290, 2796,   // iPhone 15 Pro Max / 14 Pro Max / 15 Plus
+            1179, 2556,   // iPhone 15 Pro / 14 Pro / 15
+            1170, 2532,   // iPhone 14 / 13 / 13 Pro / 12 Pro
+            1284, 2778,   // iPhone 12 Pro Max / 13 Pro Max
+            1080, 2340,   // iPhone SE 3 / 12 mini / 13 mini
+             828, 1792,   // iPhone 11 / XR
+        ]
+        let isScreenshot = screenshotEdges.contains(size.width)
+                        || screenshotEdges.contains(size.height)
+
+        let maxDimension: CGFloat = isScreenshot ? 1024 : 1280
+        let quality: CGFloat      = isScreenshot ? 0.88  : 0.80
+
+        let prepared: UIImage = autoreleasepool {
+            let resized = Self.resizeForGemini(image, maxDimension: maxDimension)
+            // Grayscale only for narrow-portrait camera photos (thermal paper).
+            // Never grayscale screenshots — app colour chrome (GPay, Swiggy, etc.)
+            // gives Gemini useful document-type signals.
+            if !isScreenshot && aspectRatio < 0.55 {
+                return Self.grayscaleForGemini(resized) ?? resized
+            }
+            return resized
+        }
+        return prepared.jpegData(compressionQuality: quality)
+    }
+
+    private static func resizeForGemini(_ image: UIImage, maxDimension: CGFloat) -> UIImage {
+        let size    = image.size
+        let longest = max(size.width, size.height)
+        guard longest > maxDimension else { return image }
+        let scale   = maxDimension / longest
+        let newSize = CGSize(width:  (size.width  * scale).rounded(),
+                             height: (size.height * scale).rounded())
+        let format  = UIGraphicsImageRendererFormat()
+        format.scale  = 1
+        format.opaque = true
+        return UIGraphicsImageRenderer(size: newSize, format: format).image { _ in
+            image.draw(in: CGRect(origin: .zero, size: newSize))
+        }
+    }
+
+    /// Grayscale via CGContext DeviceGray — avoids CIContext GPU allocation,
+    /// keeping memory pressure low inside the share extension.
+    private static func grayscaleForGemini(_ image: UIImage) -> UIImage? {
+        guard let cgImage = image.cgImage else { return nil }
+        let ctx = CGContext(
+            data: nil,
+            width:  cgImage.width,
+            height: cgImage.height,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceGray(),
+            bitmapInfo: CGImageAlphaInfo.none.rawValue
+        )
+        ctx?.draw(cgImage, in: CGRect(x: 0, y: 0,
+                                      width:  cgImage.width,
+                                      height: cgImage.height))
+        guard let grayCG = ctx?.makeImage() else { return nil }
+        return UIImage(cgImage: grayCG, scale: image.scale,
+                       orientation: image.imageOrientation)
     }
 }
 

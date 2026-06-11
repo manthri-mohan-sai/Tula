@@ -1022,9 +1022,14 @@ struct AddExpenseView: View {
                 group.addTask {
                     guard SmartExpenseParser.isAvailable else { return nil }
 
-                    if isDirectImageMode,
-                       let jpegData = image.jpegData(compressionQuality: 0.85) {
-                        return await SmartExpenseParser.parseReceiptImage(jpegData, categories: categoryEntries, contextBlock: contextBlock)
+                    if isDirectImageMode {
+                        guard let optimizedData = CloudAIParser.prepareImageForGemini(image) else { return nil }
+                        return await SmartExpenseParser.parseReceiptImage(
+                            optimizedData,
+                            categories: categoryEntries,
+                            contextBlock: contextBlock,
+                            skipResize: true
+                        )
                     }
 
                     guard let regexResult else { return nil }
