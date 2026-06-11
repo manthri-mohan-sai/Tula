@@ -1654,16 +1654,7 @@ struct HomeView: View {
         }
     }
 
-    /// Approximate per-row height used to size the static List. Set slightly
-    /// above the ExpenseRow's minHeight (56pt) to account for separator
-    /// space and rounding. If this drifts, only visible symptom is small
-    /// extra/missing whitespace at the bottom of the section.
-    /// Per-row height for the recent activity list. Matches the actual
-    /// rendered height of ExpenseRow (64pt minHeight + 24pt vertical
-    /// padding clamped by minHeight = 64pt content + iOS list chrome
-    /// ≈ ~70pt). A 72pt buffer gives a few points of safety without
-    /// leaving large empty space at the end of the list frame.
-    private var rowHeight: CGFloat { 72 }
+    private var rowHeight: CGFloat { 64 }
 
     private var recentList: some View {
         List {
