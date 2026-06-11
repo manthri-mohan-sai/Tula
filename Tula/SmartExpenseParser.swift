@@ -438,16 +438,21 @@ enum SmartExpenseParser {
     /// Parse a receipt by sending the image directly to the cloud AI model.
     /// Only used when `ReceiptParsingModeStorage.selected == .directImage`
     /// and a cloud provider is active. Apple FM always uses OCR text.
+    /// - Parameter skipResize: Pass `true` when the image has already been
+    ///   optimised by `ShareSession.prepareImageForGemini`. CloudAIParser will
+    ///   skip its internal resizeImageData pass, eliminating a second lossy
+    ///   JPEG encode. Default `false` preserves the existing main-app behaviour.
     static func parseReceiptImage(_ imageData: Data,
                                    categories: [CategoryEntry],
-                                   contextBlock: String = "") async -> ReceiptSmartParseResult? {
+                                   contextBlock: String = "",
+                                   skipResize: Bool = false) async -> ReceiptSmartParseResult? {
         guard !categories.isEmpty, !imageData.isEmpty else { return nil }
 
         switch bestProvider {
         case .gemini:
-            return await CloudAIParser.parseReceiptImage(imageData, categories: categories, contextBlock: contextBlock, config: .loadGemini())
+            return await CloudAIParser.parseReceiptImage(imageData, categories: categories, contextBlock: contextBlock, config: .loadGemini(), skipResize: skipResize)
         case .openAI:
-            return await CloudAIParser.parseReceiptImage(imageData, categories: categories, contextBlock: contextBlock)
+            return await CloudAIParser.parseReceiptImage(imageData, categories: categories, contextBlock: contextBlock, skipResize: skipResize)
         case .appleFM:
             return nil
         }
