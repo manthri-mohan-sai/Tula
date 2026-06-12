@@ -1654,7 +1654,7 @@ struct HomeView: View {
         }
     }
 
-    private var rowHeight: CGFloat { 64 }
+    @ScaledMetric(relativeTo: .body) private var rowHeight: CGFloat = 70
 
     private var recentList: some View {
         List {
@@ -1665,6 +1665,7 @@ struct HomeView: View {
                 } label: {
                     ExpenseRow(expense: expense)
                         .padding(.horizontal, Spacing.lg)
+                        .frame(height: rowHeight)
                 }
                 .buttonStyle(.plain)
                 .listRowInsets(EdgeInsets())
@@ -1702,7 +1703,7 @@ struct HomeView: View {
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
         .scrollDisabled(true)
-        .frame(height: CGFloat(recentExpenses.count) * rowHeight)
+        .frame(height: CGFloat(recentExpenses.count) * rowHeight)  // now exact, no scale math
         .background(Color.tulaCardSurface)
         .clipShape(RoundedRectangle(cornerRadius: CornerRadius.medium, style: .continuous))
     }
