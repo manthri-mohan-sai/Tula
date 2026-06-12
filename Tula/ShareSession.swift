@@ -414,7 +414,7 @@ final class ShareSession: ObservableObject {
                let gateResult,
                !gateResult.shouldCallAI,
                !forceCloudAI {
-                return "\(gateResult.reason) Tap Retry AI if this is a receipt."
+                return "\(gateResult.reason) Tap Retry if this is a receipt."
             }
             if smartResult == nil {
                 return await MainActor.run { CloudAIParser.lastParseError }

@@ -899,12 +899,15 @@ struct AddExpenseView: View {
                                 .foregroundStyle(.red)
                                 .lineLimit(2)
                             if canRetryAIGate {
-                                Button("Retry AI") {
-                                    runReceiptOCR(on: image, forceCloudAI: true)
-                                }
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(Color.tulaBrandFallback)
-                                .buttonStyle(.plain)
+                                Button("Retry") {
+                                        runReceiptOCR(on: image, forceCloudAI: true)
+                                    }
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundColor(.white)
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 10)
+                                    .background(Color.tulaBrandFallback)
+                                    .clipShape(RoundedRectangle(cornerRadius: 20))
                             }
                         }
                     } else if !ocrExtractedFields.isEmpty {
@@ -1079,7 +1082,7 @@ struct AddExpenseView: View {
                    let gateResult,
                    !gateResult.shouldCallAI,
                    !forceCloudAI {
-                    scanErrorMessage = "\(gateResult.reason) Tap Retry AI if this is a receipt."
+                    scanErrorMessage = "\(gateResult.reason) Tap Retry if this is a receipt."
                     canRetryAIGate = true
                 } else if smartResult == nil && (isDirectImageMode || regexResult == nil) {
                     scanErrorMessage = CloudAIParser.lastParseError

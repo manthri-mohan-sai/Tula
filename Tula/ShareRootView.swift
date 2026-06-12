@@ -164,12 +164,15 @@ struct ShareRootView: View {
                 Spacer(minLength: 0)
             }
             if session.canRetryAIGate {
-                Button("Retry AI") {
+                Button("Retry") {
                     session.retryAIGateBypass()
-                }
-                .font(.footnote.weight(.semibold))
-                .foregroundStyle(brand)
-                .buttonStyle(.plain)
+                    }
+                    .font(.caption.weight(.semibold))
+                    .foregroundColor(.white)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 10)
+                    .background(Color.orange)
+                    .clipShape(RoundedRectangle(cornerRadius: 20))
             }
         }
         .padding(.horizontal, 14)
