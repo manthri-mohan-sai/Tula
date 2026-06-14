@@ -89,6 +89,18 @@ struct AddExpenseView: View {
     /// receipt. Both paths feed the same OCR pipeline.
     @State private var showingReceiptSourcePicker: Bool = false
 
+    // MARK: - Split Payment State
+
+    @State private var splitModeActive: Bool = false
+    @State private var splitRows: [SplitRow] = []
+
+    struct SplitRow: Identifiable {
+        let id = UUID()
+        var amount: Double
+        var category: Category?
+        var account: Account?
+    }
+
     @FocusState private var amountFocused: Bool
 
     init(existingExpense: Expense? = nil) {
@@ -127,7 +139,24 @@ struct AddExpenseView: View {
     private var isEditing: Bool { existingExpense != nil }
     private var activeAccounts: [Account] { allAccounts.filter { !$0.isArchived } }
     private var activeCategories: [Category] { allCategories.filter { !$0.isArchived } }
-    private var canSave: Bool { amount > 0 && selectedAccount != nil }
+    private var canSave: Bool {
+        if splitModeActive { return amount > 0 && splitIsValid }
+        return amount > 0 && selectedAccount != nil
+    }
+
+    private var canShowSplitOption: Bool {
+        amount > 0 && activeCategories.count >= 2 && !isEditing
+    }
+
+    private var splitAssignedTotal: Double {
+        splitRows.reduce(0) { $0 + $1.amount }
+    }
+
+    private var splitIsValid: Bool {
+        splitRows.count >= 2
+        && splitRows.allSatisfy { $0.amount > 0 && $0.category != nil && $0.account != nil }
+        && abs(splitAssignedTotal - amount) < 0.01
+    }
 
     var body: some View {
         NavigationStack {
@@ -145,11 +174,25 @@ struct AddExpenseView: View {
                             .padding(.horizontal, Spacing.xl)
                     }
 
-                    accountStrip
+                    if splitModeActive {
+                        splitPaymentCard
+                            .padding(.horizontal, Spacing.xl)
+                            .transition(.asymmetric(
+                                insertion: .scale(scale: 0.97, anchor: .top).combined(with: .opacity),
+                                removal: .opacity
+                            ))
+                    } else {
+                        accountStrip
 
-                    // Category grid — inline, all categories visible.
-                    categoryGrid
-                        .padding(.horizontal, Spacing.xl)
+                        categoryGrid
+                            .padding(.horizontal, Spacing.xl)
+
+                        if canShowSplitOption {
+                            splitPaymentButton
+                                .padding(.horizontal, Spacing.xl)
+                                .transition(.opacity)
+                        }
+                    }
 
                     // Merchant / Item / Date as inline rows.
                     detailsCard
@@ -197,6 +240,7 @@ struct AddExpenseView: View {
                             .foregroundStyle(canSave ? Color.tulaBrandFallback : Color.secondary.opacity(0.5))
                     }
                     .disabled(!canSave)
+                    .accessibilityHint("Saves this expense")
                 }
             }
             .onAppear {
@@ -211,6 +255,10 @@ struct AddExpenseView: View {
             }
             .onChange(of: merchant) { _, newValue in
                 applyMerchantRule(for: newValue)
+            }
+            .onChange(of: amount) { old, new in
+                guard splitModeActive, !splitRows.isEmpty else { return }
+                splitRows[0].amount = max(0, splitRows[0].amount + (new - old))
             }
             .confirmationDialog("Delete this expense?",
                                 isPresented: $showingDeleteConfirm,
@@ -575,6 +623,294 @@ struct AddExpenseView: View {
     // last-used default, so the form opens with a sensible choice already
     // made; the user typically just confirms with one glance, not a tap.
 
+    // MARK: - Split Payment
+
+    private var splitPaymentButton: some View {
+        Button {
+            Haptics.tap()
+            activateSplitMode()
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "scissors")
+                    .font(.caption.weight(.semibold))
+                Text("Split expense")
+                    .font(.subheadline.weight(.medium))
+            }
+            .foregroundStyle(Color.tulaBrandFallback)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.leading, Spacing.xs)
+        }
+        .buttonStyle(.plain)
+    }
+
+    @State private var splitRowsAppeared: Set<UUID> = []
+
+    private var splitPaymentCard: some View {
+        VStack(spacing: Spacing.md) {
+            // Header — quiet, like SectionHeader
+            HStack(alignment: .firstTextBaseline) {
+                Text("Split expense")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button {
+                    Haptics.tap()
+                    deactivateSplitMode()
+                } label: {
+                    Text("Cancel")
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+            }
+
+            // Unified card — rows separated by dividers, like detailsCard
+            Card(padding: 0, cornerRadius: CornerRadius.medium) {
+                VStack(spacing: 0) {
+                    ForEach(Array(splitRows.enumerated()), id: \.element.id) { index, _ in
+                        splitRowView(row: $splitRows[index])
+                            .opacity(splitRowsAppeared.contains(splitRows[index].id) ? 1 : 0)
+                            .onAppear {
+                                let rowID = splitRows[index].id
+                                guard !splitRowsAppeared.contains(rowID) else { return }
+                                withAnimation(AppAnimation.gentle.delay(Double(index) * 0.1)) {
+                                    splitRowsAppeared.insert(rowID)
+                                }
+                            }
+
+                        if index < splitRows.count - 1 {
+                            Divider().padding(.leading, 56)
+                        }
+                    }
+
+                    // Add split row — inside the card, simple
+                    if splitRows.count < 5 {
+                        Divider().padding(.leading, 56)
+                        Button {
+                            Haptics.selection()
+                            addSplitRow()
+                        } label: {
+                            HStack(spacing: Spacing.md) {
+                                Image(systemName: "plus.circle.fill")
+                                    .font(.title2)
+                                    .symbolRenderingMode(.hierarchical)
+                                    .foregroundStyle(Color.tulaBrandFallback)
+                                    .frame(width: 36, height: 36)
+                                Text("Add another category")
+                                    .font(.subheadline.weight(.medium))
+                                    .foregroundStyle(Color.tulaBrandFallback)
+                                Spacer()
+                            }
+                            .padding(.horizontal, Spacing.lg)
+                            .padding(.vertical, Spacing.md)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+
+            // Progress bar + balance label below the card
+            splitProgressSection
+        }
+    }
+
+    private func splitRowView(row: Binding<SplitRow>) -> some View {
+        let catColor: Color = row.wrappedValue.category.map { Color(hex: $0.colorHex) } ?? .secondary
+        let hasAmount = row.wrappedValue.amount > 0
+
+        return HStack(spacing: Spacing.md) {
+            // Category circle — sole color carrier
+            Menu {
+                ForEach(activeCategories) { category in
+                    Button {
+                        Haptics.selection()
+                        withAnimation(AppAnimation.snappy) {
+                            row.wrappedValue.category = category
+                        }
+                    } label: {
+                        Label(category.name, systemImage: category.iconKey)
+                    }
+                }
+            } label: {
+                ZStack {
+                    Circle()
+                        .fill(catColor.opacity(0.15))
+                        .frame(width: 36, height: 36)
+                    Image(systemName: row.wrappedValue.category?.iconKey ?? "square.grid.2x2")
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(catColor)
+                }
+            }
+
+            // Labels — all neutral colors
+            VStack(alignment: .leading, spacing: 2) {
+                // Category name — primary, never colored
+                Menu {
+                    ForEach(activeCategories) { category in
+                        Button {
+                            Haptics.selection()
+                            withAnimation(AppAnimation.snappy) {
+                                row.wrappedValue.category = category
+                            }
+                        } label: {
+                            Label(category.name, systemImage: category.iconKey)
+                        }
+                    }
+                } label: {
+                    Text(row.wrappedValue.category?.name ?? "Category")
+                        .font(.body.weight(.medium))
+                        .foregroundStyle(row.wrappedValue.category != nil ? Color.primary : Color.secondary)
+                        .lineLimit(1)
+                }
+
+                // Account — fully neutral, no icon color
+                Menu {
+                    ForEach(activeAccounts) { account in
+                        Button {
+                            Haptics.selection()
+                            withAnimation(AppAnimation.snappy) {
+                                row.wrappedValue.account = account
+                            }
+                        } label: {
+                            Label(account.name, systemImage: account.iconKey)
+                        }
+                    }
+                } label: {
+                    Text(row.wrappedValue.account?.name ?? "Account")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(Color.secondary)
+                        .lineLimit(1)
+                }
+            }
+
+            Spacer(minLength: Spacing.sm)
+
+            // Amount
+            FormattedAmountField(
+                value: row.amount,
+                currencyCode: currencyCode,
+                placeholder: "0",
+                font: .title3.weight(.semibold),
+                alignment: .trailing
+            )
+            .frame(minWidth: 60)
+            .opacity(hasAmount ? 1 : 0.35)
+
+            // Remove (only if >2 rows)
+            if splitRows.count > 2 {
+                Button {
+                    Haptics.tap()
+                    withAnimation(AppAnimation.gentle) {
+                        splitRows.removeAll { $0.id == row.wrappedValue.id }
+                    }
+                } label: {
+                    Image(systemName: "minus.circle.fill")
+                        .font(.title3)
+                        .symbolRenderingMode(.hierarchical)
+                        .foregroundStyle(.red)
+                }
+                .buttonStyle(.plain)
+                .transition(.scale.combined(with: .opacity))
+            }
+        }
+        .padding(.horizontal, Spacing.lg)
+        .padding(.vertical, Spacing.md)
+        .contentShape(Rectangle())
+    }
+
+    private var splitProgressSection: some View {
+        let fraction = amount > 0 ? min(splitAssignedTotal / amount, 1.0) : 0
+        let remaining = amount - splitAssignedTotal
+        let balanced = abs(remaining) < 0.01
+        let over = splitAssignedTotal > amount + 0.01
+        let barColor: Color = balanced ? .green : (over ? .red : Color.tulaBrandFallback)
+
+        return VStack(spacing: Spacing.xs) {
+            // Thin progress bar
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule()
+                        .fill(Color.secondary.opacity(0.1))
+                    Capsule()
+                        .fill(barColor)
+                        .frame(width: max(0, min(geo.size.width * fraction, geo.size.width)))
+                }
+            }
+            .frame(height: 3)
+            .clipShape(Capsule())
+            .animation(.easeInOut(duration: 0.35), value: fraction)
+
+            // Balance label
+            HStack {
+                Spacer()
+                Group {
+                    if balanced {
+                        HStack(spacing: 3) {
+                            Image(systemName: "checkmark.circle.fill")
+                                .font(.caption2)
+                            Text("Balanced")
+                                .font(.caption.weight(.medium))
+                        }
+                        .foregroundStyle(.green)
+                    } else if remaining > 0 {
+                        Text("\(Currency.format(remaining, code: currencyCode)) remaining")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text("\(Currency.format(-remaining, code: currencyCode)) over")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.red)
+                    }
+                }
+                .contentTransition(.numericText())
+                .animation(.easeInOut(duration: 0.2), value: balanced)
+            }
+        }
+    }
+
+    // MARK: - Split Lifecycle
+
+    private func activateSplitMode() {
+        let currentAccount = selectedAccount ?? activeAccounts.first
+        let firstCategory = selectedCategory
+        let secondCategory = activeCategories.first { $0.id != firstCategory?.id }
+
+        splitRows = [
+            SplitRow(amount: amount, category: firstCategory, account: currentAccount),
+            SplitRow(amount: 0, category: secondCategory, account: currentAccount)
+        ]
+
+        withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) {
+            splitModeActive = true
+        }
+    }
+
+    private func deactivateSplitMode() {
+        if let firstCategory = splitRows.first?.category {
+            selectedCategory = firstCategory
+            categoryManuallySet = true
+        }
+        if let firstAccount = splitRows.first?.account {
+            selectedAccount = firstAccount
+        }
+        withAnimation(.spring(response: 0.35, dampingFraction: 0.9)) {
+            splitModeActive = false
+            splitRows = []
+            splitRowsAppeared = []
+        }
+    }
+
+    private func addSplitRow() {
+        let usedCategoryIDs = Set(splitRows.compactMap { $0.category?.id })
+        let nextCategory = activeCategories.first { !usedCategoryIDs.contains($0.id) }
+        let currentAccount = splitRows.last?.account ?? selectedAccount ?? activeAccounts.first
+        withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
+            splitRows.append(SplitRow(amount: 0, category: nextCategory, account: currentAccount))
+        }
+    }
+
+    // MARK: - Account Strip
+
     private var accountStrip: some View {
         ScrollViewReader { proxy in
             ScrollView(.horizontal, showsIndicators: false) {
@@ -870,6 +1206,7 @@ struct AddExpenseView: View {
                 RoundedRectangle(cornerRadius: CornerRadius.medium, style: .continuous)
                     .fill(Color.tulaCardSurface)
             )
+            .accessibilityHint("Opens camera or photo library to scan a receipt")
             .overlay(
                 RoundedRectangle(cornerRadius: CornerRadius.medium, style: .continuous)
                     .stroke(Color.secondary.opacity(0.15), style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
@@ -1592,6 +1929,40 @@ struct AddExpenseView: View {
     }
 
     private func save() {
+        // Split mode: create N independent expenses, one per split row.
+        // Each row has its own category and account.
+        if splitModeActive {
+            guard splitIsValid else { return }
+            let receiptData = receiptImage.flatMap { ReceiptStorage.compress($0) }
+
+            for (i, row) in splitRows.enumerated() {
+                guard let account = row.account else { continue }
+                let expense = Expense(
+                    amount: row.amount, date: date,
+                    merchant: merchant.isEmpty ? nil : merchant,
+                    note: note.isEmpty ? nil : note,
+                    source: .manual,
+                    category: row.category, account: account
+                )
+                expense.tax = nil
+                expense.discount = nil
+                // Attach receipt to first split only — avoids N copies of same blob.
+                if i == 0 { expense.receiptImageData = receiptData }
+                context.insert(expense)
+            }
+
+            try? context.save()
+            WidgetRefresh.refresh(using: context)
+            NotificationManager.refreshDailyReminder(using: context)
+            if let first = splitRows.first?.account {
+                lastUsedAccountID = first.id.uuidString
+            }
+            Haptics.success()
+            evaluateBudgetAlerts()
+            dismiss()
+            return
+        }
+
         guard let account = selectedAccount, amount > 0 else { return }
         // Compress the receipt image if one was attached. Done here (not
         // on attach) because we don't want to spend CPU compressing
@@ -1844,6 +2215,9 @@ struct AccountPill: View {
         )
         .shadow(color: isSelected ? color.opacity(0.3) : .clear, radius: 6, y: 2)
         .scaleEffect(isSelected ? 1.03 : 1.0)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+        .accessibilityLabel("\(account.name) account")
     }
 }
 
@@ -1916,5 +2290,8 @@ struct CategoryGridItem: View {
         .scaleEffect(isSelected ? 1.08 : 1.0)
         .animation(AppAnimation.bouncy, value: isSelected)
         .contentShape(Rectangle())
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+        .accessibilityLabel("\(category.name) category")
     }
 }

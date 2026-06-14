@@ -67,6 +67,7 @@ struct ActivityRingView: View {
         .accessibilityElement()
         .accessibilityLabel("Activity ring")
         .accessibilityValue("\(Int((progress * 100).rounded())) percent")
+        .accessibilityHint("Shows progress toward your budget or goal")
     }
 
     // MARK: - Animation Driver

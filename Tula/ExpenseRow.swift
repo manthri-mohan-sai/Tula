@@ -202,6 +202,15 @@ struct ExpenseRow: View {
         }
         .padding(.vertical, Spacing.md)
         .frame(minHeight: 64)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel({
+            var parts: [String] = [primaryLabel]
+            parts.append(Currency.format(expense.amount, code: currencyCode))
+            if let cat = expense.category { parts.append(cat.name) }
+            if let acc = expense.account { parts.append(acc.name) }
+            parts.append(relativeDateString(for: expense.date))
+            return parts.joined(separator: ", ")
+        }())
         .sheet(isPresented: $showingItemsSheet) {
             ExpenseItemsSheet(
                 merchantName: expense.merchant ?? primaryLabel,

@@ -124,6 +124,7 @@ struct BudgetFormView: View {
             )
             .focused($amountFocused)
             .frame(maxWidth: .infinity)
+            .accessibilityLabel("Budget amount")
             .foregroundStyle(amount > 0 ? Color.tulaBrandFallback : Color.secondary.opacity(0.4))
 
             Text("\(period.displayName) budget cap")
@@ -160,6 +161,7 @@ struct BudgetFormView: View {
                     }
                 }
                 .pickerStyle(.segmented)
+                .accessibilityHint("Choose between category or overall budget")
             }
         }
     }
@@ -206,6 +208,9 @@ struct BudgetFormView: View {
                         .buttonStyle(.plain)
                         .scaleEffect(isSelected ? 1.04 : 1.0)
                         .animation(.spring(response: 0.35, dampingFraction: 0.7), value: isSelected)
+                        .accessibilityAddTraits(.isButton)
+                        .accessibilityAddTraits(isSelected ? .isSelected : [])
+                        .accessibilityLabel(cat.name)
                     }
                 }
                 .padding(.horizontal, 2)

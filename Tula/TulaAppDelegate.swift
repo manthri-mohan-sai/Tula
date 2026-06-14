@@ -44,6 +44,18 @@ final class TulaAppDelegate: NSObject, UIApplicationDelegate, UNUserNotification
             launchedFromDeepLink = true
         }
 
+        // Schedule bill reminders on launch
+        Task { @MainActor in
+            guard let container = RecurringConfirmationHandler.sharedContainer() else { return }
+            let context = ModelContext(container)
+            let bills = (try? context.fetch(FetchDescriptor<RecurringRule>(
+                predicate: #Predicate { $0.isBill == true }
+            ))) ?? []
+            if !bills.isEmpty {
+                BillReminderEngine.scheduleBillReminders(rules: bills)
+            }
+        }
+
         return true
     }
 
@@ -112,9 +124,19 @@ final class TulaAppDelegate: NSObject, UIApplicationDelegate, UNUserNotification
     func userNotificationCenter(_ center: UNUserNotificationCenter,
                                   didReceive response: UNNotificationResponse) async {
         let info = response.notification.request.content.userInfo
+        let categoryID = response.notification.request.content.categoryIdentifier
+
+        // Handle bill reminder "Pay Now" action
+        if categoryID == NotificationManager.billCategoryID,
+           response.actionIdentifier == NotificationManager.billPayActionID,
+           let ruleIDStr = info["ruleID"] as? String,
+           let ruleID = UUID(uuidString: ruleIDStr) {
+            await Self.handleBillPayAction(ruleID: ruleID)
+            return
+        }
 
         guard
-            response.notification.request.content.categoryIdentifier == NotificationManager.confirmCategoryID,
+            categoryID == NotificationManager.confirmCategoryID,
             let ruleIDStr = info["ruleID"] as? String,
             let ruleID = UUID(uuidString: ruleIDStr),
             let dueEpoch = info["dueDate"] as? TimeInterval
@@ -144,6 +166,29 @@ final class TulaAppDelegate: NSObject, UIApplicationDelegate, UNUserNotification
         // opens the app — each action response is a free wake that lets
         // us replenish the queue.
         await RecurringConfirmationHandler.rescheduleAll()
+    }
+    // MARK: - Bill Pay Action
+
+    /// Handles the "Pay Now" action from a bill reminder notification.
+    /// Looks up the bill rule and marks it as paid (creates expense +
+    /// updates lastPaidDate).
+    @MainActor
+    private static func handleBillPayAction(ruleID: UUID) async {
+        guard let container = RecurringConfirmationHandler.sharedContainer() else { return }
+        let context = ModelContext(container)
+
+        let descriptor = FetchDescriptor<RecurringRule>(
+            predicate: #Predicate { $0.id == ruleID }
+        )
+        guard let rule = (try? context.fetch(descriptor))?.first, rule.isBill else { return }
+
+        BillReminderEngine.markAsPaid(rule: rule, in: context)
+
+        // Reschedule remaining bill reminders
+        let bills = (try? context.fetch(FetchDescriptor<RecurringRule>(
+            predicate: #Predicate { $0.isBill == true }
+        ))) ?? []
+        BillReminderEngine.scheduleBillReminders(rules: bills)
     }
 }
 

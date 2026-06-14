@@ -175,6 +175,7 @@ struct AllExpensesView: View {
                 }
                 .tint(filter.hasAnyFilter ? Color.tulaBrandFallback : .primary)
                 .accessibilityLabel("Filters")
+                .accessibilityHint("Opens filter options")
             }
             // "Done" only when presented as a sheet (dismiss is meaningful);
             // when pushed, the default back chevron handles return.
@@ -339,5 +340,7 @@ struct AllExpensesView: View {
         }
         .frame(maxWidth: .infinity)
         .padding(.horizontal)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(searchText.isEmpty ? "No expenses found" : "No matching expenses")
     }
 }

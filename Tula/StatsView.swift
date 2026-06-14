@@ -359,6 +359,7 @@ struct StatsView: View {
             }
         }
         .pickerStyle(.segmented)
+        .accessibilityHint("Switch between weekly, monthly, and six-month views")
     }
 
     // MARK: - Hero
@@ -800,6 +801,18 @@ struct StatsView: View {
                     }
                 }
             }
+            .accessibilityElement()
+            .accessibilityLabel("Spending chart")
+            .accessibilityValue({
+                let total = chartData.reduce(0) { $0 + $1.total }
+                let peak = chartData.max(by: { $0.total < $1.total })
+                let avg = chartData.isEmpty ? 0 : total / Double(chartData.count)
+                var summary = "Total \(Currency.format(total, code: currencyCode)), average \(Currency.format(avg, code: currencyCode))"
+                if let peak {
+                    summary += ", peak \(Currency.format(peak.total, code: currencyCode))"
+                }
+                return summary
+            }())
         }
     }
 

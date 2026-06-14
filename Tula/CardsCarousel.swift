@@ -156,6 +156,11 @@ struct AccountCardView: View {
             cardSurface
             cardContent
         }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(account.name), \(accountTypeLabel)")
+        .accessibilityValue("Balance: \(Currency.format(account.derivedBalance, code: currencyCode))")
+        .accessibilityAddTraits(.isButton)
+        .accessibilityHint("Double tap to view account details")
         .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
         // Subtle colored bloom — adds atmosphere without becoming a
         // cartoony halo. Was 0.40 which made cards look like glow sticks
@@ -213,6 +218,7 @@ struct AccountCardView: View {
                 endPoint: .bottomTrailing
             )
         }
+        .accessibilityHidden(true)
     }
 
     // MARK: - Content
@@ -354,5 +360,6 @@ struct AccountCardView: View {
                 }
             }
         }
+        .accessibilityHidden(true)
     }
 }

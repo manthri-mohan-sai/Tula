@@ -190,6 +190,7 @@ enum ExpenseSource: String, Codable {
     case siri         // Via Siri shortcut
     case widget       // Quick-add from widget
     case recurring    // Auto-created by a RecurringRule
+    case imported     // Imported from a CSV file
 }
 
 // MARK: - Transfer
@@ -333,6 +334,24 @@ final class RecurringRule {
     /// last/average amount as a hint. Fixed-amount rules (false) can
     /// auto-log the exact amount.
     var isVariable: Bool = false
+
+    // MARK: - Bill-specific fields
+
+    /// When true, this rule represents a bill with due-date tracking,
+    /// countdown badges, and advance-warning notifications.
+    var isBill: Bool = false
+
+    /// Day of month the bill is due (1-31). 0 means use `dayOfMonth`.
+    /// Separate from `dayOfMonth` so bills can have a due date that
+    /// differs from the transaction generation date.
+    var dueDayOfMonth: Int = 0
+
+    /// How many days before the due date to send the first reminder.
+    var reminderDaysBefore: Int = 3
+
+    /// When this bill was last paid/logged. Used to determine if the
+    /// current period's bill is overdue.
+    var lastPaidDate: Date? = nil
 
     @Relationship(deleteRule: .nullify, inverse: \Expense.recurringRule)
     var generatedExpenses: [Expense] = []

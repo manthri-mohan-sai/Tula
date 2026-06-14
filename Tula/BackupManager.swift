@@ -107,6 +107,11 @@ struct RecurringRuleDTO: Codable {
     let hasSpecificTime: Bool?
     let confirmationRequired: Bool?
     let isVariable: Bool?
+    // Bill fields — optional so pre-bill backups decode cleanly
+    let isBill: Bool?
+    let dueDayOfMonth: Int?
+    let reminderDaysBefore: Int?
+    let lastPaidDate: Date?
 }
 
 struct MerchantRuleDTO: Codable {
@@ -353,6 +358,10 @@ enum BackupManager {
             rule.hasSpecificTime = dto.hasSpecificTime ?? false
             rule.confirmationRequired = dto.confirmationRequired ?? false
             rule.isVariable = dto.isVariable ?? false
+            rule.isBill = dto.isBill ?? false
+            rule.dueDayOfMonth = dto.dueDayOfMonth ?? 0
+            rule.reminderDaysBefore = dto.reminderDaysBefore ?? 3
+            rule.lastPaidDate = dto.lastPaidDate
             context.insert(rule)
             ruleByID[dto.id] = rule
         }
@@ -591,7 +600,9 @@ extension RecurringRuleDTO {
             weekdaysMask: r.weekdaysMask, customInterval: r.customInterval,
             customUnitRaw: r.customUnitRaw, pausedUntil: r.pausedUntil,
             merchant: r.merchant, hasSpecificTime: r.hasSpecificTime,
-            confirmationRequired: r.confirmationRequired, isVariable: r.isVariable
+            confirmationRequired: r.confirmationRequired, isVariable: r.isVariable,
+            isBill: r.isBill, dueDayOfMonth: r.dueDayOfMonth,
+            reminderDaysBefore: r.reminderDaysBefore, lastPaidDate: r.lastPaidDate
         )
     }
 }

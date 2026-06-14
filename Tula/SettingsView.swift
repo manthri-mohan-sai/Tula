@@ -63,6 +63,8 @@ struct SettingsView: View {
     @State private var showingExport = false
     @State private var showingReceiptGallery = false
     @State private var showingTransfer = false
+    @State private var showingImport = false
+    @State private var showingOnboarding = false
 
     private var notificationSummary: String {
         let count = [reminderEnabled, summaryEnabled, budgetAlertsEnabled].filter { $0 }.count
@@ -104,9 +106,11 @@ struct SettingsView: View {
             .sheet(isPresented: $showingAccounts) { AccountsView() }
             .sheet(isPresented: $showingCategories) { CategoriesView() }
             .sheet(isPresented: $showingRecurring) { RecurringRulesView() }
+            .sheet(isPresented: $showingOnboarding) { OnboardingView() }
             .sheet(isPresented: $showingReminders) { RemindersView() }
             .sheet(isPresented: $showingBackup) { BackupRestoreView() }
             .sheet(isPresented: $showingExport) { ExportView() }
+            .sheet(isPresented: $showingImport) { ImportView() }
             .sheet(isPresented: $showingCurrencyPicker) {
                 CurrencyPickerView(selectedCode: $primaryCurrencyCode)
             }
@@ -759,6 +763,9 @@ struct SettingsView: View {
             settingsLinkRow(title: "Export", icon: "square.and.arrow.up.fill", color: .teal) {
                 showingExport = true
             }
+            settingsLinkRow(title: "Import CSV", icon: "square.and.arrow.down.fill", color: .indigo) {
+                showingImport = true
+            }
         } header: {
             Text("Tools")
         } footer: {
@@ -831,6 +838,9 @@ struct SettingsView: View {
                 Spacer()
                 Text(appVersion)
                     .foregroundStyle(.secondary)
+            }
+            settingsLinkRow(title: "Replay Onboarding", icon: "arrow.counterclockwise.circle.fill", color: .purple) {
+                showingOnboarding = true
             }
         } header: {
             Text("About")

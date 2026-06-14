@@ -277,11 +277,25 @@ private struct RuleRow: View {
             }
             return "Paused"
         }
+        if rule.isBill {
+            let countdown = BillReminderEngine.countdownLabel(for: rule)
+            return "\(countdown) · \(rule.cadenceLabel)"
+        }
         if let next = RecurringEngine.nextDueDate(for: rule) {
             let nextStr = next.formatted(.dateTime.day().month(.abbreviated))
             return "Next: \(nextStr) · \(rule.cadenceLabel)"
         }
         return rule.cadenceLabel.capitalized
+    }
+
+    /// Urgency color for bill countdown — green (>3d), amber (1-3d), red (overdue).
+    private var billUrgencyColor: Color? {
+        guard rule.isBill, !rule.isPaused else { return nil }
+        switch BillReminderEngine.countdownColor(for: rule) {
+        case .normal: return .green
+        case .warning: return .orange
+        case .urgent, .overdue: return .red
+        }
     }
 
     var body: some View {
@@ -306,19 +320,32 @@ private struct RuleRow: View {
 
             Spacer()
 
-            if rule.isVariable {
-                Text("Varies")
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(.secondary)
-            } else {
-                Text(Currency.format(rule.amount, code: currencyCode))
-                    .font(.subheadline.weight(.semibold))
-                    .monospacedDigit()
-                    .foregroundStyle(rule.isPaused ? .tertiary : .primary)
+            VStack(alignment: .trailing, spacing: 2) {
+                if rule.isVariable {
+                    Text("Varies")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text(Currency.format(rule.amount, code: currencyCode))
+                        .font(.subheadline.weight(.semibold))
+                        .monospacedDigit()
+                        .foregroundStyle(rule.isPaused ? .tertiary : .primary)
+                }
+
+                if let urgency = billUrgencyColor {
+                    Text(BillReminderEngine.countdownLabel(for: rule))
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background(urgency, in: Capsule())
+                }
             }
         }
         .padding(.vertical, Spacing.md)
         .opacity(rule.isPaused ? 0.6 : 1)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(rule.name), \(rule.isVariable ? "variable amount" : Currency.format(rule.amount, code: currencyCode)), \(rule.cadenceLabel)")
     }
 }
 
@@ -370,6 +397,9 @@ struct RecurringRuleFormView: View {
     @State private var hasPauseEnd: Bool
     @State private var pauseUntil: Date
     @State private var isVariable: Bool
+    @State private var isBill: Bool
+    @State private var billDueDayOfMonth: Int
+    @State private var reminderDaysBefore: Int
     @State private var showingDeleteConfirm = false
 
     init(rule: RecurringRule? = nil) {
@@ -402,6 +432,9 @@ struct RecurringRuleFormView: View {
             _hasPauseEnd = State(initialValue: r.pausedUntil != nil)
             _pauseUntil = State(initialValue: r.pausedUntil ?? .now.addingTimeInterval(60 * 60 * 24 * 7))
             _isVariable = State(initialValue: r.isVariable)
+            _isBill = State(initialValue: r.isBill)
+            _billDueDayOfMonth = State(initialValue: r.dueDayOfMonth)
+            _reminderDaysBefore = State(initialValue: r.reminderDaysBefore)
         } else {
             _name = State(initialValue: "")
             _amount = State(initialValue: 0)
@@ -426,6 +459,9 @@ struct RecurringRuleFormView: View {
             _hasPauseEnd = State(initialValue: false)
             _pauseUntil = State(initialValue: .now.addingTimeInterval(60 * 60 * 24 * 7))
             _isVariable = State(initialValue: false)
+            _isBill = State(initialValue: false)
+            _billDueDayOfMonth = State(initialValue: Calendar.current.component(.day, from: .now))
+            _reminderDaysBefore = State(initialValue: 3)
         }
     }
 
@@ -456,6 +492,9 @@ struct RecurringRuleFormView: View {
         _hasPauseEnd = State(initialValue: false)
         _pauseUntil = State(initialValue: .now.addingTimeInterval(60 * 60 * 24 * 7))
         _isVariable = State(initialValue: suggestion.isVariable)
+        _isBill = State(initialValue: false)
+        _billDueDayOfMonth = State(initialValue: suggestion.dayOfMonth)
+        _reminderDaysBefore = State(initialValue: 3)
     }
 
     private var isEditing: Bool { existingRule != nil }
@@ -480,6 +519,7 @@ struct RecurringRuleFormView: View {
         NavigationStack {
             Form {
                 detailsSection
+                billSection
                 typeSection
                 routingSection
                 scheduleSection
@@ -490,7 +530,7 @@ struct RecurringRuleFormView: View {
                     deleteSection
                 }
             }
-            .navigationTitle(isEditing ? "Edit Rule" : "New Rule")
+            .navigationTitle(isEditing ? "Edit Rule" : (isBill ? "New Bill" : "New Rule"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -543,6 +583,37 @@ struct RecurringRuleFormView: View {
                 Text("Amount varies each time (e.g. power bill, fuel). You'll be asked to enter the actual amount.")
             } else if !merchant.trimmingCharacters(in: .whitespaces).isEmpty {
                 Text("Expenses will be logged under \"\(merchant.trimmingCharacters(in: .whitespaces))\" as merchant.")
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var billSection: some View {
+        Section {
+            Toggle(isOn: $isBill.animation(.snappy(duration: 0.25))) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("This is a bill")
+                        .font(.body)
+                    Text("Get reminders before the due date")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            if isBill {
+                Stepper(value: $billDueDayOfMonth, in: 1...31) {
+                    Text("Due on day \(billDueDayOfMonth)")
+                }
+
+                Stepper(value: $reminderDaysBefore, in: 1...14) {
+                    Text("Remind \(reminderDaysBefore) day\(reminderDaysBefore == 1 ? "" : "s") before")
+                }
+            }
+        } header: {
+            Text("Bill")
+        } footer: {
+            if isBill {
+                Text("You'll receive a notification \(reminderDaysBefore) day\(reminderDaysBefore == 1 ? "" : "s") before day \(billDueDayOfMonth) each period.")
             }
         }
     }
@@ -940,6 +1011,13 @@ struct RecurringRuleFormView: View {
         // For auto-log rules this also generates any past-due
         // occurrences if startDate is in the past.
         RecurringEngine.generateMissing(in: context)
+        // Reschedule bill reminders if this is a bill rule
+        if isBill {
+            let bills = (try? context.fetch(FetchDescriptor<RecurringRule>(
+                predicate: #Predicate { $0.isBill == true }
+            ))) ?? []
+            BillReminderEngine.scheduleBillReminders(rules: bills)
+        }
         Haptics.success()
         dismiss()
     }
@@ -988,6 +1066,11 @@ struct RecurringRuleFormView: View {
         // resume date. Otherwise clear it (covers: not paused, or paused
         // indefinitely, or just toggled off the resume-date option).
         rule.pausedUntil = (isPaused && hasPauseEnd) ? pauseUntil : nil
+
+        // Bill fields
+        rule.isBill = isBill
+        rule.dueDayOfMonth = isBill ? billDueDayOfMonth : 0
+        rule.reminderDaysBefore = isBill ? reminderDaysBefore : 3
 
         // Always wipe pending confirmations on save. If the user edited
         // the time-of-day, amount, or name, the old notifications carry

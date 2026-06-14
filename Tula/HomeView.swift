@@ -57,6 +57,7 @@ struct HomeView: View {
     @State private var showingAPIKeyPrompt = false
     @State private var showingTransfer = false
     @State private var showingReceiptGallery = false
+
     @State private var showStreakCelebration = false
     @State private var lastCelebratedStreak: Int = 0
     @State private var expandedStacks: Set<String> = []
@@ -367,6 +368,8 @@ struct HomeView: View {
                         .offset(y: appeared ? 0 : 16)
                         .opacity(appeared ? 1 : 0)
                         .animation(AppAnimation.gentle.delay(0.10), value: appeared)
+
+                        .animation(AppAnimation.gentle.delay(0.12), value: appeared)
                     recentSection
                         .offset(y: appeared ? 0 : 16)
                         .opacity(appeared ? 1 : 0)
@@ -388,6 +391,7 @@ struct HomeView: View {
                     Color.tulaBackground
                 }
                 .ignoresSafeArea()
+                .accessibilityHidden(true)
                 .onTapGesture { hideKeyboard() }
             }
             // Dismiss keyboard the instant the user starts scrolling — same
@@ -501,6 +505,7 @@ struct HomeView: View {
             .sheet(isPresented: $showingOverdueOnly) {
                 RecurringRulesView(showOnlyOverdue: true)
             }
+
             .sheet(isPresented: $showingTransfer) {
                 TransferFormView()
             }
@@ -764,6 +769,10 @@ struct HomeView: View {
             .scaleEffect(heroTapPulse ? 1.02 : 1.0)
             .animation(.spring(response: 0.35, dampingFraction: 0.6), value: heroTapPulse)
             .foregroundStyle(.primary)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Total spent this month")
+            .accessibilityValue(Currency.format(totalThisMonth, code: currencyCode))
+            .accessibilityHint("Double tap to view stats")
         }
         .buttonStyle(.plain)
     }
@@ -851,6 +860,13 @@ struct HomeView: View {
         }
         .chartXAxis(.hidden)
         .chartYAxis(.hidden)
+        .accessibilityElement()
+        .accessibilityLabel("7-day spending trend")
+        .accessibilityValue({
+            let total = last7DaysData.reduce(0) { $0 + $1.total }
+            let peak = last7DaysData.max(by: { $0.total < $1.total })?.total ?? 0
+            return "Total \(Currency.format(total, code: currencyCode)), peak day \(Currency.format(peak, code: currencyCode))"
+        }())
     }
 
     // MARK: - Quick Log
@@ -1913,6 +1929,8 @@ struct HomeView: View {
         }
         .buttonStyle(.plain)
     }
+
+
 
     // MARK: - Recent
 

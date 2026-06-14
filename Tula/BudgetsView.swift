@@ -182,6 +182,7 @@ struct BudgetsView: View {
                 }
                 .tint(.primary)
                 .accessibilityLabel("Add Budget")
+                .accessibilityHint("Creates a new spending budget")
             }
         }
         .sheet(isPresented: $showingAddBudget) {
@@ -815,6 +816,8 @@ struct BudgetCard: View {
                 .fill(Color.tulaCardSurface)
         )
         .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(budget.displayName) budget: \(Currency.format(spent, code: currencyCode)) of \(Currency.format(budget.amount, code: currencyCode)), \(percentText) used")
 
     }
 

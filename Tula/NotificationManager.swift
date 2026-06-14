@@ -446,6 +446,9 @@ enum NotificationManager {
     /// them all to this category lets us register the Log/Skip actions
     /// once at app launch and have iOS show them on every fire.
     static let confirmCategoryID = "tula.recurring.confirm"
+    /// Category for bill reminder notifications with "Pay Now" action.
+    static let billCategoryID = "tula.bill.reminder"
+    static let billPayActionID = "tula.bill.pay"
     /// Action identifiers carried in `UNNotificationResponse.actionIdentifier`.
     static let confirmLogActionID = "tula.confirm.log"
     static let confirmSkipActionID = "tula.confirm.skip"
@@ -468,13 +471,27 @@ enum NotificationManager {
             title: "Skip",
             options: []
         )
-        let category = UNNotificationCategory(
+        let confirmCategory = UNNotificationCategory(
             identifier: confirmCategoryID,
             actions: [logAction, skipAction],
             intentIdentifiers: [],
             options: []
         )
-        UNUserNotificationCenter.current().setNotificationCategories([category])
+
+        // Bill reminder category with "Pay Now" action
+        let payAction = UNNotificationAction(
+            identifier: billPayActionID,
+            title: "Pay Now",
+            options: [.foreground]  // opens app to complete payment
+        )
+        let billCategory = UNNotificationCategory(
+            identifier: billCategoryID,
+            actions: [payAction],
+            intentIdentifiers: [],
+            options: []
+        )
+
+        UNUserNotificationCenter.current().setNotificationCategories([confirmCategory, billCategory])
     }
 
     /// Schedules a single confirmation notification for the given rule at
