@@ -144,6 +144,12 @@ final class Expense {
 
     var source: ExpenseSource = ExpenseSource.manual
 
+    /// Tax amount included in or added to this expense. Nil when not applicable.
+    var tax: Double? = nil
+
+    /// Discount amount subtracted from this expense. Nil when not applicable.
+    var discount: Double? = nil
+
     /// Optional receipt photo attached to this expense. JPEG-compressed
     /// to ~200KB before storage (1600px max dimension, quality 0.7) —
     /// see `ReceiptStorage.compress(_:)`. Nil for the majority of

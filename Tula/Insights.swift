@@ -28,6 +28,10 @@ enum InsightKind {
     case quietToday
     case bigSpender
     case recurringSuggestion
+    case youSaved
+    case budgetPacing
+    case anomaly
+    case merchantAutoRule
 }
 
 // MARK: - Recurring Suggestion
@@ -242,14 +246,98 @@ enum InsightEngine {
             ))
         }
 
+        // MARK: "You Saved" positive reinforcement
+
+        if let monthStart = calendar.dateInterval(of: .month, for: now)?.start,
+           let lastMonthStart = calendar.date(byAdding: .month, value: -1, to: monthStart),
+           let lastMonthEnd = calendar.dateInterval(of: .month, for: lastMonthStart)?.end {
+
+            let lastMonthTotal = expenses
+                .filter { $0.date >= lastMonthStart && $0.date < lastMonthEnd }
+                .reduce(0) { $0 + $1.amount }
+            let thisTotal = expenses.filter { $0.date >= monthStart }.reduce(0) { $0 + $1.amount }
+
+            if lastMonthTotal > 0 && thisTotal < lastMonthTotal {
+                let saved = lastMonthTotal - thisTotal
+                let percent = Int((saved / lastMonthTotal * 100).rounded())
+                if percent >= 10 {
+                    insights.append(Insight(
+                        id: "youSaved",
+                        kind: .youSaved,
+                        title: "You saved \(Currency.format(saved, code: currencyCode))",
+                        detail: "\(percent)% less than last month so far. Keep it up!",
+                        icon: "leaf.fill",
+                        color: .green,
+                        priority: 4
+                    ))
+                }
+            }
+        }
+
+        // MARK: Spending anomaly (single expense unusually large)
+
+        if let biggest = todayExpenses.max(by: { $0.amount < $1.amount }) {
+            let trailing30Start = calendar.date(byAdding: .day, value: -30, to: now) ?? now
+            let trailing = expenses.filter { $0.date >= trailing30Start && $0.date < todayStart }
+            if !trailing.isEmpty {
+                let avg = trailing.reduce(0) { $0 + $1.amount } / Double(trailing.count)
+                if avg > 0 && biggest.amount > avg * 5 && biggest.amount > 500 {
+                    let label = biggest.merchant ?? biggest.category?.name ?? "expense"
+                    insights.append(Insight(
+                        id: "anomaly-\(biggest.id)",
+                        kind: .anomaly,
+                        title: "\(label) is unusually high",
+                        detail: "\(Currency.format(biggest.amount, code: currencyCode)) — \(Int((biggest.amount / avg).rounded()))x your average transaction.",
+                        icon: "exclamationmark.triangle.fill",
+                        color: .red,
+                        priority: 5
+                    ))
+                }
+            }
+        }
+
+        // MARK: Smart merchant auto-rule suggestion
+
+        let merchantCounts = Dictionary(
+            grouping: expenses.filter { $0.merchant != nil && !$0.merchant!.isEmpty },
+            by: { $0.merchant!.lowercased() }
+        )
+        let existingRulePatterns = Set(
+            recurringRules.compactMap { $0.merchant?.lowercased() }
+            + recurringRules.map { $0.name.lowercased() }
+        )
+        for (merchant, exps) in merchantCounts {
+            guard exps.count >= 3, !existingRulePatterns.contains(merchant) else { continue }
+            let categories = exps.compactMap(\.category)
+            let accounts = exps.compactMap(\.account)
+            let topCat = categories.isEmpty ? nil : Dictionary(grouping: categories, by: { $0.id }).max(by: { $0.value.count < $1.value.count })?.value.first
+            let topAcc = accounts.isEmpty ? nil : Dictionary(grouping: accounts, by: { $0.id }).max(by: { $0.value.count < $1.value.count })?.value.first
+            let allSameCat = topCat != nil && categories.allSatisfy { $0.id == topCat!.id }
+            let allSameAcc = topAcc != nil && accounts.allSatisfy { $0.id == topAcc!.id }
+            if allSameCat && allSameAcc {
+                let displayName = exps.last?.merchant ?? merchant
+                insights.append(Insight(
+                    id: "merchantRule-\(merchant)",
+                    kind: .merchantAutoRule,
+                    title: "Auto-categorize \(displayName)?",
+                    detail: "You've logged \(exps.count) expenses here — always \(topCat!.name) on \(topAcc!.name).",
+                    icon: "wand.and.stars",
+                    color: Color(hex: topCat!.colorHex),
+                    priority: 3,
+                    categoryID: topCat!.id
+                ))
+                break // Only show one auto-rule suggestion
+            }
+        }
+
         return prioritized(insights)
     }
 
     // MARK: - Helpers
 
     private static func prioritized(_ insights: [Insight]) -> [Insight] {
-        // Sort highest-priority first; cap at 5 for the carousel.
-        Array(insights.sorted { $0.priority > $1.priority }.prefix(5))
+        // Sort highest-priority first; cap at 6 for the carousel.
+        Array(insights.sorted { $0.priority > $1.priority }.prefix(6))
     }
 
     /// Public-facing wrapper around the streak computation. Used by Home
@@ -257,6 +345,63 @@ enum InsightEngine {
     /// internal insight engine — exposed so the chip and the insight
     /// stay perfectly in sync (no divergent "5-day streak" vs "6-day
     /// streak" between two surfaces).
+    /// Generates budget pacing insights from active budgets. Called separately
+    /// from the main `generate` because it needs Budget objects not available
+    /// in the main signature.
+    static func budgetPacingInsights(
+        budgets: [Budget],
+        expenses: [Expense],
+        currencyCode: String
+    ) -> [Insight] {
+        var results: [Insight] = []
+        for budget in budgets where budget.isActive {
+            let pace = budget.pace(in: expenses)
+            let remaining = budget.remaining(in: expenses)
+            let days = budget.daysRemaining()
+            switch pace {
+            case .overPace:
+                let dailyBudget = remaining > 0 && days > 0 ? remaining / Double(days) : 0
+                let hint = dailyBudget > 0
+                    ? "Aim for \(Currency.format(dailyBudget, code: currencyCode))/day to stay on track."
+                    : "Consider slowing down."
+                results.append(Insight(
+                    id: "budgetPace-\(budget.id)",
+                    kind: .budgetPacing,
+                    title: "\(budget.displayName) spending fast",
+                    detail: "\(days) days left, \(Currency.format(max(0, remaining), code: currencyCode)) remaining. \(hint)",
+                    icon: "gauge.open.with.lines.needle.33percent.and.arrowtriangle",
+                    color: .orange,
+                    priority: 4,
+                    categoryID: budget.category?.id
+                ))
+            case .underPace where remaining > 0:
+                results.append(Insight(
+                    id: "budgetPace-\(budget.id)",
+                    kind: .budgetPacing,
+                    title: "\(budget.displayName) under pace",
+                    detail: "\(Currency.format(remaining, code: currencyCode)) left with \(days) days to go. Well managed!",
+                    icon: "gauge.open.with.lines.needle.67percent.and.arrowtriangle",
+                    color: .green,
+                    priority: 2,
+                    categoryID: budget.category?.id
+                ))
+            case .overBudget:
+                results.append(Insight(
+                    id: "budgetPace-\(budget.id)",
+                    kind: .budgetPacing,
+                    title: "\(budget.displayName) over budget",
+                    detail: "\(Currency.format(abs(remaining), code: currencyCode)) over with \(days) days remaining.",
+                    icon: "exclamationmark.circle.fill",
+                    color: .red,
+                    priority: 5,
+                    categoryID: budget.category?.id
+                ))
+            default: break
+            }
+        }
+        return results
+    }
+
     static func loggingStreak(expenses: [Expense]) -> Int {
         computeStreak(expenses: expenses, calendar: .current, now: .now)
     }

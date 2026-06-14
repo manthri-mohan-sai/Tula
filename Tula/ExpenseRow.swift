@@ -185,6 +185,16 @@ struct ExpenseRow: View {
                     .font(.subheadline.weight(.semibold))
                     .monospacedDigit()
                     .lineLimit(1)
+                if let tax = expense.tax, tax > 0 {
+                    Text("+\(Currency.format(tax, code: currencyCode)) tax")
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundStyle(.orange)
+                }
+                if let discount = expense.discount, discount > 0 {
+                    Text("-\(Currency.format(discount, code: currencyCode)) off")
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundStyle(.green)
+                }
                 Text(relativeDateString(for: expense.date))
                     .font(.caption2)
                     .foregroundStyle(.secondary)

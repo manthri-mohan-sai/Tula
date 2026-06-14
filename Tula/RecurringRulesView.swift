@@ -115,6 +115,49 @@ struct RecurringRulesView: View {
                                     .padding(.horizontal, Spacing.md)
                             }
                             .buttonStyle(PlainRowButtonStyle())
+                            .contextMenu {
+                                if !rule.isPaused {
+                                    Button {
+                                        skipNextOccurrence(rule)
+                                    } label: {
+                                        Label("Skip Next", systemImage: "forward.fill")
+                                    }
+
+                                    Button {
+                                        snoozeRule(rule, days: 7)
+                                    } label: {
+                                        Label("Snooze 1 Week", systemImage: "moon.zzz.fill")
+                                    }
+
+                                    Button {
+                                        snoozeRule(rule, days: 30)
+                                    } label: {
+                                        Label("Snooze 1 Month", systemImage: "calendar.badge.clock")
+                                    }
+                                } else {
+                                    Button {
+                                        resumeRule(rule)
+                                    } label: {
+                                        Label("Resume Now", systemImage: "play.fill")
+                                    }
+                                }
+
+                                Divider()
+
+                                Button {
+                                    Haptics.tap()
+                                    editingRule = rule
+                                } label: {
+                                    Label("Edit", systemImage: "pencil")
+                                }
+
+                                Button(role: .destructive) {
+                                    ruleToDelete = rule
+                                    showingDeleteConfirm = true
+                                } label: {
+                                    Label("Delete", systemImage: "trash")
+                                }
+                            }
                         }
 
                         if rule.id != rules.last?.id {
@@ -124,6 +167,44 @@ struct RecurringRulesView: View {
                 }
             }
         }
+    }
+
+    /// Pauses the rule until just after the next due date, effectively
+    /// skipping one occurrence without deleting or editing the rule.
+    private func skipNextOccurrence(_ rule: RecurringRule) {
+        guard let nextDue = RecurringEngine.nextDueDate(for: rule) else { return }
+        // Pause until the day after the next due date
+        let resumeDate = Calendar.current.date(byAdding: .day, value: 1, to: nextDue) ?? nextDue
+        withAnimation(AppAnimation.snappy) {
+            rule.isPaused = true
+            rule.pausedUntil = resumeDate
+            try? context.save()
+        }
+        NotificationManager.cancelConfirmations(for: rule.id)
+        Haptics.success()
+    }
+
+    /// Snoozes the rule for the given number of days from now.
+    private func snoozeRule(_ rule: RecurringRule, days: Int) {
+        let resumeDate = Calendar.current.date(byAdding: .day, value: days, to: .now) ?? .now
+        withAnimation(AppAnimation.snappy) {
+            rule.isPaused = true
+            rule.pausedUntil = resumeDate
+            try? context.save()
+        }
+        NotificationManager.cancelConfirmations(for: rule.id)
+        Haptics.success()
+    }
+
+    /// Immediately resumes a paused rule.
+    private func resumeRule(_ rule: RecurringRule) {
+        withAnimation(AppAnimation.snappy) {
+            rule.isPaused = false
+            rule.pausedUntil = nil
+            try? context.save()
+        }
+        RecurringEngine.generateMissing(in: context)
+        Haptics.success()
     }
 
     private func deleteRule(_ rule: RecurringRule) {

@@ -61,6 +61,8 @@ struct SettingsView: View {
     @State private var showingReminders = false
     @State private var showingBackup = false
     @State private var showingExport = false
+    @State private var showingReceiptGallery = false
+    @State private var showingTransfer = false
 
     private var notificationSummary: String {
         let count = [reminderEnabled, summaryEnabled, budgetAlertsEnabled].filter { $0 }.count
@@ -107,6 +109,14 @@ struct SettingsView: View {
             .sheet(isPresented: $showingExport) { ExportView() }
             .sheet(isPresented: $showingCurrencyPicker) {
                 CurrencyPickerView(selectedCode: $primaryCurrencyCode)
+            }
+            .sheet(isPresented: $showingReceiptGallery) {
+                NavigationStack {
+                    ReceiptGalleryView()
+                }
+            }
+            .sheet(isPresented: $showingTransfer) {
+                TransferFormView()
             }
         }
     }
@@ -740,6 +750,12 @@ struct SettingsView: View {
     /// about data safety, not data export.
     private var toolsSection: some View {
         Section {
+            settingsLinkRow(title: "Receipt Gallery", icon: "photo.on.rectangle", color: .orange) {
+                showingReceiptGallery = true
+            }
+            settingsLinkRow(title: "Transfer", icon: "arrow.left.arrow.right", color: .blue) {
+                showingTransfer = true
+            }
             settingsLinkRow(title: "Export", icon: "square.and.arrow.up.fill", color: .teal) {
                 showingExport = true
             }
@@ -750,15 +766,56 @@ struct SettingsView: View {
         }
     }
 
+    @AppStorage("appLockEnabled") private var appLockEnabled: Bool = false
+    @AppStorage("appLockDelay") private var appLockDelay: Int = 0
+
+    private var lockDelayLabel: String {
+        switch appLockDelay {
+        case 0:    return "Immediately"
+        case 60:   return "After 1 min"
+        case 300:  return "After 5 min"
+        case 900:  return "After 15 min"
+        case 1800: return "After 30 min"
+        default:   return "Immediately"
+        }
+    }
+
     private var privacySection: some View {
         Section {
+            Toggle(isOn: $appLockEnabled) {
+                settingsLabel("App Lock",
+                              icon: AppLockManager.biometricIconName,
+                              color: .blue)
+            }
+            .tint(Color.tulaBrandFallback)
+
+            if appLockEnabled {
+                Picker(selection: $appLockDelay) {
+                    Text("Immediately").tag(0)
+                    Text("After 1 minute").tag(60)
+                    Text("After 5 minutes").tag(300)
+                    Text("After 15 minutes").tag(900)
+                    Text("After 30 minutes").tag(1800)
+                } label: {
+                    settingsLabel("Require \(AppLockManager.biometricTypeName)",
+                                  icon: "timer",
+                                  color: .blue)
+                }
+            }
+
             settingsLinkRow(title: "Backup & Restore", icon: "externaldrive.fill", color: .gray) {
                 showingBackup = true
             }
         } header: {
             Text("Privacy")
         } footer: {
-            if let lastDate = BackupManager.lastAutoBackupDate {
+            if appLockEnabled {
+                if appLockDelay == 0 {
+                    Text("Tula will require \(AppLockManager.biometricTypeName) each time you return to the app.")
+                } else {
+                    Text("Tula will require \(AppLockManager.biometricTypeName) if you've been away for more than \(lockDelayLabel.lowercased().replacingOccurrences(of: "after ", with: "")).")
+                }
+            } else if let lastDate = BackupManager.lastAutoBackupDate {
                 Text("Auto-backup: \(lastDate.formatted(.relative(presentation: .named))). Keeps last 7 days on device.")
             } else {
                 Text("Auto-backup runs daily. Your data never leaves your device unless you share it.")

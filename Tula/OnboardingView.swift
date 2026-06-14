@@ -1,4 +1,5 @@
 import SwiftUI
+import SwiftData
 import AVFoundation
 import Speech
 import UserNotifications
@@ -14,14 +15,16 @@ import UserNotifications
 /// appears again. Built as a TabView with .page style for swipe navigation.
 struct OnboardingView: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.modelContext) private var context
     @AppStorage("primaryCurrencyCode") private var primaryCurrencyCode: String = "INR"
     @AppStorage("onboardingComplete") private var onboardingComplete: Bool = false
 
     @State private var page: Int = 0
+    @State private var monthlyBudgetAmount: Double = 0
 
     /// Total number of swipeable pages. Drives the "Continue" vs
     /// "Get Started" label on the action button.
-    private let totalPages = 5
+    private let totalPages = 6
 
     var body: some View {
         VStack(spacing: 0) {
@@ -30,7 +33,8 @@ struct OnboardingView: View {
                 capturePage.tag(1)
                 insightsPage.tag(2)
                 permissionsPage.tag(3)
-                currencyPage.tag(4)
+                budgetPage.tag(4)
+                currencyPage.tag(5)
             }
             .tabViewStyle(.page(indexDisplayMode: .always))
             .indexViewStyle(.page(backgroundDisplayMode: .always))
@@ -197,6 +201,86 @@ struct OnboardingView: View {
             }
             .padding(.horizontal, Spacing.lg)
             .padding(.top, Spacing.md)
+
+            Spacer()
+            Spacer()
+        }
+    }
+
+    /// Page 4 — optional monthly budget setup. The user enters a target
+    /// monthly spending limit. If they enter a value > 0, an Overall
+    /// monthly budget is created on completion. Skippable by leaving
+    /// the field at zero and tapping Continue.
+    private var budgetPage: some View {
+        VStack(spacing: Spacing.lg) {
+            Spacer()
+
+            VStack(spacing: Spacing.sm) {
+                ZStack {
+                    Circle()
+                        .fill(Color.tulaBrandFallback.opacity(0.15))
+                        .frame(width: 72, height: 72)
+                    Image(systemName: "target")
+                        .font(.largeTitle.weight(.medium))
+                        .foregroundStyle(Color.tulaBrandFallback)
+                }
+
+                Text("Set a monthly budget")
+                    .font(.title2.weight(.bold))
+
+                Text("How much do you want to spend each month?\nYou can always change this later.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, Spacing.lg)
+            }
+
+            VStack(spacing: Spacing.sm) {
+                HStack {
+                    Text(Currency.symbol(for: primaryCurrencyCode))
+                        .font(.title.weight(.medium))
+                        .foregroundStyle(.secondary)
+                    TextField("0", value: $monthlyBudgetAmount, format: .number)
+                        .font(.system(size: 48, weight: .bold, design: .rounded))
+                        .keyboardType(.numberPad)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 200)
+                }
+                .frame(maxWidth: .infinity)
+
+                Text("per month")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.top, Spacing.lg)
+
+            // Quick-pick pills for common round amounts
+            HStack(spacing: Spacing.sm) {
+                ForEach([10000, 25000, 50000, 100000], id: \.self) { suggestion in
+                    Button {
+                        Haptics.selection()
+                        monthlyBudgetAmount = Double(suggestion)
+                    } label: {
+                        Text(Currency.format(Double(suggestion), code: primaryCurrencyCode))
+                            .font(.caption.weight(.semibold))
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
+                            .background(
+                                monthlyBudgetAmount == Double(suggestion)
+                                    ? Color.tulaBrandFallback
+                                    : Color.secondary.opacity(0.12),
+                                in: Capsule()
+                            )
+                            .foregroundStyle(monthlyBudgetAmount == Double(suggestion) ? .white : .primary)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+
+            Text("Skip this step if you prefer not to set a budget yet.")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+                .padding(.top, Spacing.sm)
 
             Spacer()
             Spacer()
@@ -394,6 +478,12 @@ struct OnboardingView: View {
             if page < totalPages - 1 {
                 withAnimation { page += 1 }
             } else {
+                // Create the overall monthly budget if the user set one
+                if monthlyBudgetAmount > 0 {
+                    let budget = Budget(amount: monthlyBudgetAmount, category: nil, period: .monthly)
+                    context.insert(budget)
+                    try? context.save()
+                }
                 onboardingComplete = true
                 Haptics.success()
                 dismiss()

@@ -46,6 +46,15 @@ struct TulaApp: App {
     @State private var shareExtensionDidSaveTick: Int = 0
 
     @State private var launchAnimationDone: Bool = false
+    @AppStorage("appLockEnabled") private var appLockEnabled: Bool = false
+    @AppStorage("appLockDelay") private var appLockDelay: Int = 0
+    /// Reads UserDefaults directly so the lock is active on cold launch.
+    @State private var isLocked: Bool = UserDefaults.standard.bool(forKey: "appLockEnabled")
+    /// Timestamp when the app last entered background. Used with
+    /// `appLockDelay` to implement a grace period — if the user returns
+    /// within the configured window, the lock screen auto-dismisses
+    /// without requiring biometric auth.
+    @State private var backgroundedAt: Date?
 
     @Environment(\.scenePhase) private var scenePhase
 
@@ -164,12 +173,21 @@ struct TulaApp: App {
                         OnboardingView()
                     }
 
-                if !launchAnimationDone {
+                if isLocked {
+                    AppLockView {
+                        withAnimation(AppAnimation.gentle) {
+                            isLocked = false
+                        }
+                    }
+                    .transition(.opacity)
+                    .zIndex(3)
+                }
+
+                // Launch animation plays AFTER Face ID unlock completes.
+                // While locked, we hold the animation; once isLocked flips
+                // to false the animation view appears and plays normally.
+                if !launchAnimationDone && !isLocked {
                     LaunchAnimationView {
-                        // No animated transition here — the launch
-                        // overlay's portal has already exited the
-                        // screen by the time onComplete fires, so
-                        // removing it is visually a no-op.
                         launchAnimationDone = true
                     }
                     .onAppear {
@@ -177,12 +195,25 @@ struct TulaApp: App {
                             launchAnimationDone = true
                         }
                     }
+                    .zIndex(2)
                 }
             }
         }
         .modelContainer(sharedContainer)
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase == .active {
+                // Grace period: if the user returns within the configured
+                // delay, auto-unlock without requiring biometric auth.
+                // The lock screen was shown on background to hide content
+                // from the app switcher; this just lifts it silently.
+                if appLockEnabled && isLocked && appLockDelay > 0,
+                   let bg = backgroundedAt,
+                   Date.now.timeIntervalSince(bg) < Double(appLockDelay) {
+                    withAnimation(AppAnimation.gentle) {
+                        isLocked = false
+                    }
+                }
+
                 let context = ModelContext(sharedContainer)
                 WidgetRefresh.refresh(
                     using: context,
@@ -192,6 +223,10 @@ struct TulaApp: App {
                 // Tell Siri to re-index App Shortcuts (picks up new categories etc.)
                 TulaShortcuts.updateAppShortcutParameters()
             } else if newPhase == .background {
+                if appLockEnabled {
+                    isLocked = true
+                    backgroundedAt = .now
+                }
                 appDelegate.scheduleWidgetRefresh()
                 let ctx = ModelContext(sharedContainer)
                 BackupManager.autoBackupIfNeeded(context: ctx)

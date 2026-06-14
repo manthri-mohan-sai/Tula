@@ -18,6 +18,7 @@ struct AllExpensesView: View {
 
     @State private var searchText: String = ""
     @State private var editingExpense: Expense?
+    @State private var isSearchPresented: Bool = false
 
     // Filter state — kept on this view so it survives the sheet open/close.
     @State private var filter: ExpenseFilter = .empty
@@ -28,8 +29,13 @@ struct AllExpensesView: View {
     /// nil means "no preset" — the user starts unfiltered.
     private let presetFilter: ExpenseFilter?
 
-    init(presetFilter: ExpenseFilter? = nil) {
+    /// When true, the search bar is focused with the keyboard showing
+    /// as soon as the view appears.
+    private let startSearchFocused: Bool
+
+    init(presetFilter: ExpenseFilter? = nil, startSearchFocused: Bool = false) {
         self.presetFilter = presetFilter
+        self.startSearchFocused = startSearchFocused
         if let preset = presetFilter {
             _filter = State(initialValue: preset)
         }
@@ -143,9 +149,17 @@ struct AllExpensesView: View {
         .navigationBarTitleDisplayMode(.inline)
         .searchable(
             text: $searchText,
+            isPresented: $isSearchPresented,
             placement: .navigationBarDrawer(displayMode: .always),
             prompt: "Search by merchant, category, amount"
         )
+        .onAppear {
+            if startSearchFocused {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                    isSearchPresented = true
+                }
+            }
+        }
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
                 Button {

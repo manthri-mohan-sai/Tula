@@ -100,6 +100,8 @@ struct AddExpenseView: View {
             _merchant = State(initialValue: e.merchant ?? "")
             _note = State(initialValue: e.note ?? "")
             _date = State(initialValue: e.date)
+            _tax = State(initialValue: e.tax ?? 0)
+            _discount = State(initialValue: e.discount ?? 0)
             _categoryManuallySet = State(initialValue: true)
             // Decode stored receipt blob into a UIImage so the thumbnail
             // renders immediately when the form opens in edit mode.
@@ -941,6 +943,19 @@ struct AddExpenseView: View {
 
                 Spacer()
 
+                // Re-parse: re-runs OCR on the existing image
+                Button {
+                    Haptics.tap()
+                    runReceiptOCR(on: image)
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(Color.tulaBrandFallback)
+                        .frame(width: 32, height: 32)
+                }
+                .buttonStyle(.plain)
+                .disabled(receiptOCRInFlight)
+
                 Button {
                     Haptics.tap()
                     showingReceiptSourcePicker = true
@@ -1525,6 +1540,38 @@ struct AddExpenseView: View {
                 selectedAccount = activeAccounts.first
             }
         }
+        // Smart default: pre-select the most common category for this
+        // time of day based on the user's history. Only if no category
+        // was already set (e.g. from a merchant rule or receipt parse).
+        if selectedCategory == nil && !categoryManuallySet {
+            selectedCategory = timeBasedDefaultCategory()
+        }
+    }
+
+    /// Returns the user's most commonly used category for the current
+    /// time-of-day bucket, based on recent expense history. Returns nil
+    /// if no clear pattern exists (fewer than 3 data points).
+    private func timeBasedDefaultCategory() -> Category? {
+        let hour = Calendar.current.component(.hour, from: .now)
+        let bucket: ClosedRange<Int>
+        switch hour {
+        case 5...9:   bucket = 5...9    // Morning
+        case 10...13: bucket = 10...13  // Lunch
+        case 14...17: bucket = 14...17  // Afternoon
+        case 18...22: bucket = 18...22  // Evening/Dinner
+        default:      return nil        // Late night — no default
+        }
+        let recent = Array(recentExpensesForPredictions.prefix(200))
+        let matching = recent.filter { expense in
+            let h = Calendar.current.component(.hour, from: expense.date)
+            return bucket.contains(h) && expense.category != nil
+        }
+        guard matching.count >= 3 else { return nil }
+        let counts = Dictionary(grouping: matching, by: { $0.category!.id })
+        guard let topEntry = counts.max(by: { $0.value.count < $1.value.count }),
+              topEntry.value.count >= 2,
+              Double(topEntry.value.count) / Double(matching.count) >= 0.3 else { return nil }
+        return topEntry.value.first?.category
     }
 
     private func applyMerchantRule(for input: String) {
@@ -1559,6 +1606,8 @@ struct AddExpenseView: View {
             existingExpense.note = note.isEmpty ? nil : note
             existingExpense.category = selectedCategory
             existingExpense.account = account
+            existingExpense.tax = tax > 0 ? tax : nil
+            existingExpense.discount = discount > 0 ? discount : nil
             // Receipt: only update if the user actually attached a new
             // photo this session. Removing a receipt is handled by the
             // trash button which sets `receiptImage = nil`; in that case
@@ -1579,6 +1628,8 @@ struct AddExpenseView: View {
                 source: .manual,
                 category: selectedCategory, account: account
             )
+            expense.tax = tax > 0 ? tax : nil
+            expense.discount = discount > 0 ? discount : nil
             expense.receiptImageData = receiptData
             context.insert(expense)
         }

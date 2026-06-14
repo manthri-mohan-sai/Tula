@@ -21,6 +21,7 @@ struct HomeView: View {
     @Query(sort: \Category.sortOrder) private var allCategories: [Category]
     @Query private var allMerchantRules: [MerchantRule]
     @Query private var allRecurringRules: [RecurringRule]
+    @Query(filter: #Predicate<Budget> { $0.isActive == true }) private var activeBudgets: [Budget]
     @PrimaryCurrency private var currencyCode
     @AppStorage("themePresetID") private var themePresetID: String = "saffron"
 
@@ -29,6 +30,7 @@ struct HomeView: View {
     @State private var editingExpense: Expense?
     @State private var showingAllExpenses = false
     @State private var allExpensesFilter: ExpenseFilter?
+    @State private var allExpensesSearchFocused = false
     @State private var showingSettings = false
     @State private var showingRecurring = false
     @State private var showingOverdueOnly = false
@@ -53,6 +55,12 @@ struct HomeView: View {
     @State private var recurringSuggestionToCreate: RecurringSuggestion?
     @State private var appeared = false
     @State private var showingAPIKeyPrompt = false
+    @State private var showingTransfer = false
+    @State private var showingReceiptGallery = false
+    @State private var showStreakCelebration = false
+    @State private var lastCelebratedStreak: Int = 0
+    @State private var expandedStacks: Set<String> = []
+    private var networkMonitor = NetworkMonitor.shared
 
     @AppStorage("lastUsedAccountID") private var lastUsedAccountID: String = ""
     @AppStorage("budgetAlertsEnabled") private var budgetAlertsEnabled: Bool = false
@@ -257,13 +265,23 @@ struct HomeView: View {
     /// **Streak filtered out** because the streak chip lives in the hero
     /// card now (see `loggingStreak`). Showing it twice would be noise.
     private var insights: [Insight] {
-        InsightEngine.generate(
+        var all = InsightEngine.generate(
             expenses: allExpenses,
             accounts: allAccounts,
             currencyCode: currencyCode,
             recurringRules: allRecurringRules
         )
         .filter { $0.kind != .streak }
+
+        // Merge budget pacing insights
+        let budgetInsights = InsightEngine.budgetPacingInsights(
+            budgets: activeBudgets,
+            expenses: allExpenses,
+            currencyCode: currencyCode
+        )
+        all.append(contentsOf: budgetInsights)
+
+        return all.sorted { $0.priority > $1.priority }
     }
 
     /// Current consecutive-day logging streak — used by the hero card's
@@ -329,6 +347,10 @@ struct HomeView: View {
                     heroSection
                         .shadow(color: .black.opacity(0.06), radius: 6, y: 4)
                         .shadow(color: pageAccentColor.opacity(0.05), radius: 24, y: 6)
+                    if !networkMonitor.isConnected {
+                        offlineBanner
+                            .transition(.move(edge: .top).combined(with: .opacity))
+                    }
                     quickLogSection
                         .offset(y: appeared ? 0 : 16)
                         .opacity(appeared ? 1 : 0)
@@ -381,6 +403,7 @@ struct HomeView: View {
                     }
                 }
                 checkAPIKeyPrompt()
+                checkStreakCelebration()
             }
             .navigationTitle("Tula")
             .navigationBarTitleDisplayMode(.large)
@@ -412,6 +435,26 @@ struct HomeView: View {
                     .accessibilityLabel("Budgets")
                 }
                 ToolbarItem(placement: .topBarTrailing) {
+                    Menu {
+                        Button {
+                            Haptics.tap()
+                            showingTransfer = true
+                        } label: {
+                            Label("Transfer", systemImage: "arrow.left.arrow.right")
+                        }
+                        Button {
+                            Haptics.tap()
+                            showingReceiptGallery = true
+                        } label: {
+                            Label("Receipts", systemImage: "photo.on.rectangle")
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                            .font(.body.weight(.medium))
+                    }
+                    .tint(.primary)
+                }
+                ToolbarItem(placement: .topBarTrailing) {
                     Button {
                         Haptics.tap()
                         showingSettings = true
@@ -439,9 +482,12 @@ struct HomeView: View {
             }
             .sheet(isPresented: $showingAllExpenses) {
                 NavigationStack {
-                    AllExpensesView(presetFilter: allExpensesFilter)
+                    AllExpensesView(presetFilter: allExpensesFilter, startSearchFocused: allExpensesSearchFocused)
                 }
-                .onDisappear { allExpensesFilter = nil }
+                .onDisappear {
+                    allExpensesFilter = nil
+                    allExpensesSearchFocused = false
+                }
             }
             .sheet(isPresented: $showingSettings) {
                 SettingsView()
@@ -454,6 +500,19 @@ struct HomeView: View {
             }
             .sheet(isPresented: $showingOverdueOnly) {
                 RecurringRulesView(showOnlyOverdue: true)
+            }
+            .sheet(isPresented: $showingTransfer) {
+                TransferFormView()
+            }
+            .sheet(isPresented: $showingReceiptGallery) {
+                NavigationStack {
+                    ReceiptGalleryView()
+                }
+            }
+            .sheet(isPresented: $showingShareSheet) {
+                if let image = shareableImage {
+                    ShareSheet(items: [image])
+                }
             }
             .confirmationDialog(
                 "Log \(confirmLogRule?.name ?? "expense")?",
@@ -501,6 +560,13 @@ struct HomeView: View {
                         .transition(.move(edge: .top).combined(with: .opacity))
                 }
             }
+            .overlay {
+                if showStreakCelebration {
+                    StreakCelebrationOverlay(streak: loggingStreak)
+                        .transition(.scale.combined(with: .opacity))
+                        .allowsHitTesting(false)
+                }
+            }
         }
     }
 
@@ -516,6 +582,48 @@ struct HomeView: View {
     /// this pill, the user sees nothing happen for 200-500ms and then
     /// suddenly the category appears in the list. The pill makes it
     /// visible: "yes, on-device AI is working on this."
+    @State private var showOfflineInfo = false
+
+    private var offlineBanner: some View {
+        VStack(spacing: Spacing.sm) {
+            HStack(spacing: 6) {
+                Image(systemName: "wifi.slash")
+                    .font(.system(size: 11, weight: .semibold))
+                    .symbolEffect(.pulse, options: .repeating)
+                Text("Offline")
+                    .font(.caption.weight(.semibold))
+                Button {
+                    withAnimation(.snappy(duration: 0.25)) {
+                        showOfflineInfo.toggle()
+                    }
+                } label: {
+                    Image(systemName: "info.circle.fill")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(.tertiary)
+                }
+                .buttonStyle(.plain)
+            }
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(
+                Capsule().fill(Color(.systemGray6))
+            )
+            .overlay(
+                Capsule().strokeBorder(Color.secondary.opacity(0.2), lineWidth: 0.5)
+            )
+
+            if showOfflineInfo {
+                Text("Receipt scanning and smart parsing require an internet connection.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+        .frame(maxWidth: .infinity)
+    }
+
     private var smartParsingPill: some View {
         HStack(spacing: 8) {
             // The official SF Symbol for Apple Intelligence on iOS 26.
@@ -996,30 +1104,28 @@ struct HomeView: View {
             let pillStartedAt = Date()
             let minPillVisible: TimeInterval = 1.2
 
-            Task.detached(priority: .userInitiated) {
+            Task(priority: .userInitiated) { @MainActor in
                 for item in workItems {
                     let result = await SmartExpenseParser.parse(
                         item.rawInput,
                         categories: categoryEntries
                     )
 
-                    await MainActor.run {
-                        if let result {
-                            // Re-find the category by name (FM returns a string).
-                            if let catName = result.category?.lowercased(),
-                               let category = categoryMap[catName] {
-                                item.expense.category = category
-                            }
-                            // Improve merchant if rules left it nil and FM
-                            // identified one (don't overwrite — rules might
-                            // have caught the precise merchant the user typed).
-                            if item.expense.merchant == nil,
-                               let m = result.merchant,
-                               !m.isEmpty {
-                                item.expense.merchant = m
-                            }
-                            try? context.save(); WidgetRefresh.refresh(using: context)
+                    if let result {
+                        // Re-find the category by name (FM returns a string).
+                        if let catName = result.category?.lowercased(),
+                           let category = categoryMap[catName] {
+                            item.expense.category = category
                         }
+                        // Improve merchant if rules left it nil and FM
+                        // identified one (don't overwrite — rules might
+                        // have caught the precise merchant the user typed).
+                        if item.expense.merchant == nil,
+                           let m = result.merchant,
+                           !m.isEmpty {
+                            item.expense.merchant = m
+                        }
+                        try? context.save(); WidgetRefresh.refresh(using: context)
                     }
 
                     // Enforce minimum pill visibility before decrementing.
@@ -1031,12 +1137,10 @@ struct HomeView: View {
                         try? await Task.sleep(for: .seconds(remaining))
                     }
 
-                    await MainActor.run {
-                        // Always decrement, whether parse succeeded or
-                        // not — otherwise a failed parse would leave the
-                        // pill stuck visible forever.
-                        smartParseInFlight = max(0, smartParseInFlight - 1)
-                    }
+                    // Always decrement, whether parse succeeded or
+                    // not — otherwise a failed parse would leave the
+                    // pill stuck visible forever.
+                    smartParseInFlight = max(0, smartParseInFlight - 1)
                 }
             }
     }
@@ -1098,6 +1202,26 @@ struct HomeView: View {
         }
     }
 
+    /// Checks if the user hit a streak milestone and shows a celebration.
+    /// Milestones: 7, 14, 30, 50, 100 days. Only fires once per milestone.
+    private func checkStreakCelebration() {
+        let streak = loggingStreak
+        let milestones = [7, 14, 30, 50, 100]
+        guard milestones.contains(streak), streak != lastCelebratedStreak else { return }
+        lastCelebratedStreak = streak
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.5) {
+            Haptics.success()
+            withAnimation(AppAnimation.bouncy) {
+                showStreakCelebration = true
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+                withAnimation(AppAnimation.gentle) {
+                    showStreakCelebration = false
+                }
+            }
+        }
+    }
+
     private func triggerSavePulse() {
         savePulse = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { savePulse = false }
@@ -1153,44 +1277,114 @@ struct HomeView: View {
                 return "insight-\(insight.id)"
             }
         }
+
+        var isOverdue: Bool {
+            switch self {
+            case .overdue, .overdueOverflow: return true
+            default: return false
+            }
+        }
     }
 
-    /// Returns the single most important context item to show, or nil
-    /// when nothing urgent applies. The order here defines the priority:
-    /// reviews → upcoming bills → insights → nothing.
+    /// Context cards — all live in a ZStack so they can animate offset
+    /// (sliding out from behind the top card). When stacked, secondary
+    /// cards sit behind the top card with slight peek offsets. When
+    /// expanded, they spring out to their natural positions.
     @ViewBuilder
     private var contextSections: some View {
-        let overdue = overdueContexts
-        let upcoming = upcomingContexts
-        let other = otherContexts
+        let all = overdueContexts + upcomingContexts + otherContexts
+        let isExpanded = expandedStacks.contains("contexts")
+        let shouldStack = all.count > 1
+        let cardH: CGFloat = 60
+        let gap: CGFloat = Spacing.md
+        let slot: CGFloat = cardH + gap
+        let peekGap: CGFloat = 14
+        let peekCount = shouldStack ? min(all.count, 3) - 1 : 0
 
-        if !overdue.isEmpty {
-            contextGroup(title: "Overdue", contexts: overdue)
-        }
-        if !upcoming.isEmpty {
-            contextGroup(title: "Upcoming", contexts: upcoming)
-        }
-        ForEach(other, id: \.identifier) { context in
-            contextRow(for: context)
-                .transition(.asymmetric(
-                    insertion: .move(edge: .top).combined(with: .opacity),
-                    removal: .move(edge: .leading).combined(with: .opacity)
-                ))
-        }
-    }
+        if !all.isEmpty {
+            VStack(spacing: 0) {
+                ZStack(alignment: .top) {
+                    // Render back-to-front so card 0 is visually on top.
+                    ForEach(Array(all.enumerated()).reversed(), id: \.element.identifier) { index, context in
+                        contextRow(for: context)
+                            .frame(height: cardH)
+                            .shadow(color: Color(.label).opacity(isExpanded ? 0 : 0.06),
+                                    radius: 4, y: 2)
+                            .offset(y: isExpanded
+                                    ? CGFloat(index) * slot
+                                    : CGFloat(min(index, 2)) * peekGap)
+                            .scaleEffect(isExpanded
+                                         ? 1.0
+                                         : max(1.0 - CGFloat(index) * 0.025, 0.93),
+                                         anchor: .top)
+                            .opacity(isExpanded ? 1.0 : (index <= 2 ? 1.0 : 0.0))
+                            .zIndex(Double(all.count - index))
+                            .allowsHitTesting(isExpanded)
+                            .animation(
+                                .spring(response: 0.42, dampingFraction: 0.72)
+                                .delay(isExpanded
+                                       ? Double(all.count - 1 - index) * 0.04
+                                       : Double(index) * 0.03),
+                                value: isExpanded
+                            )
+                    }
+                }
+                .frame(height: isExpanded
+                       ? CGFloat(all.count) * slot - gap
+                       : cardH + CGFloat(peekCount) * peekGap,
+                       alignment: .top)
+                .animation(.spring(response: 0.42, dampingFraction: 0.72), value: isExpanded)
+                // Badge overlay when stacked — positioned as a corner
+                // notification badge so it doesn't clash with the swipe
+                // hint arrows inside the card.
+                .overlay(alignment: .topTrailing) {
+                    if shouldStack && !isExpanded {
+                        Text("\(all.count)")
+                            .font(.caption2.weight(.bold).monospacedDigit())
+                            .foregroundStyle(.white)
+                            .frame(width: 22, height: 22, alignment: .center)
+                            .multilineTextAlignment(.center)
+                            .padding(.bottom, 1)
+                            .background(
+                                Circle()
+                                    .fill(all[0].isOverdue ? Color.red : Color.tulaBrandFallback)
+                                    .overlay(Circle().strokeBorder(Color.tulaCardSurface, lineWidth: 1))
+                                    .shadow(color: (all[0].isOverdue ? Color.red : Color.tulaBrandFallback).opacity(0.2), radius: 2, y: 1)
+                            )
+                            .offset(x: 6, y: -6)
+                            .transition(.scale.combined(with: .opacity))
+                    }
+                }
+                // Tap-to-expand overlay — only when stacked.
+                .overlay {
+                    if shouldStack && !isExpanded {
+                        Color.clear
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                Haptics.tap()
+                                withAnimation(.spring(response: 0.42, dampingFraction: 0.72)) {
+                                    _ = expandedStacks.insert("contexts")
+                                }
+                            }
+                    }
+                }
 
-    private func contextGroup(title: String, contexts: [HomeContext]) -> some View {
-        VStack(alignment: .leading, spacing: Spacing.sm) {
-            Text(title)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .textCase(.uppercase)
-            ForEach(contexts, id: \.identifier) { context in
-                contextRow(for: context)
-                    .transition(.asymmetric(
-                        insertion: .move(edge: .top).combined(with: .opacity),
-                        removal: .move(edge: .leading).combined(with: .opacity)
-                    ))
+                // Show Less when expanded.
+                if shouldStack && isExpanded {
+                    Button {
+                        withAnimation(.spring(response: 0.42, dampingFraction: 0.72)) {
+                            _ = expandedStacks.remove("contexts")
+                        }
+                    } label: {
+                        Text("Show Less")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 6)
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.top, Spacing.sm)
+                }
             }
         }
     }
@@ -1325,7 +1519,7 @@ struct HomeView: View {
                         let keys = Set(upcomingRecurring.map {
                             "\($0.rule.id)_\(Int($0.date.timeIntervalSince1970))"
                         })
-                        _ = withAnimation(AppAnimation.snappy) {
+                        withAnimation(AppAnimation.snappy) {
                             dismissedUpcomingKeys.formUnion(keys)
                         }
                     }
@@ -1601,6 +1795,32 @@ struct HomeView: View {
             case .monthPace, .bigSpender:
                 allExpensesFilter = ExpenseFilter(dateRange: .thisMonth)
                 showingAllExpenses = true
+            case .budgetPacing:
+                var filter = ExpenseFilter(dateRange: .thisMonth)
+                if let catID = insight.categoryID {
+                    filter.categoryIDs = [catID]
+                }
+                allExpensesFilter = filter
+                showingAllExpenses = true
+            case .youSaved:
+                onShowStats()
+            case .anomaly:
+                let cal = Calendar.current
+                let start = cal.startOfDay(for: .now)
+                let end = cal.date(bySettingHour: 23, minute: 59, second: 59, of: .now) ?? .now
+                allExpensesFilter = ExpenseFilter(dateRange: .custom(start: start, end: end))
+                showingAllExpenses = true
+            case .merchantAutoRule:
+                // Auto-create a merchant rule from this insight
+                let modelCtx = self.context
+                if let catID = insight.categoryID,
+                   let title = insight.title.components(separatedBy: "Auto-categorize ").last?.replacingOccurrences(of: "?", with: ""),
+                   let category = allCategories.first(where: { $0.id == catID }) {
+                    let rule = MerchantRule(pattern: title, category: category, isUserDefined: true)
+                    modelCtx.insert(rule)
+                    try? modelCtx.save()
+                    showToast("Rule created for \(title)")
+                }
             default:
                 break
             }
@@ -1705,9 +1925,26 @@ struct HomeView: View {
         VStack(alignment: .leading, spacing: Spacing.md) {
             SectionHeader(
                 title: "Recent",
-                trailing: recentExpenses.isEmpty ? nil : AnyView(SeeAllLink {
-                    showingAllExpenses = true
-                })
+                trailing: recentExpenses.isEmpty ? nil : AnyView(
+                    HStack(spacing: 2) {
+                        Button {
+                            Haptics.tap()
+                            allExpensesSearchFocused = true
+                            showingAllExpenses = true
+                        } label: {
+                            Image(systemName: "magnifyingglass")
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundStyle(.gray)
+                                .frame(width: 28, height: 28)
+                                .background(
+                                    Circle().fill(Color(.systemGray6))
+                                )
+                        }
+                        SeeAllLink {
+                            showingAllExpenses = true
+                        }
+                    }
+                )
             )
 
             if recentExpenses.isEmpty {
@@ -1772,6 +2009,9 @@ struct HomeView: View {
         .clipShape(RoundedRectangle(cornerRadius: CornerRadius.medium, style: .continuous))
     }
 
+    @State private var shareableImage: UIImage?
+    @State private var showingShareSheet = false
+
     @ViewBuilder
     private func expenseContextMenu(for expense: Expense) -> some View {
         Button { editingExpense = expense } label: { Label("Edit", systemImage: "pencil") }
@@ -1781,9 +2021,21 @@ struct HomeView: View {
                 Label("Log Another \(merchant)", systemImage: "arrow.clockwise")
             }
         }
+        Button { shareExpenseCard(expense) } label: {
+            Label("Share", systemImage: "square.and.arrow.up")
+        }
         Divider()
         Button(role: .destructive) { delete(expense) } label: {
             Label("Delete", systemImage: "trash")
+        }
+    }
+
+    private func shareExpenseCard(_ expense: Expense) {
+        let renderer = ImageRenderer(content: SpendingCardView(expense: expense, currencyCode: currencyCode))
+        renderer.scale = UIScreen.main.scale
+        if let image = renderer.uiImage {
+            shareableImage = image
+            showingShareSheet = true
         }
     }
 
@@ -1990,6 +2242,7 @@ private struct SwipeableContextRow<Content: View>: View {
                     onTap()
                 }
         }
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 
     private var swipeGesture: some Gesture {
@@ -2579,6 +2832,47 @@ private struct QuickLogBar: View {
     }
 }
 
+// MARK: - Streak Celebration Overlay
+
+/// Full-screen celebration for streak milestones. Shows a large flame icon
+/// with the streak count and a congratulatory message. Auto-dismisses.
+private struct StreakCelebrationOverlay: View {
+    let streak: Int
+
+    private var message: String {
+        switch streak {
+        case 7:   return "One week of consistent tracking!"
+        case 14:  return "Two weeks strong!"
+        case 30:  return "A full month. You're a pro!"
+        case 50:  return "50 days. That's dedication!"
+        case 100: return "100 days! Legendary status."
+        default:  return "\(streak)-day streak!"
+        }
+    }
+
+    var body: some View {
+        VStack(spacing: Spacing.lg) {
+            Spacer()
+            Image(systemName: "flame.fill")
+                .font(.system(size: 72))
+                .foregroundStyle(.orange.gradient)
+                .symbolEffect(.bounce, options: .repeating.speed(0.5))
+
+            Text("\(streak)-Day Streak!")
+                .font(.title.weight(.bold))
+
+            Text(message)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(.ultraThinMaterial)
+    }
+}
+
 // MARK: - Waveform Indicator
 
 /// Animated bars that pulse during voice recording. Purely decorative — the
@@ -2615,3 +2909,65 @@ private struct WaveformIndicator: View {
         .onAppear { animate = true }
     }
 }
+// MARK: - Shareable Spending Card
+
+/// Renders a visually appealing spending card image for sharing.
+/// Used by ImageRenderer to generate a static PNG from an expense.
+private struct SpendingCardView: View {
+    let expense: Expense
+    let currencyCode: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                if let cat = expense.category {
+                    Image(systemName: cat.iconKey)
+                        .font(.title3.weight(.medium))
+                        .foregroundStyle(.white)
+                        .frame(width: 40, height: 40)
+                        .background(Color(hex: cat.colorHex).opacity(0.9), in: Circle())
+                }
+                Spacer()
+                Text(expense.date.formatted(.dateTime.day().month(.abbreviated).year()))
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.white.opacity(0.7))
+            }
+
+            Text(Currency.format(expense.amount, code: currencyCode))
+                .font(.system(size: 36, weight: .bold, design: .rounded))
+                .foregroundStyle(.white)
+
+            if let merchant = expense.merchant, !merchant.isEmpty {
+                Text(merchant)
+                    .font(.headline)
+                    .foregroundStyle(.white.opacity(0.9))
+            }
+
+            if let cat = expense.category {
+                Text(cat.name)
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.white.opacity(0.7))
+            }
+
+            HStack {
+                Spacer()
+                Text("तुला")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(.white.opacity(0.4))
+            }
+        }
+        .padding(24)
+        .frame(width: 320)
+        .background(
+            LinearGradient(
+                colors: [Color(hex: expense.category?.colorHex ?? "#D97706"), Color(hex: expense.category?.colorHex ?? "#D97706").opacity(0.7)],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+    }
+}
+
+
+

@@ -97,6 +97,12 @@ enum NotificationManager {
             let effectiveHour = (hour == 0 && minute == 0) ? 21 : hour
             scheduleDailySummary(at: effectiveHour, minute: minute, context: context)
         }
+        // Monthly summary auto-schedules when daily summary is enabled
+        if defaults.bool(forKey: "summaryEnabled") {
+            scheduleMonthlySummary(context: context)
+        } else {
+            cancelMonthlySummary()
+        }
     }
 
     private static func dailySummaryContent(using context: ModelContext) -> (title: String, body: String) {
@@ -247,7 +253,84 @@ enum NotificationManager {
             .removePendingNotificationRequests(withIdentifiers: [summaryID])
     }
 
-    static func cancel() { cancelDailyReminder(); cancelDailySummary() }
+    static func cancel() { cancelDailyReminder(); cancelDailySummary(); cancelMonthlySummary() }
+
+    // MARK: - Monthly Summary
+
+    private static let monthlySummaryID = "tula.monthly.summary"
+
+    /// Schedules a notification on the last day of each month at 9 PM
+    /// with a spending wrap-up: total spent, top category, and comparison
+    /// with the previous month.
+    static func scheduleMonthlySummary(context: ModelContext) {
+        cancelMonthlySummary()
+
+        let calendar = Calendar.current
+        let now = Date.now
+        let code = UserDefaults.standard.string(forKey: "primaryCurrencyCode") ?? "INR"
+
+        // Build content from this month's data
+        let monthStart = calendar.date(from: calendar.dateComponents([.year, .month], from: now))!
+        let descriptor = FetchDescriptor<Expense>(
+            predicate: #Predicate { $0.date >= monthStart }
+        )
+        let thisMonthExpenses = (try? context.fetch(descriptor)) ?? []
+        let thisTotal = thisMonthExpenses.reduce(0.0) { $0 + $1.amount }
+
+        // Previous month total for comparison
+        let prevMonthStart = calendar.date(byAdding: .month, value: -1, to: monthStart)!
+        let prevDescriptor = FetchDescriptor<Expense>(
+            predicate: #Predicate { $0.date >= prevMonthStart && $0.date < monthStart }
+        )
+        let prevMonthExpenses = (try? context.fetch(prevDescriptor)) ?? []
+        let prevTotal = prevMonthExpenses.reduce(0.0) { $0 + $1.amount }
+
+        let content = UNMutableNotificationContent()
+        content.sound = .default
+
+        let totalStr = Currency.format(thisTotal, code: code)
+        let monthName = now.formatted(.dateTime.month(.wide))
+
+        if thisTotal > 0 {
+            content.title = "\(monthName) Wrap-up: \(totalStr)"
+
+            // Top category
+            let topCat = Dictionary(grouping: thisMonthExpenses) { $0.category?.name ?? "Other" }
+                .max(by: { $0.value.reduce(0) { $0 + $1.amount } < $1.value.reduce(0) { $0 + $1.amount } })
+
+            var body = "\(thisMonthExpenses.count) expense\(thisMonthExpenses.count == 1 ? "" : "s") logged."
+            if let top = topCat {
+                let catTotal = Currency.format(top.value.reduce(0) { $0 + $1.amount }, code: code)
+                body += " Top: \(top.key) (\(catTotal))."
+            }
+            if prevTotal > 0 {
+                let diff = thisTotal - prevTotal
+                let pct = Int((abs(diff) / prevTotal * 100).rounded())
+                body += diff > 0 ? " Up \(pct)% from last month." : " Down \(pct)% from last month."
+            }
+            content.body = body
+        } else {
+            content.title = "\(monthName) Summary"
+            content.body = "No expenses logged this month. Tap to catch up."
+        }
+
+        // Fire on the last day of the current month at 21:00
+        guard let nextMonth = calendar.date(byAdding: .month, value: 1, to: monthStart),
+              let lastDay = calendar.date(byAdding: .day, value: -1, to: nextMonth) else { return }
+
+        var comps = calendar.dateComponents([.year, .month, .day], from: lastDay)
+        comps.hour = 21
+        comps.minute = 0
+
+        let trigger = UNCalendarNotificationTrigger(dateMatching: comps, repeats: false)
+        let request = UNNotificationRequest(identifier: monthlySummaryID, content: content, trigger: trigger)
+        UNUserNotificationCenter.current().add(request) { _ in }
+    }
+
+    static func cancelMonthlySummary() {
+        UNUserNotificationCenter.current()
+            .removePendingNotificationRequests(withIdentifiers: [monthlySummaryID])
+    }
 
     /// Check whether a daily reminder is currently scheduled.
     static func isScheduled() async -> Bool {
