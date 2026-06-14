@@ -218,16 +218,26 @@ enum InsightEngine {
             currencyCode: currencyCode
         )
         for suggestion in suggestions.prefix(2) {
-            let freqLabel = suggestion.frequency == .weekly ? "weekly" : "monthly"
+            let freqLabel: String
+            switch suggestion.frequency {
+            case .custom:  freqLabel = "daily"
+            case .weekly:  freqLabel = "weekly"
+            case .monthly: freqLabel = "monthly"
+            case .yearly:  freqLabel = "yearly"
+            }
             let variableHint = suggestion.isVariable ? " (amount varies)" : ""
+            // Daily patterns are the most actionable — user is duplicating
+            // manually every day. Give them higher priority (5) to surface
+            // above weekly/monthly suggestions (4).
+            let priority = suggestion.frequency == .custom ? 5 : 4
             insights.append(Insight(
                 id: "recurringSuggestion-\(suggestion.merchant.lowercased())",
                 kind: .recurringSuggestion,
-                title: "\(suggestion.merchant) looks recurring",
+                title: "\(suggestion.merchant) looks \(freqLabel)",
                 detail: "Paid \(freqLabel)\(variableHint). Tap to set up auto-tracking.",
                 icon: "arrow.clockwise.circle.fill",
                 color: Color(hex: suggestion.category?.colorHex ?? "#D97706"),
-                priority: 4,
+                priority: priority,
                 suggestion: suggestion
             ))
         }
@@ -307,6 +317,7 @@ enum RecurringPatternDetector {
         currencyCode: String
     ) -> [RecurringSuggestion] {
         let calendar = Calendar.current
+        let now = Date.now
         let existingMerchants = Set(
             existingRules.compactMap { $0.merchant?.lowercased().trimmingCharacters(in: .whitespaces) }
             + existingRules.map { $0.name.lowercased().trimmingCharacters(in: .whitespaces) }
@@ -341,9 +352,15 @@ enum RecurringPatternDetector {
 
             let avgInterval = Double(intervals.reduce(0, +)) / Double(intervals.count)
 
-            // Detect frequency based on average interval
+            // Detect frequency based on average interval.
+            // Daily detection requires 3+ occurrences to reduce false
+            // positives (two expenses on consecutive days isn't a pattern).
             let frequency: RecurringFrequency?
-            if avgInterval >= 5 && avgInterval <= 10 {
+            if avgInterval <= 2 && exps.count >= 3 {
+                // Daily pattern (every 0-2 days, at least 3 occurrences)
+                let allDaily = intervals.allSatisfy { $0 <= 3 }
+                frequency = allDaily ? .custom : nil
+            } else if avgInterval >= 5 && avgInterval <= 10 {
                 // Weekly pattern (7 days ± 3)
                 let allWeekly = intervals.allSatisfy { $0 >= 4 && $0 <= 11 }
                 frequency = allWeekly ? .weekly : nil
@@ -392,10 +409,33 @@ enum RecurringPatternDetector {
             ))
         }
 
-        // Sort by occurrence count (most frequent patterns first)
-        return suggestions.sorted {
-            merchantExpenses[$0.merchant.lowercased()]?.count ?? 0
-            > merchantExpenses[$1.merchant.lowercased()]?.count ?? 0
+        // Score suggestions by a combination of occurrence count and
+        // recency. A daily expense with 5 occurrences this week should
+        // rank above a twice-seen expense from last week. The recency
+        // boost gives a 2x multiplier to expenses from the last 7 days,
+        // fading to 1x for older expenses.
+        return suggestions.sorted { a, b in
+            let aExps = merchantExpenses[a.merchant.lowercased()] ?? []
+            let bExps = merchantExpenses[b.merchant.lowercased()] ?? []
+            let aScore = recurrencyScore(for: aExps, now: now, calendar: calendar)
+            let bScore = recurrencyScore(for: bExps, now: now, calendar: calendar)
+            return aScore > bScore
+        }
+    }
+
+    /// Computes a ranking score for a set of merchant expenses.
+    /// Score = sum of per-expense recency weights. Recent expenses
+    /// (last 7 days) get a 2.0 weight; older ones get 1.0. This
+    /// means a daily expense with 5 recent occurrences (score ~10)
+    /// outranks a weekly expense with 2 older occurrences (score ~2).
+    private static func recurrencyScore(
+        for expenses: [Expense],
+        now: Date,
+        calendar: Calendar
+    ) -> Double {
+        let sevenDaysAgo = calendar.date(byAdding: .day, value: -7, to: now) ?? now
+        return expenses.reduce(0) { total, expense in
+            total + (expense.date >= sevenDaysAgo ? 2.0 : 1.0)
         }
     }
 

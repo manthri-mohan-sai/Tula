@@ -47,6 +47,7 @@ struct SettingsView: View {
     @State private var geminiAPIKey: String = ""
     @State private var geminiModel: String = ""
     @State private var showingGeminiConfig: Bool = false
+    @State private var showingAPIKeyTutorial: Bool = false
 
     @State private var configVersion: Int = 0
 
@@ -531,6 +532,26 @@ struct SettingsView: View {
             .sheet(isPresented: $showingGeminiConfig) {
                 geminiConfigSheet
             }
+
+            Button {
+                Haptics.tap()
+                showingAPIKeyTutorial = true
+            } label: {
+                HStack {
+                    settingsLabel("How to get API key",
+                                  icon: "questionmark.circle.fill",
+                                  color: .purple)
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .sheet(isPresented: $showingAPIKeyTutorial) {
+                GeminiAPIKeyTutorialView()
+            }
         }
     }
 
@@ -955,5 +976,151 @@ struct ThemePickerView: View {
             }
         }
         .presentationDetents([.medium])
+    }
+}
+
+// MARK: - Gemini API Key Tutorial
+
+/// Step-by-step guide for obtaining a free Gemini API key from
+/// Google AI Studio. Each step has a number, title, and description
+/// with visual cues. A prominent "Open Google AI Studio" button at
+/// the bottom links directly to the key creation page.
+struct GeminiAPIKeyTutorialView: View {
+    @Environment(\.dismiss) private var dismiss
+
+    private let steps: [(icon: String, title: String, detail: String)] = [
+        (
+            icon: "globe",
+            title: "Open Google AI Studio",
+            detail: "Navigate to aistudio.google.com and sign in with your Google account."
+        ),
+        (
+            icon: "key.fill",
+            title: "Go to API Keys",
+            detail: "Click on \"API Keys\" in the left sidebar menu."
+        ),
+        (
+            icon: "plus.circle.fill",
+            title: "Create API Key",
+            detail: "Click the \"Create API key\" button at the top of the dashboard."
+        ),
+        (
+            icon: "folder.fill",
+            title: "Select a Project",
+            detail: "Choose the default Gemini project or pick an existing Google Cloud project."
+        ),
+        (
+            icon: "doc.on.doc.fill",
+            title: "Copy Your Key",
+            detail: "Give your key a name if prompted, click \"Create key\", then copy the generated key to your clipboard."
+        ),
+        (
+            icon: "checkmark.circle.fill",
+            title: "Paste in Tula",
+            detail: "Go back to Settings > Smart Parsing > Configure, paste the key, and tap Save."
+        )
+    ]
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: Spacing.xl) {
+                    // Header
+                    VStack(alignment: .leading, spacing: Spacing.sm) {
+                        HStack(spacing: Spacing.sm) {
+                            Image(systemName: "sparkle")
+                                .font(.title2.weight(.semibold))
+                                .foregroundStyle(.blue)
+                            Text("Get Your Free API Key")
+                                .font(.title2.weight(.bold))
+                        }
+                        Text("Gemini offers a generous free tier. Follow these steps to get your API key in under a minute.")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.horizontal, Spacing.xl)
+                    .padding(.top, Spacing.lg)
+
+                    // Steps
+                    VStack(spacing: 0) {
+                        ForEach(Array(steps.enumerated()), id: \.offset) { index, step in
+                            HStack(alignment: .top, spacing: Spacing.md) {
+                                // Step number with connector line
+                                VStack(spacing: 0) {
+                                    ZStack {
+                                        Circle()
+                                            .fill(Color.blue.opacity(0.15))
+                                            .frame(width: 36, height: 36)
+                                        Text("\(index + 1)")
+                                            .font(.subheadline.weight(.bold))
+                                            .foregroundStyle(.blue)
+                                    }
+                                    if index < steps.count - 1 {
+                                        Rectangle()
+                                            .fill(Color.blue.opacity(0.15))
+                                            .frame(width: 2)
+                                            .frame(maxHeight: .infinity)
+                                    }
+                                }
+                                .frame(width: 36)
+
+                                VStack(alignment: .leading, spacing: 4) {
+                                    HStack(spacing: 6) {
+                                        Image(systemName: step.icon)
+                                            .font(.subheadline.weight(.medium))
+                                            .foregroundStyle(.blue)
+                                            .frame(width: 18)
+                                        Text(step.title)
+                                            .font(.subheadline.weight(.semibold))
+                                    }
+                                    Text(step.detail)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                                .padding(.bottom, Spacing.lg)
+                            }
+                        }
+                    }
+                    .padding(.horizontal, Spacing.xl)
+
+                    // Open AI Studio button
+                    Button {
+                        if let url = URL(string: "https://aistudio.google.com/apikey") {
+                            UIApplication.shared.open(url)
+                        }
+                    } label: {
+                        HStack(spacing: Spacing.sm) {
+                            Image(systemName: "arrow.up.right.square.fill")
+                                .font(.subheadline.weight(.semibold))
+                            Text("Open Google AI Studio")
+                                .font(.subheadline.weight(.semibold))
+                        }
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                        .background(Color.blue)
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    }
+                    .padding(.horizontal, Spacing.xl)
+
+                    // Footnote
+                    Text("The free tier includes 1,500 requests/day — more than enough for personal expense tracking. Your key is stored only on your device.")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                        .padding(.horizontal, Spacing.xl)
+                        .padding(.bottom, Spacing.xl)
+                }
+            }
+            .background(Color.tulaBackground)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                        .fontWeight(.semibold)
+                }
+            }
+        }
+        .presentationDetents([.large])
     }
 }

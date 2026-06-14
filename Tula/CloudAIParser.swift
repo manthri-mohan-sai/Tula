@@ -650,7 +650,9 @@ enum CloudAIParser {
         let paymentMode = json["payment_mode"] as? String
         let rawCardLast4 = (json["card_last4"] as? String)?
             .filter(\.isNumber)
-        let cardLast4 = rawCardLast4.flatMap { $0.count >= 4 ? String($0.suffix(4)) : nil }
+        // Accept 2+ digits — a 2-digit suffix combined with card-name
+        // matching is enough to identify the right account in most cases.
+        let cardLast4 = rawCardLast4.flatMap { $0.count >= 2 ? String($0.suffix(min($0.count, 4))) : nil }
 
         let discount = flexDouble(json["discount"])
         let tax = flexDouble(json["tax"])

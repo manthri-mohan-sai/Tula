@@ -719,17 +719,39 @@ final class ShareSession: ObservableObject {
             // Strategy 1: card_last4 exact match (strongest signal).
             // Gemini extracted the last 4 digits directly from the receipt.
             if let digits = cardLast4, digits.count == 4 {
-                if let match = accounts.first(where: { $0.last4Digits == digits }) {
+                if let match = accounts.first(where: {
+                    guard let acctDigits = $0.last4Digits, acctDigits.count >= 2 else { return false }
+                    return acctDigits.suffix(4) == digits
+                }) {
                     return (catNames, accEntries, match.name)
                 }
             }
 
-            // Strategy 2: name-word match against paymentMode.
+            let generic: Set<String> = [
+                "bank", "card", "credit", "debit", "cash", "wallet",
+                "account", "savings", "current", "the", "my", "upi"
+            ]
+
+            // Strategy 2: partial digit suffix (2-3 digits) + name match.
+            // When only 2-3 digits were extracted, combine with card-name
+            // matching for a confident result.
+            if let digits = cardLast4, digits.count >= 2, digits.count < 4,
+               let mode = paymentMode?.lowercased(), !mode.isEmpty {
+                for account in accounts {
+                    guard let acctDigits = account.last4Digits, acctDigits.count >= 2 else { continue }
+                    guard acctDigits.hasSuffix(digits) else { continue }
+                    let words = account.name
+                        .lowercased()
+                        .components(separatedBy: .alphanumerics.inverted)
+                        .filter { $0.count >= 3 && !generic.contains($0) }
+                    if words.contains(where: { mode.contains($0) }) {
+                        return (catNames, accEntries, account.name)
+                    }
+                }
+            }
+
+            // Strategy 3: name-word match against paymentMode.
             if let mode = paymentMode?.lowercased(), !mode.isEmpty {
-                let generic: Set<String> = [
-                    "bank", "card", "credit", "debit", "cash", "wallet",
-                    "account", "savings", "current", "the", "my", "upi"
-                ]
                 var bestAccount: Account?
                 var bestScore = 0
                 for account in accounts {
@@ -737,7 +759,13 @@ final class ShareSession: ObservableObject {
                         .lowercased()
                         .components(separatedBy: .alphanumerics.inverted)
                         .filter { $0.count >= 3 && !generic.contains($0) }
-                    let score = words.filter { mode.contains($0) }.count
+                    var score = words.filter { mode.contains($0) }.count
+                    // Boost accounts with partial digit match.
+                    if let digits = cardLast4, digits.count >= 2,
+                       let acctDigits = account.last4Digits,
+                       acctDigits.hasSuffix(digits) {
+                        score += 2
+                    }
                     if score > bestScore {
                         bestScore = score
                         bestAccount = account

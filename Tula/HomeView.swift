@@ -51,10 +51,13 @@ struct HomeView: View {
     @State private var dismissedInsightIDs: Set<String> = []
     @State private var dismissedUpcomingKeys: Set<String> = []
     @State private var recurringSuggestionToCreate: RecurringSuggestion?
+    @State private var appeared = false
+    @State private var showingAPIKeyPrompt = false
 
     @AppStorage("lastUsedAccountID") private var lastUsedAccountID: String = ""
     @AppStorage("budgetAlertsEnabled") private var budgetAlertsEnabled: Bool = false
     @AppStorage("smartParsingEnabled") private var smartParsingEnabled: Bool = true
+    @AppStorage("lastAPIKeyPromptDate") private var lastAPIKeyPromptDate: Double = 0
 
     init(onShowStats: @escaping () -> Void = {}) {
         self.onShowStats = onShowStats
@@ -324,7 +327,12 @@ struct HomeView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: Spacing.xl) {
                     heroSection
+                        .shadow(color: .black.opacity(0.06), radius: 6, y: 4)
+                        .shadow(color: pageAccentColor.opacity(0.05), radius: 24, y: 6)
                     quickLogSection
+                        .offset(y: appeared ? 0 : 16)
+                        .opacity(appeared ? 1 : 0)
+                        .animation(AppAnimation.gentle.delay(0.05), value: appeared)
                     if smartParseInFlight > 0 {
                         smartParsingPill
                             .transition(.asymmetric(
@@ -334,7 +342,13 @@ struct HomeView: View {
                             ))
                     }
                     contextSections
+                        .offset(y: appeared ? 0 : 16)
+                        .opacity(appeared ? 1 : 0)
+                        .animation(AppAnimation.gentle.delay(0.10), value: appeared)
                     recentSection
+                        .offset(y: appeared ? 0 : 16)
+                        .opacity(appeared ? 1 : 0)
+                        .animation(AppAnimation.gentle.delay(0.15), value: appeared)
                 }
                 .padding(.horizontal, Spacing.xl)
                 .padding(.top, Spacing.xs)
@@ -358,6 +372,16 @@ struct HomeView: View {
             // pattern as AddExpense and Apple's stock forms. Was previously
             // `.interactively` which required dragging past a threshold.
             .scrollDismissesKeyboard(.immediately)
+            .onAppear {
+                // Delay the entrance so it plays after the launch
+                // animation overlay has faded out.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+                    withAnimation(AppAnimation.gentle) {
+                        appeared = true
+                    }
+                }
+                checkAPIKeyPrompt()
+            }
             .navigationTitle("Tula")
             .navigationBarTitleDisplayMode(.large)
             .toolbar {
@@ -460,6 +484,15 @@ struct HomeView: View {
                 Button("Cancel", role: .cancel) { }
             } message: {
                 Text("This occurrence will be marked as skipped.")
+            }
+            .alert("Configure AI for Receipts",
+                   isPresented: $showingAPIKeyPrompt) {
+                Button("Set Up Now") {
+                    showingSettings = true
+                }
+                Button("Later", role: .cancel) { }
+            } message: {
+                Text("Add your free Google Gemini API key in Settings to enable smart receipt scanning and expense parsing.")
             }
             .overlay(alignment: .top) {
                 if let toast = toastMessage {
@@ -601,17 +634,23 @@ struct HomeView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
-                RoundedRectangle(cornerRadius: CornerRadius.large, style: .continuous)
-                    .fill(
-                        LinearGradient(
-                            colors: [
-                                Color.tulaBrandFallback.opacity(0.14),
-                                Color.tulaBrandFallback.opacity(0.04)
-                            ],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
+                ZStack {
+                    // Opaque base so the card has visible "mass" for shadows.
+                    RoundedRectangle(cornerRadius: CornerRadius.large, style: .continuous)
+                        .fill(Color(.systemBackground))
+                    // Brand gradient overlay on top of the opaque base.
+                    RoundedRectangle(cornerRadius: CornerRadius.large, style: .continuous)
+                        .fill(
+                            LinearGradient(
+                                colors: [
+                                    Color.tulaBrandFallback.opacity(0.08),
+                                    Color.tulaBrandFallback.opacity(0.02)
+                                ],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
                         )
-                    )
+                }
             )
             .clipShape(RoundedRectangle(cornerRadius: CornerRadius.large, style: .continuous))
             .scaleEffect(heroTapPulse ? 1.02 : 1.0)
@@ -1032,6 +1071,31 @@ struct HomeView: View {
             budgets: budgets,
             expenses: allExpenses
         )
+    }
+
+    /// Shows a once-per-day prompt when Gemini is selected but API key
+    /// isn't configured. Skipped if Apple FM is available (the user has
+    /// a working on-device alternative).
+    private func checkAPIKeyPrompt() {
+        // Skip if Apple FM is available — user has on-device AI.
+        if AIProvider.appleFM.isReady { return }
+
+        // Only prompt when Gemini is the selected provider.
+        let provider = AIProviderStorage.selected
+        guard provider == .gemini else { return }
+
+        // Skip if already configured.
+        guard !provider.isReady else { return }
+
+        // Throttle to once per day.
+        let lastPrompt = Date(timeIntervalSince1970: lastAPIKeyPromptDate)
+        guard !Calendar.current.isDateInToday(lastPrompt) else { return }
+
+        // Show after a short delay so the home screen settles first.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+            lastAPIKeyPromptDate = Date.now.timeIntervalSince1970
+            showingAPIKeyPrompt = true
+        }
     }
 
     private func triggerSavePulse() {
@@ -1667,7 +1731,7 @@ struct HomeView: View {
                         .padding(.horizontal, Spacing.lg)
                         .frame(height: rowHeight)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(PressableScaleStyle(scale: 0.97))
                 .listRowInsets(EdgeInsets())
                 .listRowBackground(Color.clear)
                 // Separator BELOW each row except the last. We must target

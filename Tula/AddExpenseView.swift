@@ -76,6 +76,7 @@ struct AddExpenseView: View {
     @State private var ocrExtractedFields: Set<OCRField> = []
     @State private var scanErrorMessage: String?
     @State private var canRetryAIGate: Bool = false
+    @State private var showingScanErrorAlert: Bool = false
     enum OCRField: Hashable { case amount, merchant }
 
     /// Image picker presentation state. `.camera` shows the camera UI;
@@ -220,6 +221,26 @@ struct AddExpenseView: View {
             .onReceive(NotificationCenter.default.publisher(for: .tulaStartReceiptScan)) { _ in
                 amountFocused = false
                 showingReceiptSource = .camera
+            }
+            .onChange(of: scanErrorMessage) { _, newValue in
+                if newValue != nil {
+                    showingScanErrorAlert = true
+                }
+            }
+            .alert("Unable to Read Receipt",
+                   isPresented: $showingScanErrorAlert) {
+                if canRetryAIGate {
+                    Button("Try Again") {
+                        if let image = receiptImage {
+                            runReceiptOCR(on: image, forceCloudAI: true)
+                        }
+                    }
+                }
+                Button(canRetryAIGate ? "Enter Manually" : "OK", role: .cancel) {
+                    scanErrorMessage = nil
+                }
+            } message: {
+                Text(scanErrorMessage ?? "The receipt could not be processed. You can enter the details manually.")
             }
             .sheet(isPresented: $showingItemsSheet) {
                 // Pass plain values to the sheet — no synthetic Expense
@@ -1005,6 +1026,7 @@ struct AddExpenseView: View {
     private func runReceiptOCR(on image: UIImage, forceCloudAI: Bool = false) {
         receiptOCRInFlight = true
         canRetryAIGate = false
+        scanErrorMessage = nil
         let beforeAmount = amount
         let beforeMerchant = merchant
         let beforeNote = note
@@ -1284,32 +1306,59 @@ struct AddExpenseView: View {
     }
 
     /// Match the receipt's card/bank info to one of the user's accounts.
-    /// Three strategies, tried in priority order:
-    /// 1. **Gemini card_last4** - AI extracted the last 4 digits directly.
-    ///    Exact match against account.last4Digits.
-    /// 2. **Name-word match on paymentMode** — distinctive words from the
+    /// Strategies tried in priority order:
+    /// 1. **Exact 4-digit match** — strongest signal, unambiguous.
+    /// 2. **Partial digit suffix + card-name match** — when AI extracts
+    ///    only 2-3 digits (e.g. "43"), combine with name matching for
+    ///    a confident result. Requires BOTH signals to avoid false positives.
+    /// 3. **Name-word match on paymentMode** — distinctive words from the
     ///    account name ("IndusInd", "HDFC") matched against the AI's
-    ///    paymentMode string (e.g. "IndusInd Credit Card").
-    /// 3. **Name-word match on raw OCR text** (FM mode only).
+    ///    paymentMode string.
+    /// 4. **Name-word match on raw OCR text** (FM mode only).
     private func resolveAccountFromReceipt(paymentMode: String?, cardLast4: String?, rawText: String?) -> Account? {
         // Strategy 1: direct last-4-digit match from Gemini.
         if let digits = cardLast4, digits.count == 4 {
             for account in activeAccounts {
-                guard let acctDigits = account.last4Digits, acctDigits.count == 4 else { continue }
-                if acctDigits == digits { return account }
+                guard let acctDigits = account.last4Digits, acctDigits.count >= 2 else { continue }
+                if acctDigits.suffix(4) == digits { return account }
             }
         }
 
-        // Strategy 2 & 3: name-word fuzzy match.
+        // Build a haystack from all text sources for name matching.
         var haystack = ""
         if let pm = paymentMode { haystack += " " + pm.lowercased() }
         if let raw = rawText { haystack += " " + raw.lowercased() }
-        guard !haystack.isEmpty else { return nil }
 
         let generic: Set<String> = [
             "bank", "card", "credit", "debit", "cash", "wallet",
             "account", "savings", "current", "the", "my", "upi"
         ]
+
+        // Strategy 2: partial digit suffix (2-3 digits) + name match.
+        // When the AI only extracted 2-3 digits, we combine that with
+        // card-name matching for confidence. "43" alone is ambiguous,
+        // but "43" + "HDFC" in the payment mode is a strong match
+        // against an account named "HDFC Bank" with last4 "8743".
+        if let digits = cardLast4, digits.count >= 2, digits.count < 4, !haystack.isEmpty {
+            for account in activeAccounts {
+                guard let acctDigits = account.last4Digits, acctDigits.count >= 2 else { continue }
+                // Check if the account's stored digits end with the
+                // extracted digits (suffix match).
+                guard acctDigits.hasSuffix(digits) else { continue }
+                // Also require at least one distinctive name-word match
+                // to avoid false positives from digit coincidence.
+                let words = account.name
+                    .lowercased()
+                    .components(separatedBy: .alphanumerics.inverted)
+                    .filter { $0.count >= 3 && !generic.contains($0) }
+                let nameMatch = words.contains { haystack.contains($0) }
+                if nameMatch { return account }
+            }
+        }
+
+        // Strategy 3 & 4: name-word fuzzy match only.
+        guard !haystack.isEmpty else { return nil }
+
         var bestAccount: Account?
         var bestScore = 0
         for account in activeAccounts {
@@ -1317,7 +1366,15 @@ struct AddExpenseView: View {
                 .lowercased()
                 .components(separatedBy: .alphanumerics.inverted)
                 .filter { $0.count >= 3 && !generic.contains($0) }
-            let score = words.filter { haystack.contains($0) }.count
+            var score = words.filter { haystack.contains($0) }.count
+            // Boost accounts that have a digit suffix match even without
+            // meeting the full Strategy 2 bar — a partial digit match
+            // alongside a name match is a stronger signal than name alone.
+            if let digits = cardLast4, digits.count >= 2,
+               let acctDigits = account.last4Digits,
+               acctDigits.hasSuffix(digits) {
+                score += 2
+            }
             if score > bestScore {
                 bestScore = score
                 bestAccount = account
