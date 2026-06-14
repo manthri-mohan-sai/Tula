@@ -668,7 +668,7 @@ struct AddExpenseView: View {
             Card(padding: 0, cornerRadius: CornerRadius.medium) {
                 VStack(spacing: 0) {
                     ForEach(Array(splitRows.enumerated()), id: \.element.id) { index, _ in
-                        splitRowView(row: $splitRows[index])
+                        splitRowView(row: $splitRows[index], index: index)
                             .opacity(splitRowsAppeared.contains(splitRows[index].id) ? 1 : 0)
                             .onAppear {
                                 let rowID = splitRows[index].id
@@ -696,7 +696,7 @@ struct AddExpenseView: View {
                                     .symbolRenderingMode(.hierarchical)
                                     .foregroundStyle(Color.tulaBrandFallback)
                                     .frame(width: 36, height: 36)
-                                Text("Add another category")
+                                Text("Add split")
                                     .font(.subheadline.weight(.medium))
                                     .foregroundStyle(Color.tulaBrandFallback)
                                 Spacer()
@@ -714,9 +714,25 @@ struct AddExpenseView: View {
         }
     }
 
-    private func splitRowView(row: Binding<SplitRow>) -> some View {
+    /// Binding that auto-balances: editing any non-last row adjusts the last row.
+    private func splitAmountBinding(at index: Int) -> Binding<Double> {
+        Binding(
+            get: { splitRows[index].amount },
+            set: { newValue in
+                splitRows[index].amount = newValue
+                guard index < splitRows.count - 1 else { return }
+                let othersTotal = splitRows.enumerated()
+                    .filter { $0.offset != splitRows.count - 1 }
+                    .reduce(0.0) { $0 + $1.element.amount }
+                splitRows[splitRows.count - 1].amount = max(0, amount - othersTotal)
+            }
+        )
+    }
+
+    private func splitRowView(row: Binding<SplitRow>, index: Int) -> some View {
         let catColor: Color = row.wrappedValue.category.map { Color(hex: $0.colorHex) } ?? .secondary
         let hasAmount = row.wrappedValue.amount > 0
+        let isLastRow = index == splitRows.count - 1
 
         return HStack(spacing: Spacing.md) {
             // Category circle — sole color carrier
@@ -785,24 +801,31 @@ struct AddExpenseView: View {
 
             Spacer(minLength: Spacing.sm)
 
-            // Amount
-            FormattedAmountField(
-                value: row.amount,
-                currencyCode: currencyCode,
-                placeholder: "0",
-                font: .title3.weight(.semibold),
-                alignment: .trailing
-            )
-            .frame(minWidth: 60)
-            .opacity(hasAmount ? 1 : 0.35)
+            // Amount — last row is read-only (auto-calculated), others are editable
+            if isLastRow && splitRows.count > 1 {
+                Text(Currency.format(row.wrappedValue.amount, code: currencyCode))
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(hasAmount ? Color.primary : Color.primary.opacity(0.35))
+                    .frame(minWidth: 60, alignment: .trailing)
+                    .contentTransition(.numericText())
+                    .animation(.easeInOut(duration: 0.2), value: row.wrappedValue.amount)
+            } else {
+                FormattedAmountField(
+                    value: splitAmountBinding(at: index),
+                    currencyCode: currencyCode,
+                    placeholder: "0",
+                    font: .title3.weight(.semibold),
+                    alignment: .trailing
+                )
+                .frame(minWidth: 60)
+                .opacity(hasAmount ? 1 : 0.35)
+            }
 
             // Remove (only if >2 rows)
             if splitRows.count > 2 {
                 Button {
                     Haptics.tap()
-                    withAnimation(AppAnimation.gentle) {
-                        splitRows.removeAll { $0.id == row.wrappedValue.id }
-                    }
+                    removeSplitRow(id: row.wrappedValue.id)
                 } label: {
                     Image(systemName: "minus.circle.fill")
                         .font(.title3)
@@ -871,13 +894,13 @@ struct AddExpenseView: View {
     // MARK: - Split Lifecycle
 
     private func activateSplitMode() {
-        let currentAccount = selectedAccount ?? activeAccounts.first
-        let firstCategory = selectedCategory
-        let secondCategory = activeCategories.first { $0.id != firstCategory?.id }
+        let firstAccount = mostFrequentAccount ?? selectedAccount ?? activeAccounts.first
+        let secondAccount = activeAccounts.first { $0.id != firstAccount?.id } ?? firstAccount
+        let currentCategory = selectedCategory
 
         splitRows = [
-            SplitRow(amount: amount, category: firstCategory, account: currentAccount),
-            SplitRow(amount: 0, category: secondCategory, account: currentAccount)
+            SplitRow(amount: amount, category: currentCategory, account: firstAccount),
+            SplitRow(amount: 0, category: currentCategory, account: secondAccount)
         ]
 
         withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) {
@@ -901,11 +924,25 @@ struct AddExpenseView: View {
     }
 
     private func addSplitRow() {
-        let usedCategoryIDs = Set(splitRows.compactMap { $0.category?.id })
-        let nextCategory = activeCategories.first { !usedCategoryIDs.contains($0.id) }
-        let currentAccount = splitRows.last?.account ?? selectedAccount ?? activeAccounts.first
+        let inheritedCategory = splitRows.last?.category ?? selectedCategory
+        let usedAccountIDs = Set(splitRows.compactMap { $0.account?.id })
+        let nextAccount = activeAccounts.first { !usedAccountIDs.contains($0.id) } ?? activeAccounts.first
+        let remaining = max(0, amount - splitAssignedTotal)
+
         withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
-            splitRows.append(SplitRow(amount: 0, category: nextCategory, account: currentAccount))
+            splitRows.append(SplitRow(amount: remaining, category: inheritedCategory, account: nextAccount))
+        }
+    }
+
+    private func removeSplitRow(id: UUID) {
+        guard let index = splitRows.firstIndex(where: { $0.id == id }) else { return }
+        let removedAmount = splitRows[index].amount
+        withAnimation(AppAnimation.gentle) {
+            splitRows.remove(at: index)
+            // Give removed amount to the last row so the total stays balanced
+            if !splitRows.isEmpty {
+                splitRows[splitRows.count - 1].amount += removedAmount
+            }
         }
     }
 
@@ -1837,6 +1874,11 @@ struct AddExpenseView: View {
         return [expenseLatest, outgoingLatest, incomingLatest]
             .compactMap { $0 }
             .max()
+    }
+
+    /// The account with the most expenses — used as default for split rows.
+    private var mostFrequentAccount: Account? {
+        activeAccounts.max(by: { $0.expenses.count < $1.expenses.count })
     }
 
     // MARK: - Category Priority

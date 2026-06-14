@@ -631,7 +631,7 @@ struct InsightsCarousel: View {
                 // Native page swipe with system dots disabled — we draw
                 // our own below.
                 .tabViewStyle(.page(indexDisplayMode: .never))
-                .frame(height: 88)
+                .frame(height: 110)
 
                 if insights.count > 1 {
                     dotIndicator
@@ -714,7 +714,7 @@ private struct InsightCard: View {
                 Text(insight.detail)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .lineLimit(2)
+                    .lineLimit(3)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
