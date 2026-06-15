@@ -60,6 +60,7 @@ struct HomeView: View {
 
     @State private var showStreakCelebration = false
     @State private var lastCelebratedStreak: Int = 0
+    @State private var showStreakSheet = false
     @State private var expandedStacks: Set<String> = []
     private var networkMonitor = NetworkMonitor.shared
 
@@ -264,13 +265,23 @@ struct HomeView: View {
     /// that caching adds complexity for no measurable win.
     ///
     /// **Streak filtered out** because the streak chip lives in the hero
-    /// card now (see `loggingStreak`). Showing it twice would be noise.
+    /// card now (see `budgetStreak`). Showing it twice would be noise.
+    /// Daily budget pace from the overall (non-category-scoped) monthly budget.
+    /// Returns nil when no overall budget is set — streaks are hidden.
+    private var dailyBudget: Double? {
+        guard let overall = activeBudgets.first(where: { $0.category == nil }),
+              overall.amount > 0 else { return nil }
+        let daysInMonth = Double(Calendar.current.range(of: .day, in: .month, for: .now)?.count ?? 30)
+        return overall.amount / daysInMonth
+    }
+
     private var insights: [Insight] {
         var all = InsightEngine.generate(
             expenses: allExpenses,
             accounts: allAccounts,
             currencyCode: currencyCode,
-            recurringRules: allRecurringRules
+            recurringRules: allRecurringRules,
+            dailyBudget: dailyBudget
         )
         .filter { $0.kind != .streak }
 
@@ -285,11 +296,10 @@ struct HomeView: View {
         return all.sorted { $0.priority > $1.priority }
     }
 
-    /// Current consecutive-day logging streak — used by the hero card's
-    /// streak chip. Same algorithm InsightEngine uses internally; the
-    /// public helper keeps the two surfaces in sync.
-    private var loggingStreak: Int {
-        InsightEngine.loggingStreak(expenses: allExpenses)
+    /// Consecutive days under daily budget pace. Returns 0 when no
+    /// overall budget is set — the streak chip is hidden.
+    private var budgetStreak: Int {
+        InsightEngine.underBudgetStreak(expenses: allExpenses, dailyBudget: dailyBudget)
     }
 
     private var monthOverMonthChange: Double? {
@@ -407,7 +417,7 @@ struct HomeView: View {
                     }
                 }
                 checkAPIKeyPrompt()
-                checkStreakCelebration()
+                checkBudgetStreakCelebration()
             }
             .navigationTitle("Tula")
             .navigationBarTitleDisplayMode(.large)
@@ -519,6 +529,11 @@ struct HomeView: View {
                     ShareSheet(items: [image])
                 }
             }
+            .sheet(isPresented: $showStreakSheet) {
+                StreakDetailSheet(streak: budgetStreak, dailyBudget: dailyBudget)
+                    .presentationDetents([.medium])
+                    .presentationDragIndicator(.visible)
+            }
             .confirmationDialog(
                 "Log \(confirmLogRule?.name ?? "expense")?",
                 isPresented: $showingLogConfirm,
@@ -567,7 +582,7 @@ struct HomeView: View {
             }
             .overlay {
                 if showStreakCelebration {
-                    StreakCelebrationOverlay(streak: loggingStreak)
+                    StreakCelebrationOverlay(streak: budgetStreak)
                         .transition(.scale.combined(with: .opacity))
                         .allowsHitTesting(false)
                 }
@@ -690,27 +705,29 @@ struct HomeView: View {
                         Text(Date.now, format: .dateTime.month(.wide).year())
                             .font(.caption.weight(.medium))
                             .foregroundStyle(.secondary)
-                        // Streak chip beside the month label — when the
-                        // user has a logging streak going, a small flame
-                        // glyph with the day count appears here. This used
-                        // to be its own insight callout below the hero,
-                        // but it's better integrated into the hero itself:
-                        // streaks are about *consistency* with the headline
-                        // number, not a separate piece of information.
-                        // Threshold (3 days) matches the insight engine's.
-                        if loggingStreak >= 3 {
-                            HStack(spacing: 3) {
-                                Image(systemName: "flame.fill")
-                                Text("\(loggingStreak)")
+                        // Under-budget streak chip — shows consecutive
+                        // days where spending stayed within the daily
+                        // budget pace. Rewards restraint, not activity.
+                        // Hidden when no overall budget is set.
+                        if budgetStreak >= 3 {
+                            Button {
+                                Haptics.tap()
+                                showStreakSheet = true
+                            } label: {
+                                HStack(spacing: 3) {
+                                    Image(systemName: "leaf.fill")
+                                    Text("\(budgetStreak)")
+                                }
+                                .font(.caption2.weight(.bold))
+                                .foregroundStyle(.green)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(
+                                    Capsule().fill(Color.green.opacity(0.15))
+                                )
                             }
-                            .font(.caption2.weight(.bold))
-                            .foregroundStyle(.orange)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(
-                                Capsule().fill(Color.orange.opacity(0.15))
-                            )
-                            .accessibilityLabel("\(loggingStreak) day logging streak")
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("\(budgetStreak) day under-budget streak")
                         }
                         Spacer()
                         if let change = monthOverMonthChange {
@@ -1218,10 +1235,10 @@ struct HomeView: View {
         }
     }
 
-    /// Checks if the user hit a streak milestone and shows a celebration.
+    /// Checks if the user hit an under-budget streak milestone.
     /// Milestones: 7, 14, 30, 50, 100 days. Only fires once per milestone.
-    private func checkStreakCelebration() {
-        let streak = loggingStreak
+    private func checkBudgetStreakCelebration() {
+        let streak = budgetStreak
         let milestones = [7, 14, 30, 50, 100]
         guard milestones.contains(streak), streak != lastCelebratedStreak else { return }
         lastCelebratedStreak = streak
@@ -1319,6 +1336,39 @@ struct HomeView: View {
 
         if !all.isEmpty {
             VStack(spacing: 0) {
+                // Collapse button above the stack
+                if shouldStack && isExpanded {
+                    Button {
+                        withAnimation(.spring(response: 0.42, dampingFraction: 0.72)) {
+                            _ = expandedStacks.remove("contexts")
+                        }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "chevron.up") // Fixed: Usually "Show less" points up, not down
+                                .font(.caption2.weight(.bold))
+                            Text("Show less")
+                                .font(.caption.weight(.semibold))
+                        }
+                        // Style adjustments for adaptive contrast
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background {
+                            Capsule()
+                                // Combines a material blur with a dynamic background shape fill
+                                .fill(.thinMaterial)
+                                .background(Capsule().fill(Color(.systemBackground).opacity(0.4)))
+                                .overlay {
+                                    Capsule()
+                                        .strokeBorder(.primary.opacity(0.15), lineWidth: 0.75)
+                                }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.bottom, Spacing.md)
+                }
+
                 ZStack(alignment: .top) {
                     // Render back-to-front so card 0 is visually on top.
                     ForEach(Array(all.enumerated()).reversed(), id: \.element.identifier) { index, context in
@@ -1385,22 +1435,7 @@ struct HomeView: View {
                     }
                 }
 
-                // Show Less when expanded.
-                if shouldStack && isExpanded {
-                    Button {
-                        withAnimation(.spring(response: 0.42, dampingFraction: 0.72)) {
-                            _ = expandedStacks.remove("contexts")
-                        }
-                    } label: {
-                        Text("Show Less")
-                            .font(.caption.weight(.medium))
-                            .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 6)
-                    }
-                    .buttonStyle(.plain)
-                    .padding(.top, Spacing.sm)
-                }
+
             }
         }
     }
@@ -1613,7 +1648,7 @@ struct HomeView: View {
                     Text(detail)
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                        .lineLimit(2)
                 }
 
                 Spacer(minLength: 0)
@@ -2168,7 +2203,7 @@ private struct UpcomingRecurringRow: View {
                 Text("\(relativeDue) · \(rule.cadenceLabel)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                    .lineLimit(2)
             }
 
             Spacer(minLength: Spacing.xs)
@@ -2852,28 +2887,28 @@ private struct QuickLogBar: View {
 
 // MARK: - Streak Celebration Overlay
 
-/// Full-screen celebration for streak milestones. Shows a large flame icon
-/// with the streak count and a congratulatory message. Auto-dismisses.
+/// Full-screen celebration for under-budget streak milestones. Shows a
+/// leaf icon with the streak count and a message about discipline.
 private struct StreakCelebrationOverlay: View {
     let streak: Int
 
     private var message: String {
         switch streak {
-        case 7:   return "One week of consistent tracking!"
-        case 14:  return "Two weeks strong!"
-        case 30:  return "A full month. You're a pro!"
-        case 50:  return "50 days. That's dedication!"
-        case 100: return "100 days! Legendary status."
-        default:  return "\(streak)-day streak!"
+        case 7:   return "One week of mindful spending!"
+        case 14:  return "Two weeks within budget!"
+        case 30:  return "A full month under budget. Impressive!"
+        case 50:  return "50 days of financial discipline!"
+        case 100: return "100 days! True balance achieved."
+        default:  return "\(streak) days under budget!"
         }
     }
 
     var body: some View {
         VStack(spacing: Spacing.lg) {
             Spacer()
-            Image(systemName: "flame.fill")
+            Image(systemName: "leaf.fill")
                 .font(.system(size: 72))
-                .foregroundStyle(.orange.gradient)
+                .foregroundStyle(.green.gradient)
                 .symbolEffect(.bounce, options: .repeating.speed(0.5))
 
             Text("\(streak)-Day Streak!")
@@ -2888,6 +2923,70 @@ private struct StreakCelebrationOverlay: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(.ultraThinMaterial)
+    }
+}
+
+// MARK: - Streak Detail Sheet
+
+/// Bottom sheet that explains the under-budget streak calculation.
+private struct StreakDetailSheet: View {
+    let streak: Int
+    let dailyBudget: Double?
+    @PrimaryCurrency private var currencyCode
+
+    var body: some View {
+        VStack(spacing: Spacing.xl) {
+            VStack(spacing: Spacing.md) {
+                ZStack {
+                    Circle()
+                        .fill(Color.green.opacity(0.12))
+                        .frame(width: 80, height: 80)
+                    Image(systemName: "leaf.fill")
+                        .font(.system(size: 36))
+                        .foregroundStyle(.green)
+                }
+
+                Text("\(streak)")
+                    .font(.system(size: 56, weight: .bold, design: .rounded))
+
+                Text("day streak")
+                    .font(.title3.weight(.medium))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.top, Spacing.xl)
+
+            VStack(alignment: .leading, spacing: Spacing.md) {
+                explanationRow(
+                    icon: "chart.bar.fill",
+                    text: "Days where your spending stayed within your daily budget pace."
+                )
+                if let daily = dailyBudget {
+                    explanationRow(
+                        icon: "target",
+                        text: "Your daily pace: \(Currency.format(daily, code: currencyCode))/day based on your monthly budget."
+                    )
+                }
+                explanationRow(
+                    icon: "checkmark.circle.fill",
+                    text: "Days with zero spending always count — spending nothing is a win."
+                )
+            }
+            .padding(.horizontal, Spacing.xl)
+
+            Spacer()
+        }
+    }
+
+    private func explanationRow(icon: String, text: String) -> some View {
+        HStack(alignment: .top, spacing: Spacing.md) {
+            Image(systemName: icon)
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(.green)
+                .frame(width: 24)
+            Text(text)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+        }
     }
 }
 

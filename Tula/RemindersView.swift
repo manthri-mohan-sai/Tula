@@ -101,7 +101,7 @@ struct RemindersView: View {
                     Text("Daily Summary")
                 } footer: {
                     if summaryEnabled {
-                        Text("Get a personalized spending summary with insights — top categories, comparisons to your average, and streaks.")
+                        Text("Get a personalized spending summary with insights — top categories, comparisons to your average, and budget tracking.")
                     } else {
                         Text("Receive a daily summary of what you spent, with smart insights.")
                     }

@@ -732,7 +732,6 @@ struct AddExpenseView: View {
     private func splitRowView(row: Binding<SplitRow>, index: Int) -> some View {
         let catColor: Color = row.wrappedValue.category.map { Color(hex: $0.colorHex) } ?? .secondary
         let hasAmount = row.wrappedValue.amount > 0
-        let isLastRow = index == splitRows.count - 1
 
         return HStack(spacing: Spacing.md) {
             // Category circle — sole color carrier
@@ -801,25 +800,16 @@ struct AddExpenseView: View {
 
             Spacer(minLength: Spacing.sm)
 
-            // Amount — last row is read-only (auto-calculated), others are editable
-            if isLastRow && splitRows.count > 1 {
-                Text(Currency.format(row.wrappedValue.amount, code: currencyCode))
-                    .font(.title3.weight(.semibold))
-                    .foregroundStyle(hasAmount ? Color.primary : Color.primary.opacity(0.35))
-                    .frame(minWidth: 60, alignment: .trailing)
-                    .contentTransition(.numericText())
-                    .animation(.easeInOut(duration: 0.2), value: row.wrappedValue.amount)
-            } else {
-                FormattedAmountField(
-                    value: splitAmountBinding(at: index),
-                    currencyCode: currencyCode,
-                    placeholder: "0",
-                    font: .title3.weight(.semibold),
-                    alignment: .trailing
-                )
-                .frame(minWidth: 60)
-                .opacity(hasAmount ? 1 : 0.35)
-            }
+            // Amount — all rows editable; non-last rows auto-balance the last
+            FormattedAmountField(
+                value: splitAmountBinding(at: index),
+                currencyCode: currencyCode,
+                placeholder: "0",
+                font: .title3.weight(.semibold),
+                alignment: .trailing
+            )
+            .frame(minWidth: 60)
+            .opacity(hasAmount ? 1 : 0.35)
 
             // Remove (only if >2 rows)
             if splitRows.count > 2 {
@@ -1317,7 +1307,6 @@ struct AddExpenseView: View {
 
                 Spacer()
 
-                // Re-parse: re-runs OCR on the existing image
                 Button {
                     Haptics.tap()
                     runReceiptOCR(on: image)
@@ -1334,9 +1323,9 @@ struct AddExpenseView: View {
                     Haptics.tap()
                     showingReceiptSourcePicker = true
                 } label: {
-                    Image(systemName: "arrow.triangle.2.circlepath")
+                    Image(systemName: "photo.badge.plus")
                         .font(.subheadline.weight(.medium))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.tulaBrandFallback)
                         .frame(width: 32, height: 32)
                 }
                 .buttonStyle(.plain)
@@ -1355,6 +1344,20 @@ struct AddExpenseView: View {
             }
             .padding(.horizontal, Spacing.md)
             .padding(.vertical, Spacing.sm)
+
+            // AI not configured warning
+            if !SmartExpenseParser.isAvailable && scanErrorMessage == nil && !receiptOCRInFlight {
+                HStack(spacing: Spacing.sm) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                    Text("AI not configured — receipt won't be auto-read. Set up in Settings > AI Provider.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, Spacing.md)
+                .padding(.bottom, Spacing.sm)
+            }
         }
         .background(
             RoundedRectangle(cornerRadius: CornerRadius.medium, style: .continuous)
@@ -1363,32 +1366,58 @@ struct AddExpenseView: View {
         .clipShape(RoundedRectangle(cornerRadius: CornerRadius.medium, style: .continuous))
     }
 
+    @State private var receiptSaved = false
+
     private func receiptFullScreenView(image: UIImage) -> some View {
         ZStack(alignment: .topTrailing) {
             Color.black.ignoresSafeArea()
-            // ZoomableReceiptView intentionally NOT given .ignoresSafeArea()
-            // so its bounds respect the Dynamic Island / notch. The black
-            // background above still bleeds to screen edges.
             ZoomableReceiptView(image: image)
-            // Close button — placed last so it sits above the image layer.
-            // Use a generous tap target to avoid mis-fires.
+            // Top bar with gradient scrim for icon visibility on any background
             VStack {
                 HStack {
+                    Button {
+                        Haptics.tap()
+                        UIImageWriteToSavedPhotosAlbum(image, nil, nil, nil)
+                        receiptSaved = true
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                            receiptSaved = false
+                        }
+                    } label: {
+                        Image(systemName: receiptSaved ? "checkmark.circle.fill" : "square.and.arrow.down.fill")
+                            .font(.title2)
+                            .foregroundStyle(.white)
+                            .shadow(color: .black.opacity(0.5), radius: 4, y: 1)
+                            .padding()
+                            .contentTransition(.symbolEffect(.replace))
+                    }
+                    .contentShape(Rectangle())
+
                     Spacer()
+
                     Button {
                         showingFullReceipt = false
                     } label: {
                         Image(systemName: "xmark.circle.fill")
                             .font(.title)
-                            .symbolRenderingMode(.hierarchical)
                             .foregroundStyle(.white)
+                            .shadow(color: .black.opacity(0.5), radius: 4, y: 1)
                             .padding()
                     }
                     .contentShape(Rectangle())
                 }
                 Spacer()
             }
-            .padding(.top, 8)
+            .background(
+                LinearGradient(
+                    colors: [.black.opacity(0.5), .clear],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                .frame(height: 120)
+                .ignoresSafeArea()
+                .allowsHitTesting(false),
+                alignment: .top
+            )
         }
     }
 

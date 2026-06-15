@@ -58,7 +58,8 @@ enum InsightEngine {
         expenses: [Expense],
         accounts: [Account],
         currencyCode: String,
-        recurringRules: [RecurringRule] = []
+        recurringRules: [RecurringRule] = [],
+        dailyBudget: Double? = nil
     ) -> [Insight] {
         var insights: [Insight] = []
         let calendar = Calendar.current
@@ -110,17 +111,17 @@ enum InsightEngine {
             }
         }
 
-        // MARK: Logging streak
+        // MARK: Under-budget streak
 
-        let streak = computeStreak(expenses: expenses, calendar: calendar, now: now)
+        let streak = computeUnderBudgetStreak(expenses: expenses, dailyBudget: dailyBudget, calendar: calendar, now: now)
         if streak >= 3 {
             insights.append(Insight(
                 id: "streak",
                 kind: .streak,
                 title: "\(streak)-day streak",
-                detail: streakMessage(for: streak),
-                icon: "flame.fill",
-                color: .orange,
+                detail: underBudgetMessage(for: streak),
+                icon: "leaf.fill",
+                color: .green,
                 priority: streak >= 7 ? 5 : 4
             ))
         }
@@ -360,15 +361,15 @@ enum InsightEngine {
             let days = budget.daysRemaining()
             switch pace {
             case .overPace:
-                let dailyBudget = remaining > 0 && days > 0 ? remaining / Double(days) : 0
-                let hint = dailyBudget > 0
-                    ? "Aim for \(Currency.format(dailyBudget, code: currencyCode))/day to stay on track."
+                let dailyPace = remaining > 0 && days > 0 ? remaining / Double(days) : 0
+                let hint = dailyPace > 0
+                    ? "Target \(Currency.format(dailyPace, code: currencyCode))/day."
                     : "Consider slowing down."
                 results.append(Insight(
                     id: "budgetPace-\(budget.id)",
                     kind: .budgetPacing,
                     title: "\(budget.displayName) spending fast",
-                    detail: "\(days) days left, \(Currency.format(max(0, remaining), code: currencyCode)) remaining. \(hint)",
+                    detail: "\(Currency.format(max(0, remaining), code: currencyCode)) left, \(days) days to go. \(hint)",
                     icon: "gauge.open.with.lines.needle.33percent.and.arrowtriangle",
                     color: .orange,
                     priority: 4,
@@ -378,8 +379,8 @@ enum InsightEngine {
                 results.append(Insight(
                     id: "budgetPace-\(budget.id)",
                     kind: .budgetPacing,
-                    title: "\(budget.displayName) under pace",
-                    detail: "\(Currency.format(remaining, code: currencyCode)) left with \(days) days to go. Well managed!",
+                    title: "\(budget.displayName) on track",
+                    detail: "\(Currency.format(remaining, code: currencyCode)) left, \(days) days to go.",
                     icon: "gauge.open.with.lines.needle.67percent.and.arrowtriangle",
                     color: .green,
                     priority: 2,
@@ -390,7 +391,7 @@ enum InsightEngine {
                     id: "budgetPace-\(budget.id)",
                     kind: .budgetPacing,
                     title: "\(budget.displayName) over budget",
-                    detail: "\(Currency.format(abs(remaining), code: currencyCode)) over with \(days) days remaining.",
+                    detail: "\(Currency.format(abs(remaining), code: currencyCode)) over, \(days) days left.",
                     icon: "exclamationmark.circle.fill",
                     color: .red,
                     priority: 5,
@@ -402,30 +403,42 @@ enum InsightEngine {
         return results
     }
 
-    static func loggingStreak(expenses: [Expense]) -> Int {
-        computeStreak(expenses: expenses, calendar: .current, now: .now)
+    /// Under-budget streak for the hero chip. Returns 0 when no daily
+    /// budget is available (no streak shown if no budget is set).
+    static func underBudgetStreak(expenses: [Expense], dailyBudget: Double?) -> Int {
+        guard let dailyBudget, dailyBudget > 0 else { return 0 }
+        return computeUnderBudgetStreak(expenses: expenses, dailyBudget: dailyBudget, calendar: .current, now: .now)
     }
 
-    /// Count consecutive days (including today) with at least one expense.
-    /// "Today might not yet have a log" handling: streak = streak through
-    /// yesterday if today is empty (so the user can see "5-day streak —
-    /// don't break it").
-    private static func computeStreak(expenses: [Expense], calendar: Calendar, now: Date) -> Int {
-        guard !expenses.isEmpty else { return 0 }
+    /// Count consecutive days (including today) where daily spending stayed
+    /// at or below the daily budget pace. Zero-spend days always count —
+    /// spending nothing is the ultimate win for a mindful spending app.
+    private static func computeUnderBudgetStreak(
+        expenses: [Expense], dailyBudget: Double?,
+        calendar: Calendar, now: Date
+    ) -> Int {
+        guard let dailyBudget, dailyBudget > 0 else { return 0 }
 
-        let daysWithExpenses = Set(expenses.map { calendar.startOfDay(for: $0.date) })
+        // Build a map of day → total spend
+        var spendByDay: [Date: Double] = [:]
+        for expense in expenses {
+            let day = calendar.startOfDay(for: expense.date)
+            spendByDay[day, default: 0] += expense.amount
+        }
 
         var streak = 0
         var cursor = calendar.startOfDay(for: now)
-        let todayHasExpenses = daysWithExpenses.contains(cursor)
 
-        // If today has nothing yet, start the count from yesterday so
-        // morning users still see the streak.
-        if !todayHasExpenses {
+        // Today might not be over yet — if no spending so far, it still counts
+        let todaySpend = spendByDay[cursor] ?? 0
+        if todaySpend > dailyBudget {
+            // Today already over budget — check from yesterday
             cursor = calendar.date(byAdding: .day, value: -1, to: cursor) ?? cursor
         }
 
-        while daysWithExpenses.contains(cursor) {
+        while true {
+            let daySpend = spendByDay[cursor] ?? 0
+            guard daySpend <= dailyBudget else { break }
             streak += 1
             guard let prev = calendar.date(byAdding: .day, value: -1, to: cursor) else { break }
             cursor = prev
@@ -434,13 +447,13 @@ enum InsightEngine {
         return streak
     }
 
-    private static func streakMessage(for streak: Int) -> String {
+    private static func underBudgetMessage(for streak: Int) -> String {
         switch streak {
-        case 3...6: return "Keep it up — \(streak) days strong."
-        case 7...13: return "A full week of logging."
-        case 14...29: return "Two weeks of consistent tracking."
-        case 30...: return "A month-long habit. Impressive."
-        default: return "Building the habit."
+        case 3...6: return "Spending under control — \(streak) days on track."
+        case 7...13: return "A full week within budget. Great discipline."
+        case 14...29: return "Two weeks of smart spending."
+        case 30...: return "A month under budget. Impressive restraint."
+        default: return "Staying within your daily pace."
         }
     }
 }

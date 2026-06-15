@@ -128,14 +128,8 @@ enum NotificationManager {
         let isWeekend = weekday == 1 || weekday == 7
 
         let recentAvg = recentDailyAverage(calendar: calendar, context: context)
-        let streak = loggingStreak(calendar: calendar, context: context)
-
-        if streak >= 3 {
-            return (
-                "Don't break your streak!",
-                "You've logged expenses \(streak) days in a row. Keep it going — even small ones count."
-            )
-        }
+        // Gentle nudge — no streak pressure. The under-budget streak
+        // lives in the app UI, not in push notifications.
 
         if isWeekend {
             let nudges = [
