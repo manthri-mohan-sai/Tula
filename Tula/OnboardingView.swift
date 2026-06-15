@@ -17,7 +17,6 @@ import UserNotifications
 /// Dismissal sets `@AppStorage("onboardingComplete") = true`.
 /// Progress shown via `OnboardingProgressBar` replacing page dots.
 struct OnboardingView: View {
-    @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var context
     @AppStorage("primaryCurrencyCode") private var primaryCurrencyCode: String = "INR"
     @AppStorage("onboardingComplete") private var onboardingComplete: Bool = false
@@ -38,6 +37,19 @@ struct OnboardingView: View {
     @State private var motion = MotionManager.shared
 
     private let totalPages = 7
+
+    /// Budget quick-pick suggestions scaled to the selected currency.
+    private var budgetSuggestions: [Int] {
+        switch primaryCurrencyCode {
+        case "INR": return [10_000, 25_000, 50_000, 1_00_000]
+        case "USD", "EUR": return [500, 1_000, 2_000, 5_000]
+        case "GBP": return [400, 800, 1_500, 4_000]
+        case "AED": return [2_000, 4_000, 8_000, 20_000]
+        case "SGD", "AUD", "CAD": return [500, 1_500, 3_000, 7_000]
+        case "JPY": return [50_000, 1_00_000, 2_00_000, 5_00_000]
+        default: return [500, 1_000, 2_000, 5_000]
+        }
+    }
 
     /// Whether the Continue button should be enabled on the current page.
     private var canContinue: Bool {
@@ -369,7 +381,7 @@ struct OnboardingView: View {
             .entranceAnimation(visible: pageAppeared.contains(5), delay: 0.3)
 
             HStack(spacing: Spacing.sm) {
-                ForEach([10000, 25000, 50000, 100000], id: \.self) { suggestion in
+                ForEach(budgetSuggestions, id: \.self) { suggestion in
                     Button {
                         Haptics.selection()
                         monthlyBudgetAmount = Double(suggestion)
@@ -628,9 +640,12 @@ struct OnboardingView: View {
             context.insert(budget)
             try? context.save()
         }
-        onboardingComplete = true
         Haptics.success()
-        dismiss()
+        // Setting onboardingComplete flips the sheet binding's getter to
+        // false, which dismisses the sheet. Do NOT call dismiss() here —
+        // it tries to set the no-op binding setter, which can conflict
+        // with SwiftUI's internal sheet state and cause a hang.
+        onboardingComplete = true
     }
 }
 

@@ -436,7 +436,12 @@ enum InsightEngine {
             cursor = calendar.date(byAdding: .day, value: -1, to: cursor) ?? cursor
         }
 
-        while true {
+        // Only count back to the earliest expense date — days before any
+        // expense data exist aren't meaningful. Also caps the loop so it
+        // can't spin forever on an empty expense list.
+        let earliest = expenses.map(\.date).min().map { calendar.startOfDay(for: $0) }
+            ?? cursor // no expenses → streak is at most 1 (today)
+        while cursor >= earliest {
             let daySpend = spendByDay[cursor] ?? 0
             guard daySpend <= dailyBudget else { break }
             streak += 1

@@ -20,7 +20,8 @@ enum SeedData {
         guard existing.isEmpty else { return }
 
         let categories = installCategories(into: context)
-        installAccounts(into: context)
+        // Accounts are created by the user during onboarding (page 3),
+        // so we no longer seed defaults here to avoid duplicates.
         installMerchantRules(into: context, categories: categories)
 
         try? context.save()
@@ -86,19 +87,6 @@ enum SeedData {
             map[def.name] = cat
         }
         return map
-    }
-
-    // MARK: Accounts
-
-    private static func installAccounts(into context: ModelContext) {
-        let bank = Account(name: "Bank", kind: .bank,
-                           iconKey: "building.columns", colorHex: "#4A90E2",
-                           sortOrder: 0)
-        let cash = Account(name: "Cash", kind: .cash,
-                           iconKey: "banknote.fill", colorHex: "#51CF66",
-                           sortOrder: 1)
-        context.insert(bank)
-        context.insert(cash)
     }
 
     // MARK: Merchant Rules

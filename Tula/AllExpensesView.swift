@@ -198,12 +198,11 @@ struct AllExpensesView: View {
         }
     }
 
-    /// Whether to render the "Done" toolbar button. True when this view
-    /// is the root of its own NavigationStack (sheet presentation); false
-    /// when it's pushed onto an existing stack and the back chevron is
-    /// already doing the job.
+    /// Whether to render the "Done" toolbar button. Always false — all
+    /// callers now push this view onto an existing NavigationStack, so
+    /// the back chevron handles return navigation.
     private var showsDoneButton: Bool {
-        presetFilter == nil
+        false
     }
 
     /// Subtitle showing transaction count + grand total.

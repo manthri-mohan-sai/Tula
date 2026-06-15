@@ -9,9 +9,8 @@ import Charts
 /// `.navigationDestination(isPresented:)` bool modifiers) avoids a SwiftUI
 /// bug where stacked boolean destinations cause the push transition to hang.
 enum HomeDestination: Hashable {
-    case cards
-    case budgets
     case reviewQueue
+    case allExpenses(filter: ExpenseFilter?, searchFocused: Bool)
 }
 
 struct HomeView: View {
@@ -24,13 +23,9 @@ struct HomeView: View {
     @Query(filter: #Predicate<Budget> { $0.isActive == true }) private var activeBudgets: [Budget]
     @PrimaryCurrency private var currencyCode
     @AppStorage("themePresetID") private var themePresetID: String = "saffron"
-
-    let onShowStats: () -> Void
+    @AppStorage("launchAnimationEnabled") private var launchAnimationEnabled: Bool = true
 
     @State private var editingExpense: Expense?
-    @State private var showingAllExpenses = false
-    @State private var allExpensesFilter: ExpenseFilter?
-    @State private var allExpensesSearchFocused = false
     @State private var showingSettings = false
     @State private var showingRecurring = false
     @State private var showingOverdueOnly = false
@@ -43,6 +38,7 @@ struct HomeView: View {
     @State private var navPath = NavigationPath()
     @State private var toastMessage: String?
     @State private var toastToken: UUID = UUID()
+    @State private var toastUndoAction: (() -> Void)?
     @State private var savePulse: Bool = false
     /// Number of in-flight Foundation Models enrichment calls. When > 0,
     /// the home view shows a subtle "Smart parsing..." pill so the user
@@ -69,9 +65,7 @@ struct HomeView: View {
     @AppStorage("smartParsingEnabled") private var smartParsingEnabled: Bool = true
     @AppStorage("lastAPIKeyPromptDate") private var lastAPIKeyPromptDate: Double = 0
 
-    init(onShowStats: @escaping () -> Void = {}) {
-        self.onShowStats = onShowStats
-    }
+    init() { }
 
     // MARK: - Derived
 
@@ -366,6 +360,12 @@ struct HomeView: View {
                         .offset(y: appeared ? 0 : 16)
                         .opacity(appeared ? 1 : 0)
                         .animation(AppAnimation.gentle.delay(0.05), value: appeared)
+                    if allExpenses.isEmpty {
+                        firstExpensePrompt
+                            .offset(y: appeared ? 0 : 16)
+                            .opacity(appeared ? 1 : 0)
+                            .animation(AppAnimation.gentle.delay(0.08), value: appeared)
+                    }
                     if smartParseInFlight > 0 {
                         smartParsingPill
                             .transition(.asymmetric(
@@ -378,8 +378,6 @@ struct HomeView: View {
                         .offset(y: appeared ? 0 : 16)
                         .opacity(appeared ? 1 : 0)
                         .animation(AppAnimation.gentle.delay(0.10), value: appeared)
-
-                        .animation(AppAnimation.gentle.delay(0.12), value: appeared)
                     recentSection
                         .offset(y: appeared ? 0 : 16)
                         .opacity(appeared ? 1 : 0)
@@ -409,9 +407,12 @@ struct HomeView: View {
             // `.interactively` which required dragging past a threshold.
             .scrollDismissesKeyboard(.immediately)
             .onAppear {
+                guard !appeared else { return }
                 // Delay the entrance so it plays after the launch
-                // animation overlay has faded out.
-                DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+                // animation overlay has faded out. When the animation
+                // is disabled, use a minimal delay for layout to settle.
+                let delay: Double = launchAnimationEnabled ? 2.0 : 0.3
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
                     withAnimation(AppAnimation.gentle) {
                         appeared = true
                     }
@@ -422,86 +423,17 @@ struct HomeView: View {
             .navigationTitle("Tula")
             .navigationBarTitleDisplayMode(.large)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button {
-                        Haptics.tap()
-                        navPath.append(HomeDestination.cards)
-                    } label: {
-                        Image(systemName: "creditcard")
-                            .font(.body.weight(.medium))
-                    }
-                    // Neutral tint — these are utility navigations, not
-                    // affirmative actions. Brand amber on a navigation
-                    // button reads as "primary action" and visually
-                    // competes with the hero amount below.
-                    .tint(.primary)
-                    .accessibilityLabel("Accounts")
-                }
-                ToolbarItem(placement: .topBarLeading) {
-                    Button {
-                        Haptics.tap()
-                        navPath.append(HomeDestination.budgets)
-                    } label: {
-                        Image(systemName: "chart.pie")
-                            .font(.body.weight(.medium))
-                    }
-                    .tint(.primary)
-                    .accessibilityLabel("Budgets")
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Menu {
-                        Button {
-                            Haptics.tap()
-                            showingTransfer = true
-                        } label: {
-                            Label("Transfer", systemImage: "arrow.left.arrow.right")
-                        }
-                        Button {
-                            Haptics.tap()
-                            showingReceiptGallery = true
-                        } label: {
-                            Label("Receipts", systemImage: "photo.on.rectangle")
-                        }
-                    } label: {
-                        Image(systemName: "ellipsis.circle")
-                            .font(.body.weight(.medium))
-                    }
-                    .tint(.primary)
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        Haptics.tap()
-                        showingSettings = true
-                    } label: {
-                        Image(systemName: "gearshape")
-                            .font(.body.weight(.medium))
-                    }
-                    .tint(.primary)
-                    .accessibilityLabel("Settings")
-                }
+                ToolbarItem(placement: .topBarTrailing) { toolbarMenu }
             }
             // Single navigation destination handler — Apple's recommended
             // pattern. Multiple `.navigationDestination(isPresented:)`
             // modifiers on the same view cause the push transition to hang
             // because SwiftUI can't reliably disambiguate them.
             .navigationDestination(for: HomeDestination.self) { dest in
-                switch dest {
-                case .cards:       CardsView()
-                case .budgets:     BudgetsView()
-                case .reviewQueue: ReviewQueueView()
-                }
+                destinationView(for: dest)
             }
             .sheet(item: $editingExpense) { expense in
                 AddExpenseView(existingExpense: expense)
-            }
-            .sheet(isPresented: $showingAllExpenses) {
-                NavigationStack {
-                    AllExpensesView(presetFilter: allExpensesFilter, startSearchFocused: allExpensesSearchFocused)
-                }
-                .onDisappear {
-                    allExpensesFilter = nil
-                    allExpensesSearchFocused = false
-                }
             }
             .sheet(isPresented: $showingSettings) {
                 SettingsView()
@@ -575,7 +507,7 @@ struct HomeView: View {
             }
             .overlay(alignment: .top) {
                 if let toast = toastMessage {
-                    Toast(message: toast)
+                    Toast(message: toast, onUndo: toastUndoAction != nil ? { performUndo() } : nil)
                         .padding(.top, Spacing.sm)
                         .transition(.move(edge: .top).combined(with: .opacity))
                 }
@@ -683,6 +615,55 @@ struct HomeView: View {
                 )
         )
         .accessibilityLabel("Apple Intelligence is parsing your entry")
+    }
+
+    // MARK: - Navigation Destinations
+
+    @ViewBuilder
+    private func destinationView(for dest: HomeDestination) -> some View {
+        switch dest {
+        case .reviewQueue: ReviewQueueView()
+        case .allExpenses(let filter, let searchFocused):
+            AllExpensesView(presetFilter: filter, startSearchFocused: searchFocused)
+        }
+    }
+
+    // MARK: - Toolbar
+
+    /// Trailing toolbar — Transfer and Receipts grouped in a menu,
+    /// Settings as a standalone gear icon.
+    private var toolbarMenu: some View {
+        HStack(spacing: 12) {
+            Menu {
+                Button {
+                    Haptics.tap()
+                    showingTransfer = true
+                } label: {
+                    Label("Transfer", systemImage: "arrow.left.arrow.right")
+                }
+                Button {
+                    Haptics.tap()
+                    showingReceiptGallery = true
+                } label: {
+                    Label("Receipts", systemImage: "doc.text.viewfinder")
+                }
+            } label: {
+                Image(systemName: "ellipsis.circle")
+                    .font(.body.weight(.medium))
+            }
+            .tint(.primary)
+            .accessibilityLabel("More actions")
+
+            Button {
+                Haptics.tap()
+                showingSettings = true
+            } label: {
+                Image(systemName: "gearshape")
+                    .font(.body.weight(.medium))
+            }
+            .tint(.primary)
+            .accessibilityLabel("Settings")
+        }
     }
 
     // MARK: - Hero
@@ -797,8 +778,10 @@ struct HomeView: View {
     private func tapHero() {
         Haptics.tap()
         heroTapPulse = true
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) { onShowStats() }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { heroTapPulse = false }
+        // Navigate to all expenses for this month
+        let filter = ExpenseFilter(dateRange: .thisMonth)
+        navPath.append(HomeDestination.allExpenses(filter: filter, searchFocused: false))
     }
 
     private func deltaBadge(_ change: Double) -> some View {
@@ -1068,7 +1051,15 @@ struct HomeView: View {
         if let last = lastAccount { lastUsedAccountID = last.id.uuidString }
         Haptics.success()
         triggerSavePulse()
-        showToast(valid.count == 1 ? "Expense saved" : "\(valid.count) expenses saved")
+        let undoTargets = savedExpenses
+        showToast(valid.count == 1 ? "Expense saved" : "\(valid.count) expenses saved") {
+            for expense in undoTargets {
+                context.delete(expense)
+            }
+            try? context.save()
+            WidgetRefresh.refresh(using: context)
+            Haptics.warning()
+        }
         evaluateBudgetAlerts()
 
         // ─── Smart enrichment ───────────────────────────────────────
@@ -1260,13 +1251,26 @@ struct HomeView: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { savePulse = false }
     }
 
-    private func showToast(_ message: String) {
+    private func showToast(_ message: String, undoAction: (() -> Void)? = nil) {
         let token = UUID()
         toastToken = token
+        toastUndoAction = undoAction
         withAnimation(AppAnimation.snappy) { toastMessage = message }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.2) {
+        let duration: Double = undoAction != nil ? 4.0 : 2.2
+        DispatchQueue.main.asyncAfter(deadline: .now() + duration) {
             guard toastToken == token else { return }
-            withAnimation(AppAnimation.gentle) { toastMessage = nil }
+            withAnimation(AppAnimation.gentle) {
+                toastMessage = nil
+                toastUndoAction = nil
+            }
+        }
+    }
+
+    private func performUndo() {
+        toastUndoAction?()
+        withAnimation(AppAnimation.snappy) {
+            toastMessage = nil
+            toastUndoAction = nil
         }
     }
 
@@ -1834,33 +1838,32 @@ struct HomeView: View {
                 let cal = Calendar.current
                 let start = cal.startOfDay(for: .now)
                 let end = cal.date(bySettingHour: 23, minute: 59, second: 59, of: .now) ?? .now
-                allExpensesFilter = ExpenseFilter(dateRange: .custom(start: start, end: end))
-                showingAllExpenses = true
+                let filter = ExpenseFilter(dateRange: .custom(start: start, end: end))
+                navPath.append(HomeDestination.allExpenses(filter: filter, searchFocused: false))
             case .categoryAlert:
                 var filter = ExpenseFilter(dateRange: .thisMonth)
                 if let catID = insight.categoryID {
                     filter.categoryIDs = [catID]
                 }
-                allExpensesFilter = filter
-                showingAllExpenses = true
+                navPath.append(HomeDestination.allExpenses(filter: filter, searchFocused: false))
             case .monthPace, .bigSpender:
-                allExpensesFilter = ExpenseFilter(dateRange: .thisMonth)
-                showingAllExpenses = true
+                let filter = ExpenseFilter(dateRange: .thisMonth)
+                navPath.append(HomeDestination.allExpenses(filter: filter, searchFocused: false))
             case .budgetPacing:
                 var filter = ExpenseFilter(dateRange: .thisMonth)
                 if let catID = insight.categoryID {
                     filter.categoryIDs = [catID]
                 }
-                allExpensesFilter = filter
-                showingAllExpenses = true
+                navPath.append(HomeDestination.allExpenses(filter: filter, searchFocused: false))
             case .youSaved:
-                onShowStats()
+                let filter = ExpenseFilter(dateRange: .thisMonth)
+                navPath.append(HomeDestination.allExpenses(filter: filter, searchFocused: false))
             case .anomaly:
                 let cal = Calendar.current
                 let start = cal.startOfDay(for: .now)
                 let end = cal.date(bySettingHour: 23, minute: 59, second: 59, of: .now) ?? .now
-                allExpensesFilter = ExpenseFilter(dateRange: .custom(start: start, end: end))
-                showingAllExpenses = true
+                let filter = ExpenseFilter(dateRange: .custom(start: start, end: end))
+                navPath.append(HomeDestination.allExpenses(filter: filter, searchFocused: false))
             case .merchantAutoRule:
                 // Auto-create a merchant rule from this insight
                 let modelCtx = self.context
@@ -1982,8 +1985,7 @@ struct HomeView: View {
                     HStack(spacing: 2) {
                         Button {
                             Haptics.tap()
-                            allExpensesSearchFocused = true
-                            showingAllExpenses = true
+                            navPath.append(HomeDestination.allExpenses(filter: nil, searchFocused: true))
                         } label: {
                             Image(systemName: "magnifyingglass")
                                 .font(.system(size: 13, weight: .medium))
@@ -1994,7 +1996,7 @@ struct HomeView: View {
                                 )
                         }
                         SeeAllLink {
-                            showingAllExpenses = true
+                            navPath.append(HomeDestination.allExpenses(filter: nil, searchFocused: false))
                         }
                     }
                 )
@@ -2125,6 +2127,22 @@ struct HomeView: View {
         NotificationManager.refreshDailyReminder(using: context)
         Haptics.warning()
         showToast("Deleted")
+    }
+
+    /// Contextual nudge for brand-new users. Points to the Quick Log bar
+    /// with a hint example. Auto-disappears once the first expense is saved
+    /// because `allExpenses.isEmpty` flips to false via @Query.
+    private var firstExpensePrompt: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "arrow.up")
+                .font(.caption.weight(.bold))
+                .foregroundStyle(Color.tulaBrandFallback)
+            Text("Type something like \"350 lunch\" above")
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, Spacing.sm)
     }
 
     private var emptyActivityState: some View {
@@ -2396,10 +2414,24 @@ struct PlainRowButtonStyle: ButtonStyle {
 
 private struct Toast: View {
     let message: String
+    var onUndo: (() -> Void)?
     var body: some View {
         HStack(spacing: Spacing.sm) {
             Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
             Text(message).font(.subheadline.weight(.medium))
+            if onUndo != nil {
+                Text("·")
+                    .font(.subheadline)
+                    .foregroundStyle(.tertiary)
+                Button {
+                    onUndo?()
+                } label: {
+                    Text("Undo")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(Color.tulaBrandFallback)
+                }
+                .buttonStyle(.plain)
+            }
         }
         .padding(.horizontal, Spacing.lg)
         .padding(.vertical, Spacing.sm + 2)

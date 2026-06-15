@@ -168,7 +168,7 @@ struct TulaApp: App {
                     }
                     .sheet(isPresented: Binding(
                         get: { !onboardingComplete },
-                        set: { _ in }
+                        set: { if !$0 { onboardingComplete = true } }
                     )) {
                         OnboardingView()
                     }
@@ -264,24 +264,21 @@ func buildUpcomingRecurrings(in context: ModelContext) -> [WidgetSnapshot.Upcomi
 // MARK: - Root Tabs
 
 enum TulaTab: Hashable {
-    case home, stats, add
+    case home, stats, budgets, accounts, add
 }
 
-/// Native iOS 26 TabView. Three slots: Home, Stats, and Add (rendered as
-/// a separate accessory pill via `.search` role). Settings is no longer a
-/// tab — it lives in Home's nav toolbar (gear icon, top-right).
-///
-/// We intercept selection on the .add tab to present the AddExpense sheet
-/// instead of navigating, since Add is an *action* not a destination.
+/// Four navigation tabs (Home, Stats, Budgets, Accounts) plus a separate
+/// Add accessory rendered via the `.search` role — iOS 26 shows it as a
+/// distinct pill/button in the tab bar, visually separated from the
+/// navigation tabs. Settings lives in Home's toolbar (gear icon).
 struct RootTabView: View {
     let appDelegate: TulaAppDelegate
     @Binding var launchAnimationDone: Bool
     @State private var selectedTab: TulaTab = .home
     @State private var showingAddExpense = false
 
-    /// Custom binding that intercepts selection of the .add tab and routes
-    /// it to the sheet instead of letting iOS switch tabs. Other tab
-    /// selections behave normally.
+    /// Intercepts selection of the `.add` tab to present the sheet
+    /// instead of switching tabs. All other tabs behave normally.
     private var tabBinding: Binding<TulaTab> {
         Binding(
             get: { selectedTab },
@@ -299,23 +296,26 @@ struct RootTabView: View {
     var body: some View {
         TabView(selection: tabBinding) {
             Tab("Home", systemImage: "house.fill", value: TulaTab.home) {
-                HomeView(onShowStats: {
-                    Haptics.tap()
-                    withAnimation(AppAnimation.gentle) {
-                        selectedTab = .stats
-                    }
-                })
+                HomeView()
             }
 
             Tab("Stats", systemImage: "chart.bar.fill", value: TulaTab.stats) {
                 StatsView()
             }
 
-            // Search-role tab — iOS 26 renders it as a separate accessory
-            // pill. We use it for "Add" since visually it's exactly the
-            // affordance we want; we intercept selection in the binding.
+            Tab("Budgets", systemImage: "chart.pie.fill", value: TulaTab.budgets) {
+                NavigationStack {
+                    BudgetsView()
+                }
+            }
+
+            Tab("Accounts", systemImage: "creditcard.fill", value: TulaTab.accounts) {
+                NavigationStack {
+                    CardsView()
+                }
+            }
+
             Tab("Add", systemImage: "plus", value: TulaTab.add, role: .search) {
-                // Placeholder — never seen because tab selection is intercepted.
                 Color.tulaBackground.ignoresSafeArea()
             }
         }

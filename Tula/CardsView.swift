@@ -192,9 +192,11 @@ struct CardsView: View {
                     Haptics.tap()
                     showingTransfer = true
                 } label: {
-                    Label("Transfer", systemImage: "arrow.left.arrow.right")
-                        .font(.subheadline.weight(.semibold))
+                    Image(systemName: "arrow.left.arrow.right")
+                        .font(.body.weight(.medium))
                 }
+                .tint(.primary)
+                .accessibilityLabel("Transfer")
             }
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
@@ -204,6 +206,7 @@ struct CardsView: View {
                     Image(systemName: "plus")
                         .font(.body.weight(.semibold))
                 }
+                .tint(.primary)
                 .accessibilityLabel("Add account")
             }
         }
