@@ -37,6 +37,7 @@ struct StatsView: View {
     /// Date the user is dragging on the chart (nil when not interacting).
     @State private var chartSelectedDate: Date?
     @State private var selectedWeekday: String?
+    @State private var selectedCalendarDay: Date?
 
     /// Namespace for the period picker's animated selection pill.
     @Namespace private var pickerNamespace
@@ -281,9 +282,10 @@ struct StatsView: View {
                     heroCard
                     if hasAnySpend {
                         insightGrid
-                        insightCalloutPill
+                        if period != .month { insightCalloutPill }
                         chartCard
-                        if !weekdayData.isEmpty { weekdayChartCard }
+                        if period == .month { spendingCalendarCard }
+                        if period != .month && !weekdayData.isEmpty { weekdayChartCard }
                         if !categoryBreakdown.isEmpty { categoryBreakdownCard }
                         if !topMerchants.isEmpty { topMerchantsCard }
                     } else {
@@ -321,6 +323,7 @@ struct StatsView: View {
                 withAnimation(AppAnimation.gentle) {
                     periodOffset = 0
                     pinnedChartDate = nil
+                    selectedCalendarDay = nil
                     categoryBarsAppeared = false
                 }
             }
@@ -330,6 +333,7 @@ struct StatsView: View {
                 // Wrapped in withAnimation so removals are smooth.
                 withAnimation(AppAnimation.snappy) {
                     pinnedChartDate = nil
+                    selectedCalendarDay = nil
                 }
                 categoryBarsAppeared = false
             }
@@ -730,6 +734,9 @@ struct StatsView: View {
                 .fill(Color.tulaCardSurface)
         )
         .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(label): \(value), \(detail)")
+        .accessibilityAddTraits(isInteractive ? .isButton : [])
     }
 
     // MARK: - Insight Callout
@@ -1024,6 +1031,348 @@ struct StatsView: View {
         .chartXSelection(value: $chartSelectedDate)
         .chartYScale(domain: 0...chartYMax)
         .frame(height: 220)
+    }
+
+    // MARK: - Spending Calendar
+
+    /// Daily spending totals keyed by start-of-day date. Powers the
+    /// calendar heat-map — each cell's fill intensity is proportional
+    /// to how much was spent that day.
+    private var dailySpending: [Date: Double] {
+        let cal = Calendar.current
+        var result: [Date: Double] = [:]
+        for expense in rangeExpenses {
+            let day = cal.startOfDay(for: expense.date)
+            result[day, default: 0] += expense.amount
+        }
+        return result
+    }
+
+    /// Maximum single-day spend in the current month. The heat-map
+    /// ceiling — days at this amount render at full intensity.
+    private var maxDailySpend: Double {
+        dailySpending.values.max() ?? 1
+    }
+
+    /// Flat list of optional dates for the current month calendar grid.
+    /// `nil` entries pad the first/last positions where the month
+    /// doesn't fill a complete week.
+    private var calendarSlots: [Date?] {
+        let cal = Calendar.current
+        let monthStart = currentRange.start
+        let daysInMonth = cal.range(of: .day, in: .month, for: monthStart)?.count ?? 30
+
+        let firstWeekday = cal.component(.weekday, from: monthStart)
+        var leadingBlanks = firstWeekday - cal.firstWeekday
+        if leadingBlanks < 0 { leadingBlanks += 7 }
+
+        var slots: [Date?] = Array(repeating: nil, count: leadingBlanks)
+        for dayOffset in 0..<daysInMonth {
+            if let date = cal.date(byAdding: .day, value: dayOffset, to: monthStart) {
+                slots.append(cal.startOfDay(for: date))
+            }
+        }
+        while slots.count % 7 != 0 { slots.append(nil) }
+        return slots
+    }
+
+    /// Count of past/current days with zero spending this period.
+    private var noSpendDayCount: Int {
+        let cal = Calendar.current
+        let today = cal.startOfDay(for: .now)
+        let monthStart = currentRange.start
+        let daysInMonth = cal.range(of: .day, in: .month, for: monthStart)?.count ?? 30
+
+        var count = 0
+        for dayOffset in 0..<daysInMonth {
+            guard let date = cal.date(byAdding: .day, value: dayOffset, to: monthStart) else { continue }
+            let day = cal.startOfDay(for: date)
+            guard day <= today else { break }
+            if (dailySpending[day] ?? 0) == 0 { count += 1 }
+        }
+        return count
+    }
+
+    /// 7-column layout for the calendar grid. Defined once, shared by
+    /// the weekday headers and the day cells so columns align perfectly.
+    private var calendarColumns: [GridItem] {
+        Array(repeating: GridItem(.flexible(), spacing: 4), count: 7)
+    }
+
+    // MARK: Spending Calendar — Card
+
+    private var spendingCalendarCard: some View {
+        VStack(alignment: .leading, spacing: Spacing.md) {
+            SectionHeader(title: "Spending Calendar")
+
+            Card(padding: Spacing.lg, cornerRadius: CornerRadius.medium) {
+                VStack(spacing: Spacing.md) {
+                    calendarWeekdayHeaders
+                    calendarGridView
+                    calendarLegend
+
+                    if let selected = selectedCalendarDay {
+                        calendarDayDetail(for: selected)
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: Spending Calendar — Headers
+
+    /// S M T W T F S row aligned with the grid via the same column spec.
+    private var calendarWeekdayHeaders: some View {
+        let cal = Calendar.current
+        let symbols = cal.veryShortWeekdaySymbols
+        let start = cal.firstWeekday - 1
+        let ordered = Array(symbols[start...]) + Array(symbols[..<start])
+
+        return LazyVGrid(columns: calendarColumns, spacing: 4) {
+            ForEach(Array(ordered.enumerated()), id: \.offset) { _, sym in
+                Text(sym)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .padding(.bottom, 2)
+    }
+
+    // MARK: Spending Calendar — Grid
+
+    private var calendarGridView: some View {
+        let cal = Calendar.current
+        let today = cal.startOfDay(for: .now)
+
+        return LazyVGrid(columns: calendarColumns, spacing: 4) {
+            ForEach(Array(calendarSlots.enumerated()), id: \.offset) { _, slot in
+                if let date = slot {
+                    calendarDayCell(date: date, isToday: date == today)
+                } else {
+                    Color.clear.aspectRatio(1, contentMode: .fill)
+                }
+            }
+        }
+    }
+
+    // MARK: Spending Calendar — Day Cell
+
+    private func calendarDayCell(date: Date, isToday: Bool) -> some View {
+        let cal = Calendar.current
+        let dayNum = cal.component(.day, from: date)
+        let spend = dailySpending[date] ?? 0
+        let isFuture = date > cal.startOfDay(for: .now)
+        let isSelected = selectedCalendarDay.map {
+            cal.isDate($0, inSameDayAs: date)
+        } ?? false
+        // sqrt scale — keeps low-spend days visible instead of washing
+        // them out under a linear ramp.
+        let intensity = spend > 0 ? sqrt(min(spend / maxDailySpend, 1.0)) : 0
+
+        return ZStack {
+            // Heat-map fill — brand color at varying opacity.
+            // Selected cells use .primary fill (not brand) so the
+            // selection doesn't look like a high-spend indicator.
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(
+                    isSelected
+                        ? Color.primary.opacity(0.85)
+                        : (spend > 0 && !isFuture
+                            ? Color.tulaBrandFallback.opacity(0.10 + intensity * 0.50)
+                            : Color.clear)
+                )
+
+            // Today ring (only when not selected — the solid fill
+            // already distinguishes the selected state).
+            if !isSelected && isToday {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .strokeBorder(Color.primary.opacity(0.35), lineWidth: 2)
+            }
+
+            Text("\(dayNum)")
+                .font(.system(size: 14, weight: isToday || isSelected ? .bold : .medium, design: .rounded))
+                .foregroundStyle(
+                    isFuture ? Color(uiColor: .quaternaryLabel)
+                        : isSelected ? Color(uiColor: .systemBackground)
+                        : intensity > 0.5 ? Color.white
+                        : spend > 0 ? Color.primary
+                        : Color.secondary
+                )
+        }
+        .aspectRatio(1, contentMode: .fill)
+        .contentShape(RoundedRectangle(cornerRadius: 8))
+        .opacity(isFuture ? 0.35 : 1)
+        .onTapGesture {
+            guard !isFuture else { return }
+            Haptics.selection()
+            withAnimation(AppAnimation.snappy) {
+                selectedCalendarDay = isSelected ? nil : date
+            }
+        }
+        .accessibilityLabel("\(date.formatted(.dateTime.day().month(.abbreviated)))")
+        .accessibilityValue(spend > 0 ? Currency.format(spend, code: currencyCode) : "No spending")
+        .accessibilityAddTraits(isFuture ? [] : .isButton)
+    }
+
+    // MARK: Spending Calendar — Legend
+
+    /// Split legend: stat counts on the left, GitHub-style gradient on the right.
+    private var calendarLegend: some View {
+        let spendDays = dailySpending.filter { $0.value > 0 }.count
+        let steps: [Double] = [0, 0.15, 0.30, 0.45, 0.60]
+
+        return HStack {
+            // Left: descriptive stats
+            HStack(spacing: Spacing.md) {
+                HStack(spacing: 3) {
+                    Circle()
+                        .fill(Color.tulaBrandFallback.opacity(0.35))
+                        .frame(width: 6, height: 6)
+                    Text("\(spendDays) spent")
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(.secondary)
+                }
+                HStack(spacing: 3) {
+                    Circle()
+                        .strokeBorder(Color.secondary.opacity(0.3), lineWidth: 1)
+                        .frame(width: 6, height: 6)
+                    Text("\(noSpendDayCount) no-spend")
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Spacer()
+
+            // Right: GitHub-style gradient
+            HStack(spacing: 3) {
+                Text("Less")
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundStyle(.tertiary)
+                ForEach(steps, id: \.self) { opacity in
+                    RoundedRectangle(cornerRadius: 2, style: .continuous)
+                        .fill(opacity > 0
+                            ? Color.tulaBrandFallback.opacity(opacity)
+                            : Color(uiColor: .tertiarySystemFill))
+                        .frame(width: 10, height: 10)
+                }
+                Text("More")
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundStyle(.tertiary)
+            }
+        }
+    }
+
+    // MARK: Spending Calendar — Day Detail
+
+    /// Inline detail for the selected calendar day.
+    @ViewBuilder
+    private func calendarDayDetail(for date: Date) -> some View {
+        let cal = Calendar.current
+        let dayExpenses = rangeExpenses
+            .filter { cal.isDate($0.date, inSameDayAs: date) }
+            .sorted { $0.amount > $1.amount }
+        let dayTotal = dayExpenses.reduce(0) { $0 + $1.amount }
+
+        Divider()
+
+        VStack(spacing: Spacing.sm) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(date, format: .dateTime.weekday(.wide).day().month(.abbreviated))
+                        .font(.subheadline.weight(.semibold))
+                    if dayTotal > 0 {
+                        Text(Currency.format(dayTotal, code: currencyCode))
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(Color.tulaBrandFallback)
+                            .monospacedDigit()
+                    }
+                }
+
+                Spacer()
+
+                if dayTotal > 0 {
+                    Button {
+                        Haptics.tap()
+                        navPath.append(biggestDayFilter(for: date))
+                    } label: {
+                        HStack(spacing: 4) {
+                            Text("View all")
+                                .font(.caption.weight(.semibold))
+                            Image(systemName: "chevron.right")
+                                .font(.caption2.weight(.bold))
+                        }
+                        .foregroundStyle(Color.tulaBrandFallback)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+
+            if dayExpenses.isEmpty {
+                HStack(spacing: 6) {
+                    Image(systemName: "leaf.fill")
+                        .font(.caption)
+                        .foregroundStyle(.green.opacity(0.6))
+                    Text("No expenses — a no-spend day!")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.vertical, Spacing.xs)
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(Array(dayExpenses.prefix(4).enumerated()), id: \.element.id) { index, expense in
+                        HStack(spacing: Spacing.sm) {
+                            if let cat = expense.category {
+                                ZStack {
+                                    Circle()
+                                        .fill(Color(hex: cat.colorHex).opacity(0.15))
+                                        .frame(width: 24, height: 24)
+                                    Image(systemName: cat.iconKey)
+                                        .font(.system(size: 10, weight: .medium))
+                                        .foregroundStyle(Color(hex: cat.colorHex))
+                                }
+                            } else {
+                                ZStack {
+                                    Circle()
+                                        .fill(Color.gray.opacity(0.15))
+                                        .frame(width: 24, height: 24)
+                                    Image(systemName: "circle.dashed")
+                                        .font(.system(size: 10, weight: .medium))
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+
+                            Text(expense.merchant ?? expense.category?.name ?? "Expense")
+                                .font(.caption)
+                                .lineLimit(1)
+
+                            Spacer()
+
+                            Text(Currency.format(expense.amount, code: currencyCode))
+                                .font(.caption.weight(.medium))
+                                .monospacedDigit()
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.vertical, 5)
+
+                        if index < min(dayExpenses.count, 4) - 1 {
+                            Divider().padding(.leading, 32)
+                        }
+                    }
+
+                    if dayExpenses.count > 4 {
+                        Text("and \(dayExpenses.count - 4) more")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.top, 4)
+                            .padding(.leading, 32)
+                    }
+                }
+            }
+        }
+        .transition(.opacity.combined(with: .move(edge: .top)))
     }
 
     // MARK: - Weekday Pattern

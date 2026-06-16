@@ -48,6 +48,8 @@ struct SettingsView: View {
     @State private var geminiModel: String = ""
     @State private var showingGeminiConfig: Bool = false
     @State private var showingAPIKeyTutorial: Bool = false
+    @State private var showGeminiKey: Bool = false
+    @State private var showCloudKey: Bool = false
 
     @State private var configVersion: Int = 0
 
@@ -296,8 +298,10 @@ struct SettingsView: View {
             .tint(Color.tulaBrandFallback)
 
             if smartParsingEnabled {
-                providerPickerSection
-                    .id(configVersion)
+                DisclosureGroup("Configuration") {
+                    providerPickerSection
+                        .id(configVersion)
+                }
             }
 
             // Test row: actually fires the selected provider with a
@@ -446,37 +450,39 @@ struct SettingsView: View {
         NavigationStack {
             Form {
                 Section {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Endpoint")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                        TextField("https://api.openai.com/v1/chat/completions", text: $cloudEndpoint)
-                            .font(.subheadline)
-                            .textContentType(.URL)
-                            .autocorrectionDisabled()
-                            .textInputAutocapitalization(.never)
+                    TextField("https://api.openai.com/v1/chat/completions", text: $cloudEndpoint)
+                        .font(.subheadline)
+                        .textContentType(.URL)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+
+                    HStack {
+                        if showCloudKey {
+                            TextField("sk-...", text: $cloudAPIKey)
+                                .font(.subheadline)
+                                .autocorrectionDisabled()
+                                .textInputAutocapitalization(.never)
+                        } else {
+                            SecureField("sk-...", text: $cloudAPIKey)
+                                .font(.subheadline)
+                                .textContentType(.password)
+                                .autocorrectionDisabled()
+                                .textInputAutocapitalization(.never)
+                        }
+                        Button {
+                            showCloudKey.toggle()
+                        } label: {
+                            Image(systemName: showCloudKey ? "eye.slash" : "eye")
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(showCloudKey ? "Hide API key" : "Show API key")
                     }
 
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("API Key")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                        SecureField("sk-...", text: $cloudAPIKey)
-                            .font(.subheadline)
-                            .textContentType(.password)
-                            .autocorrectionDisabled()
-                            .textInputAutocapitalization(.never)
-                    }
-
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Model")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                        TextField("gpt-4o-mini", text: $cloudModel)
-                            .font(.subheadline)
-                            .autocorrectionDisabled()
-                            .textInputAutocapitalization(.never)
-                    }
+                    TextField("gpt-4o-mini", text: $cloudModel)
+                        .font(.subheadline)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
                 } header: {
                     Text("OpenAI-Compatible API")
                 } footer: {
@@ -573,37 +579,39 @@ struct SettingsView: View {
         NavigationStack {
             Form {
                 Section {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("API Key")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                        SecureField("AI...", text: $geminiAPIKey)
-                            .font(.subheadline)
-                            .textContentType(.password)
-                            .autocorrectionDisabled()
-                            .textInputAutocapitalization(.never)
+                    HStack {
+                        if showGeminiKey {
+                            TextField("AI...", text: $geminiAPIKey)
+                                .font(.subheadline)
+                                .autocorrectionDisabled()
+                                .textInputAutocapitalization(.never)
+                        } else {
+                            SecureField("AI...", text: $geminiAPIKey)
+                                .font(.subheadline)
+                                .textContentType(.password)
+                                .autocorrectionDisabled()
+                                .textInputAutocapitalization(.never)
+                        }
+                        Button {
+                            showGeminiKey.toggle()
+                        } label: {
+                            Image(systemName: showGeminiKey ? "eye.slash" : "eye")
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(showGeminiKey ? "Hide API key" : "Show API key")
                     }
 
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Model")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                        TextField("gemini-2.5-flash", text: $geminiModel)
-                            .font(.subheadline)
-                            .autocorrectionDisabled()
-                            .textInputAutocapitalization(.never)
-                    }
+                    TextField("gemini-2.5-flash", text: $geminiModel)
+                        .font(.subheadline)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
 
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Endpoint")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                        TextField("https://generativelanguage.googleapis.com/v1beta/openai/chat/completions", text: $geminiEndpoint)
-                            .font(.subheadline)
-                            .textContentType(.URL)
-                            .autocorrectionDisabled()
-                            .textInputAutocapitalization(.never)
-                    }
+                    TextField("https://generativelanguage.googleapis.com/v1beta/openai/chat/completions", text: $geminiEndpoint)
+                        .font(.subheadline)
+                        .textContentType(.URL)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
                 } header: {
                     Text("Google Gemini API")
                 } footer: {

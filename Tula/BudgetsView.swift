@@ -541,6 +541,8 @@ struct OverallBudgetCard: View {
         .padding(.vertical, 10)
         .background(Color(uiColor: .tertiarySystemFill).opacity(0.5),
                     in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(label): \(value)")
     }
 
     // MARK: - Comparison Row
@@ -826,6 +828,7 @@ struct BudgetCard: View {
     private var budgetRing: some View {
         ActivityRingView(progress: progressValue, ringColor: ringColor, lineWidth: 12)
             .frame(width: 56, height: 56)
+            .accessibilityHidden(true) // Card uses .combine; ring info is in card label
     }
 
     // MARK: - Footer
@@ -1167,6 +1170,8 @@ struct BudgetTransactionsView: View {
                     .foregroundStyle(ringColor)
             }
             .frame(width: 110, height: 110)
+            .accessibilityElement()
+            .accessibilityLabel("Budget progress: \(percentText) used")
 
             VStack(spacing: 4) {
                 Text(Currency.format(spent, code: currencyCode))

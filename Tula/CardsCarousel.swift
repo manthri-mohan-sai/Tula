@@ -101,6 +101,7 @@ struct CardsCarousel: View {
         // Reserve extra space below for the shadow to "land" without
         // colliding with the page indicator that follows.
         .padding(.bottom, 18)
+        .accessibilityHint("Swipe left or right to see other accounts")
     }
 }
 

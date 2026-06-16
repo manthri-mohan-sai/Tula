@@ -39,6 +39,7 @@ struct CardsView: View {
     /// alert — set to non-nil to show the alert, cleared after the
     /// user confirms or cancels.
     @State private var accountPendingArchive: Account?
+    @State private var expensePendingDelete: Expense?
 
     /// UUID of the card currently centered in the horizontal carousel.
     /// Bound to the carousel's `scrollPosition`; updating it programmatically
@@ -252,6 +253,25 @@ struct CardsView: View {
         } message: { account in
             Text("\(account.name) will be hidden from your active accounts. Existing transactions stay intact and you can unarchive any time from Settings → Accounts.")
         }
+        .alert(
+            "Delete Expense?",
+            isPresented: Binding(
+                get: { expensePendingDelete != nil },
+                set: { if !$0 { expensePendingDelete = nil } }
+            )
+        ) {
+            Button("Cancel", role: .cancel) { expensePendingDelete = nil }
+            Button("Delete", role: .destructive) {
+                if let expense = expensePendingDelete {
+                    delete(expense)
+                    expensePendingDelete = nil
+                }
+            }
+        } message: {
+            if let expense = expensePendingDelete {
+                Text("This will permanently remove \(Currency.format(expense.amount, code: currencyCode)) from \(expense.merchant ?? "this expense").")
+            }
+        }
         .task {
             // Initialize the carousel to the most-recently-used card on
             // first appearance. Done in .task (not .onAppear) so it runs
@@ -287,6 +307,15 @@ struct CardsView: View {
             }
         }
         .animation(.spring(response: 0.4, dampingFraction: 0.85), value: activeCardID)
+        .accessibilityElement()
+        .accessibilityLabel("Account \(activePageIndex) of \(displayAccounts.count)")
+        .accessibilityAddTraits(.updatesFrequently)
+    }
+
+    private var activePageIndex: Int {
+        guard let id = activeCardID,
+              let idx = displayAccounts.firstIndex(where: { $0.id == id }) else { return 1 }
+        return idx + 1
     }
 
     // MARK: - Active card section
@@ -339,7 +368,7 @@ struct CardsView: View {
             Spacer(minLength: Spacing.sm)
             Text(Currency.format(monthAmount, code: currencyCode))
                 .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.primary)
                 .monospacedDigit()
                 .contentTransition(.numericText(value: monthAmount))
                 .animation(.snappy(duration: 0.35), value: monthAmount)
@@ -375,7 +404,7 @@ struct CardsView: View {
                 .alignmentGuide(.listRowSeparatorLeading) { _ in 64 }
                 .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                     Button(role: .destructive) {
-                        delete(expense)
+                        expensePendingDelete = expense
                     } label: {
                         Label("Delete", systemImage: "trash")
                     }

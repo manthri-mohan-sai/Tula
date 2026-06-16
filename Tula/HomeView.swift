@@ -54,9 +54,6 @@ struct HomeView: View {
     @State private var showingTransfer = false
     @State private var showingReceiptGallery = false
 
-    @State private var showStreakCelebration = false
-    @State private var lastCelebratedStreak: Int = 0
-    @State private var showStreakSheet = false
     @State private var expandedStacks: Set<String> = []
     /// Caches for RecurringEngine results. `nextDueDate` and `overdueDates`
     /// loop through date sequences (up to 366 iterations per rule). As raw
@@ -261,14 +258,8 @@ struct HomeView: View {
         }
     }
 
-    /// Computed insights for the Home context callouts. Regenerated every
-    /// render from the current data — the engine is pure and fast enough
-    /// that caching adds complexity for no measurable win.
-    ///
-    /// **Streak filtered out** because the streak chip lives in the hero
-    /// card now (see `budgetStreak`). Showing it twice would be noise.
     /// Daily budget pace from the overall (non-category-scoped) monthly budget.
-    /// Returns nil when no overall budget is set — streaks are hidden.
+    /// Returns nil when no overall budget is set.
     private var dailyBudget: Double? {
         guard let overall = activeBudgets.first(where: { $0.category == nil }),
               overall.amount > 0 else { return nil }
@@ -284,7 +275,6 @@ struct HomeView: View {
             recurringRules: allRecurringRules,
             dailyBudget: dailyBudget
         )
-        .filter { $0.kind != .streak }
 
         // Merge budget pacing insights
         let budgetInsights = InsightEngine.budgetPacingInsights(
@@ -295,12 +285,6 @@ struct HomeView: View {
         all.append(contentsOf: budgetInsights)
 
         return all.sorted { $0.priority > $1.priority }
-    }
-
-    /// Consecutive days under daily budget pace. Returns 0 when no
-    /// overall budget is set — the streak chip is hidden.
-    private var budgetStreak: Int {
-        InsightEngine.underBudgetStreak(expenses: allExpenses, dailyBudget: dailyBudget)
     }
 
     private var monthOverMonthChange: Double? {
@@ -352,97 +336,31 @@ struct HomeView: View {
 
     // MARK: - Body
 
+    private var scrollBackground: some View {
+        GeometryReader { geometry in
+            VStack(spacing: 0) {
+                LinearGradient(
+                    colors: [pageAccentColor.opacity(0.12), pageAccentColor.opacity(0.05), Color.tulaBackground],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                .frame(height: geometry.size.height * 0.45)
+                Color.tulaBackground
+            }
+        }
+        .ignoresSafeArea()
+        .accessibilityHidden(true)
+        .onTapGesture { hideKeyboard() }
+    }
+
     var body: some View {
         NavigationStack(path: $navPath) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: Spacing.xl) {
-                    heroSection
-                        .shadow(color: .black.opacity(0.06), radius: 6, y: 4)
-                        .shadow(color: pageAccentColor.opacity(0.05), radius: 24, y: 6)
-                    if !networkMonitor.isConnected {
-                        offlineBanner
-                            .transition(.move(edge: .top).combined(with: .opacity))
-                    }
-                    quickLogSection
-                        .offset(y: appeared ? 0 : 16)
-                        .opacity(appeared ? 1 : 0)
-                        .animation(AppAnimation.gentle.delay(0.05), value: appeared)
-                    if allExpenses.isEmpty {
-                        firstExpensePrompt
-                            .offset(y: appeared ? 0 : 16)
-                            .opacity(appeared ? 1 : 0)
-                            .animation(AppAnimation.gentle.delay(0.08), value: appeared)
-                    }
-                    if smartParseInFlight > 0 {
-                        smartParsingPill
-                            .transition(.asymmetric(
-                                insertion: .move(edge: .top)
-                                    .combined(with: .opacity),
-                                removal: .opacity
-                            ))
-                    }
-                    contextSections
-                        .offset(y: appeared ? 0 : 16)
-                        .opacity(appeared ? 1 : 0)
-                        .animation(AppAnimation.gentle.delay(0.10), value: appeared)
-                    recentSection
-                        .offset(y: appeared ? 0 : 16)
-                        .opacity(appeared ? 1 : 0)
-                        .animation(AppAnimation.gentle.delay(0.15), value: appeared)
-                }
-                .padding(.horizontal, Spacing.xl)
-                .padding(.top, Spacing.xs)
-                .padding(.bottom, Spacing.lg)
-                .animation(AppAnimation.snappy, value: smartParseInFlight)
-            }
-            .background {
-                VStack(spacing: 0) {
-                    LinearGradient(
-                        colors: [pageAccentColor.opacity(0.12), pageAccentColor.opacity(0.05), Color.tulaBackground],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                    .frame(height: 400)
-                    Color.tulaBackground
-                }
-                .ignoresSafeArea()
-                .accessibilityHidden(true)
-                .onTapGesture { hideKeyboard() }
-            }
-            // Dismiss keyboard the instant the user starts scrolling — same
-            // pattern as AddExpense and Apple's stock forms. Was previously
-            // `.interactively` which required dragging past a threshold.
-            .scrollDismissesKeyboard(.immediately)
-            .onAppear {
-                guard !appeared else { return }
-                refreshRecurringCaches()
-                // Delay the entrance so it plays after the launch
-                // animation overlay has faded out. When the animation
-                // is disabled, use a minimal delay for layout to settle.
-                let delay: Double = launchAnimationEnabled ? 2.0 : 0.3
-                DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-                    withAnimation(AppAnimation.gentle) {
-                        appeared = true
-                    }
-                }
-                checkAPIKeyPrompt()
-                checkBudgetStreakCelebration()
-            }
-            .onChange(of: allRecurringRules.count) { _, _ in
-                refreshRecurringCaches()
-            }
-            .navigationTitle("Tula")
-            .navigationBarTitleDisplayMode(.large)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) { toolbarMenu }
-            }
-            // Single navigation destination handler — Apple's recommended
-            // pattern. Multiple `.navigationDestination(isPresented:)`
-            // modifiers on the same view cause the push transition to hang
-            // because SwiftUI can't reliably disambiguate them.
-            .navigationDestination(for: HomeDestination.self) { dest in
-                destinationView(for: dest)
-            }
+            mainScrollView
+        }
+    }
+
+    private var mainScrollView: some View {
+        mainScrollViewCore
             .sheet(item: $editingExpense) { expense in
                 AddExpenseView(existingExpense: expense)
             }
@@ -458,7 +376,6 @@ struct HomeView: View {
             .sheet(isPresented: $showingOverdueOnly) {
                 RecurringRulesView(showOnlyOverdue: true)
             }
-
             .sheet(isPresented: $showingTransfer) {
                 TransferFormView()
             }
@@ -471,11 +388,6 @@ struct HomeView: View {
                 if let image = shareableImage {
                     ShareSheet(items: [image])
                 }
-            }
-            .sheet(isPresented: $showStreakSheet) {
-                StreakDetailSheet(streak: budgetStreak, dailyBudget: dailyBudget)
-                    .presentationDetents([.medium])
-                    .presentationDragIndicator(.visible)
             }
             .confirmationDialog(
                 "Log \(confirmLogRule?.name ?? "expense")?",
@@ -523,14 +435,83 @@ struct HomeView: View {
                         .transition(.move(edge: .top).combined(with: .opacity))
                 }
             }
-            .overlay {
-                if showStreakCelebration {
-                    StreakCelebrationOverlay(streak: budgetStreak)
-                        .transition(.scale.combined(with: .opacity))
-                        .allowsHitTesting(false)
+            .onChange(of: toastMessage) { _, newValue in
+                if let message = newValue {
+                    UIAccessibility.post(notification: .announcement, argument: message)
                 }
             }
+    }
+
+    private var mainScrollViewCore: some View {
+        ScrollView {
+            scrollContent
         }
+        .background { scrollBackground }
+        .scrollDismissesKeyboard(.immediately)
+        .onAppear {
+            guard !appeared else { return }
+            refreshRecurringCaches()
+            let delay: Double = launchAnimationEnabled ? 2.0 : 0.3
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                withAnimation(AppAnimation.gentle) {
+                    appeared = true
+                }
+            }
+            checkAPIKeyPrompt()
+        }
+        .onChange(of: allRecurringRules.count) { _, _ in
+            refreshRecurringCaches()
+        }
+        .navigationTitle("Tula")
+        .navigationBarTitleDisplayMode(.large)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) { toolbarMenu }
+        }
+        .navigationDestination(for: HomeDestination.self) { dest in
+            destinationView(for: dest)
+        }
+    }
+
+    private var scrollContent: some View {
+        VStack(alignment: .leading, spacing: Spacing.xl) {
+            heroSection
+                .shadow(color: .black.opacity(0.06), radius: 6, y: 4)
+                .shadow(color: pageAccentColor.opacity(0.05), radius: 24, y: 6)
+            if !networkMonitor.isConnected {
+                offlineBanner
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
+            quickLogSection
+                .offset(y: appeared ? 0 : 16)
+                .opacity(appeared ? 1 : 0)
+                .animation(AppAnimation.gentle.delay(0.05), value: appeared)
+            if allExpenses.isEmpty {
+                firstExpensePrompt
+                    .offset(y: appeared ? 0 : 16)
+                    .opacity(appeared ? 1 : 0)
+                    .animation(AppAnimation.gentle.delay(0.08), value: appeared)
+            }
+            if smartParseInFlight > 0 {
+                smartParsingPill
+                    .transition(.asymmetric(
+                        insertion: .move(edge: .top)
+                            .combined(with: .opacity),
+                        removal: .opacity
+                    ))
+            }
+            contextSections
+                .offset(y: appeared ? 0 : 16)
+                .opacity(appeared ? 1 : 0)
+                .animation(AppAnimation.gentle.delay(0.10), value: appeared)
+            recentSection
+                .offset(y: appeared ? 0 : 16)
+                .opacity(appeared ? 1 : 0)
+                .animation(AppAnimation.gentle.delay(0.15), value: appeared)
+        }
+        .padding(.horizontal, Spacing.xl)
+        .padding(.top, Spacing.xs)
+        .padding(.bottom, Spacing.lg)
+        .animation(AppAnimation.snappy, value: smartParseInFlight)
     }
 
     // MARK: - Smart parsing pill
@@ -697,30 +678,6 @@ struct HomeView: View {
                         Text(Date.now, format: .dateTime.month(.wide).year())
                             .font(.caption.weight(.medium))
                             .foregroundStyle(.secondary)
-                        // Under-budget streak chip — shows consecutive
-                        // days where spending stayed within the daily
-                        // budget pace. Rewards restraint, not activity.
-                        // Hidden when no overall budget is set.
-                        if budgetStreak >= 3 {
-                            Button {
-                                Haptics.tap()
-                                showStreakSheet = true
-                            } label: {
-                                HStack(spacing: 3) {
-                                    Image(systemName: "leaf.fill")
-                                    Text("\(budgetStreak)")
-                                }
-                                .font(.caption2.weight(.bold))
-                                .foregroundStyle(.green)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(
-                                    Capsule().fill(Color.green.opacity(0.15))
-                                )
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityLabel("\(budgetStreak) day under-budget streak")
-                        }
                         Spacer()
                         if let change = monthOverMonthChange {
                             deltaBadge(change)
@@ -1234,26 +1191,6 @@ struct HomeView: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
             lastAPIKeyPromptDate = Date.now.timeIntervalSince1970
             showingAPIKeyPrompt = true
-        }
-    }
-
-    /// Checks if the user hit an under-budget streak milestone.
-    /// Milestones: 7, 14, 30, 50, 100 days. Only fires once per milestone.
-    private func checkBudgetStreakCelebration() {
-        let streak = budgetStreak
-        let milestones = [7, 14, 30, 50, 100]
-        guard milestones.contains(streak), streak != lastCelebratedStreak else { return }
-        lastCelebratedStreak = streak
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3.5) {
-            Haptics.success()
-            withAnimation(AppAnimation.bouncy) {
-                showStreakCelebration = true
-            }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
-                withAnimation(AppAnimation.gentle) {
-                    showStreakCelebration = false
-                }
-            }
         }
     }
 
@@ -2026,7 +1963,10 @@ struct HomeView: View {
                                 .background(
                                     Circle().fill(Color(.systemGray6))
                                 )
+                                .frame(width: 44, height: 44)
+                                .contentShape(Circle())
                         }
+                        .accessibilityLabel("Search expenses")
                         SeeAllLink {
                             navPath.append(HomeDestination.allExpenses(filter: nil, searchFocused: false))
                         }
@@ -2746,17 +2686,15 @@ private struct QuickLogBar: View {
 
     // MARK: - Trailing action button
 
-    /// 40pt circular button that morphs between mic / stop / send.
+    /// 44pt circular button that morphs between mic / stop / send.
     /// Brand-amber in idle/send (signaling the primary action), red in
-    /// recording (signaling stop). Smaller and with a subtler shadow than
-    /// before — the previous 44pt with a strong colored glow read as
-    /// disproportionate against the quiet input capsule.
+    /// recording (signaling stop). Meets Apple's 44pt minimum touch target.
     private var trailingActionButton: some View {
         Button(action: trailingAction) {
             ZStack {
                 Circle()
                     .fill(trailingButtonFill)
-                    .frame(width: 40, height: 40)
+                    .frame(width: 44, height: 44)
                     .shadow(color: trailingButtonFill.opacity(0.22), radius: 4, y: 2)
 
                 Image(systemName: trailingIconName)
@@ -2768,6 +2706,13 @@ private struct QuickLogBar: View {
         }
         .buttonStyle(PressableScaleStyle(scale: 0.92))
         .disabled(trailingDisabled)
+        .accessibilityLabel(trailingAccessibilityLabel)
+    }
+
+    private var trailingAccessibilityLabel: String {
+        if speech.isRecording { return "Stop recording" }
+        if canSubmit { return "Submit expense" }
+        return "Record expense"
     }
 
     private var trailingIconName: String {
@@ -2946,111 +2891,6 @@ private struct QuickLogBar: View {
         focused = false
         justFinishedVoice = false
         inputCameFromVoice = false
-    }
-}
-
-// MARK: - Streak Celebration Overlay
-
-/// Full-screen celebration for under-budget streak milestones. Shows a
-/// leaf icon with the streak count and a message about discipline.
-private struct StreakCelebrationOverlay: View {
-    let streak: Int
-
-    private var message: String {
-        switch streak {
-        case 7:   return "One week of mindful spending!"
-        case 14:  return "Two weeks within budget!"
-        case 30:  return "A full month under budget. Impressive!"
-        case 50:  return "50 days of financial discipline!"
-        case 100: return "100 days! True balance achieved."
-        default:  return "\(streak) days under budget!"
-        }
-    }
-
-    var body: some View {
-        VStack(spacing: Spacing.lg) {
-            Spacer()
-            Image(systemName: "leaf.fill")
-                .font(.system(size: 72))
-                .foregroundStyle(.green.gradient)
-                .symbolEffect(.bounce, options: .repeating.speed(0.5))
-
-            Text("\(streak)-Day Streak!")
-                .font(.title.weight(.bold))
-
-            Text(message)
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-
-            Spacer()
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(.ultraThinMaterial)
-    }
-}
-
-// MARK: - Streak Detail Sheet
-
-/// Bottom sheet that explains the under-budget streak calculation.
-private struct StreakDetailSheet: View {
-    let streak: Int
-    let dailyBudget: Double?
-    @PrimaryCurrency private var currencyCode
-
-    var body: some View {
-        VStack(spacing: Spacing.xl) {
-            VStack(spacing: Spacing.md) {
-                ZStack {
-                    Circle()
-                        .fill(Color.green.opacity(0.12))
-                        .frame(width: 80, height: 80)
-                    Image(systemName: "leaf.fill")
-                        .font(.system(size: 36))
-                        .foregroundStyle(.green)
-                }
-
-                Text("\(streak)")
-                    .font(.system(size: 56, weight: .bold, design: .rounded))
-
-                Text("day streak")
-                    .font(.title3.weight(.medium))
-                    .foregroundStyle(.secondary)
-            }
-            .padding(.top, Spacing.xl)
-
-            VStack(alignment: .leading, spacing: Spacing.md) {
-                explanationRow(
-                    icon: "chart.bar.fill",
-                    text: "Days where your spending stayed within your daily budget pace."
-                )
-                if let daily = dailyBudget {
-                    explanationRow(
-                        icon: "target",
-                        text: "Your daily pace: \(Currency.format(daily, code: currencyCode))/day based on your monthly budget."
-                    )
-                }
-                explanationRow(
-                    icon: "checkmark.circle.fill",
-                    text: "Days with zero spending always count — spending nothing is a win."
-                )
-            }
-            .padding(.horizontal, Spacing.xl)
-
-            Spacer()
-        }
-    }
-
-    private func explanationRow(icon: String, text: String) -> some View {
-        HStack(alignment: .top, spacing: Spacing.md) {
-            Image(systemName: icon)
-                .font(.subheadline.weight(.medium))
-                .foregroundStyle(.green)
-                .frame(width: 24)
-            Text(text)
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-        }
     }
 }
 
