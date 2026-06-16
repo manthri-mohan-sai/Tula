@@ -133,14 +133,25 @@ struct TulaApp: App {
                             SeedData.installIfNeeded(into: context)
                             seedDataInstalled = true
                         }
-                        // Idempotent: adds any default rules that don't
-                        // exist yet. For new users this is a no-op since
-                        // installIfNeeded just ran. For existing users it
-                        // backfills hundreds of new patterns shipped in
-                        // updates. Cheap — one fetch + a set diff.
-                        SeedData.installMissingDefaultMerchantRules(into: context)
-                        RecurringEngine.generateMissing(in: context)
-                        WidgetRefresh.refresh(using: context)
+                        // Heavy work runs on a background thread with its
+                        // own ModelContext. RecurringEngine.generateMissing
+                        // loops through every rule doing repeated SwiftData
+                        // property accesses — easily >5s with cold caches.
+                        // Running on @MainActor (even in a Task) still
+                        // starves the launch animation's asyncAfter callbacks.
+                        // Task.detached moves the work entirely off the main
+                        // thread; @Query views pick up changes via SQLite
+                        // notifications once the background context saves.
+                        let container = sharedContainer
+                        Task.detached {
+                            let bgContext = ModelContext(container)
+                            SeedData.installMissingDefaultMerchantRules(into: bgContext)
+                            RecurringEngine.generateMissing(in: bgContext)
+                            await MainActor.run {
+                                let ctx = ModelContext(container)
+                                WidgetRefresh.refresh(using: ctx)
+                            }
+                        }
 
                         // Install the Darwin notification observer if it
                         // isn't already running. Listens for the share
@@ -214,14 +225,20 @@ struct TulaApp: App {
                     }
                 }
 
-                let context = ModelContext(sharedContainer)
-                WidgetRefresh.refresh(
-                    using: context,
-                    upcomingRecurrings: buildUpcomingRecurrings(in: context)
-                )
-                NotificationManager.refreshDailyReminder(using: context)
-                // Tell Siri to re-index App Shortcuts (picks up new categories etc.)
-                TulaShortcuts.updateAppShortcutParameters()
+                let activeContainer = sharedContainer
+                Task.detached {
+                    let ctx = ModelContext(activeContainer)
+                    let upcomingRecurrings = buildUpcomingRecurrings(in: ctx)
+                    await MainActor.run {
+                        let mainCtx = ModelContext(activeContainer)
+                        WidgetRefresh.refresh(
+                            using: mainCtx,
+                            upcomingRecurrings: upcomingRecurrings
+                        )
+                        NotificationManager.refreshDailyReminder(using: mainCtx)
+                        TulaShortcuts.updateAppShortcutParameters()
+                    }
+                }
             } else if newPhase == .background {
                 if appLockEnabled {
                     isLocked = true
@@ -275,7 +292,18 @@ struct RootTabView: View {
     let appDelegate: TulaAppDelegate
     @Binding var launchAnimationDone: Bool
     @State private var selectedTab: TulaTab = .home
-    @State private var showingAddExpense = false
+    /// Single atomic state for the Add Expense sheet. Using one `item:`
+    /// binding instead of two separate bools (`showingAddExpense` +
+    /// `pendingScanOnAdd`) eliminates the race where SwiftUI's sheet
+    /// content closure captured `pendingScanOnAdd` before it was updated,
+    /// making `openCameraOnAppear` always `false` on scan launches.
+    @State private var addExpenseMode: AddExpenseMode?
+
+    enum AddExpenseMode: Identifiable {
+        case normal
+        case scan
+        var id: Int { self == .scan ? 1 : 0 }
+    }
 
     /// Intercepts selection of the `.add` tab to present the sheet
     /// instead of switching tabs. All other tabs behave normally.
@@ -285,7 +313,7 @@ struct RootTabView: View {
             set: { newValue in
                 if newValue == .add {
                     Haptics.impact()
-                    showingAddExpense = true
+                    addExpenseMode = .normal
                 } else {
                     selectedTab = newValue
                 }
@@ -319,8 +347,8 @@ struct RootTabView: View {
                 Color.tulaBackground.ignoresSafeArea()
             }
         }
-        .sheet(isPresented: $showingAddExpense) {
-            AddExpenseView()
+        .sheet(item: $addExpenseMode) { mode in
+            AddExpenseView(openCameraOnAppear: mode == .scan)
         }
         // Handle deep links from widgets. `tula://add` opens the Add
         // Expense sheet directly. `tula://voice` keeps the user on Home
@@ -351,7 +379,7 @@ struct RootTabView: View {
         switch url.host {
         case "add":
             Haptics.impact()
-            showingAddExpense = true
+            addExpenseMode = .normal
         case "voice":
             Haptics.impact()
             selectedTab = .home
@@ -363,13 +391,7 @@ struct RootTabView: View {
             }
         case "scan":
             Haptics.impact()
-            showingAddExpense = true
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                NotificationCenter.default.post(
-                    name: .tulaStartReceiptScan,
-                    object: nil
-                )
-            }
+            addExpenseMode = .scan
         default: break
         }
     }

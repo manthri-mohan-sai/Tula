@@ -126,8 +126,13 @@ enum RecurringEngine {
         // confirmation rules. Floor at 7 (one week for daily rules).
         let perRuleCap = max(7, totalConfirmRules > 0 ? 60 / totalConfirmRules : 14)
         var scheduled = 0
+        // Safety cap: prevents runaway loops when overrideTime regresses
+        // the date (see below). 500 iterations is far more than any real
+        // schedule needs — perRuleCap is at most 60.
+        var loopGuard = 0
 
-        while scheduled < perRuleCap {
+        while scheduled < perRuleCap, loopGuard < 500 {
+            loopGuard += 1
             if let endDate = rule.endDate, nextDate > endDate { break }
 
             // Skip past-due occurrences (today's 9am at 3pm). iOS would
@@ -144,6 +149,7 @@ enum RecurringEngine {
                 scheduled += 1
             }
 
+            let prevDate = nextDate
             nextDate = nextOccurrence(
                 strictlyAfter: nextDate,
                 rule: rule,
@@ -152,6 +158,20 @@ enum RecurringEngine {
             // Override time again for the next candidate.
             if !rule.hasSpecificTime {
                 nextDate = overrideTime(of: nextDate, hour: 9, minute: 0, calendar: calendar)
+
+                // Fix: overrideTime can regress the date when the rule's
+                // anchor time differs from 9am. Example: nextOccurrence
+                // returns Mon 10am (anchor time), overrideTime snaps to
+                // Mon 9am — which is <= prevDate (also Mon 9am). The
+                // next nextOccurrence call returns Mon 10am again, and
+                // the loop spins forever. Break the cycle by jumping to
+                // the next calendar day.
+                if nextDate <= prevDate {
+                    let tomorrow = calendar.date(byAdding: .day, value: 1, to: prevDate)
+                        ?? calendar.startOfDay(for: prevDate).addingTimeInterval(86400)
+                    nextDate = nextOccurrence(strictlyAfter: tomorrow, rule: rule, calendar: calendar)
+                    nextDate = overrideTime(of: nextDate, hour: 9, minute: 0, calendar: calendar)
+                }
             }
         }
     }

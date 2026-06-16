@@ -26,6 +26,7 @@ struct AddExpenseView: View {
     @AppStorage("budgetAlertsEnabled") private var budgetAlertsEnabled: Bool = false
 
     let existingExpense: Expense?
+    let openCameraOnAppear: Bool
 
     @State private var amount: Double
     @State private var selectedCategory: Category?
@@ -81,10 +82,9 @@ struct AddExpenseView: View {
 
     /// Image picker presentation state. `.camera` shows the camera UI;
     /// `.library` shows the photo picker.
-    @State private var showingReceiptSource: ReceiptSource? = nil
-    enum ReceiptSource: Identifiable { case camera, library
-        var id: Int { switch self { case .camera: 0; case .library: 1 } }
-    }
+    @State private var showingCamera = false
+    @State private var showingLibraryPicker = false
+    enum ReceiptSource { case camera, library }
     /// Action sheet for choosing camera vs photo library when adding a
     /// receipt. Both paths feed the same OCR pipeline.
     @State private var showingReceiptSourcePicker: Bool = false
@@ -103,8 +103,9 @@ struct AddExpenseView: View {
 
     @FocusState private var amountFocused: Bool
 
-    init(existingExpense: Expense? = nil) {
+    init(existingExpense: Expense? = nil, openCameraOnAppear: Bool = false) {
         self.existingExpense = existingExpense
+        self.openCameraOnAppear = openCameraOnAppear
         if let e = existingExpense {
             _amount = State(initialValue: e.amount)
             _selectedCategory = State(initialValue: e.category)
@@ -245,9 +246,16 @@ struct AddExpenseView: View {
             }
             .onAppear {
                 setupDefaults()
-                // Only auto-open the keyboard for new expenses.
-                // In edit mode the user may just want to review, not type.
-                if !isEditing {
+                if openCameraOnAppear {
+                    // Scan mode: open camera after the sheet finishes
+                    // presenting. Don't focus the amount field — the
+                    // keyboard would fight the camera for screen space.
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                        showingCamera = true
+                    }
+                } else if !isEditing {
+                    // Only auto-open the keyboard for new expenses.
+                    // In edit mode the user may just want to review, not type.
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                         amountFocused = true
                     }
@@ -270,7 +278,7 @@ struct AddExpenseView: View {
             }
             .onReceive(NotificationCenter.default.publisher(for: .tulaStartReceiptScan)) { _ in
                 amountFocused = false
-                showingReceiptSource = .camera
+                showingCamera = true
             }
             .onChange(of: scanErrorMessage) { _, newValue in
                 if newValue != nil {
@@ -1188,18 +1196,28 @@ struct AddExpenseView: View {
             isPresented: $showingReceiptSourcePicker,
             titleVisibility: .visible
         ) {
-            Button("Take photo") { amountFocused = false; showingReceiptSource = .camera }
-            Button("Choose from library") { amountFocused = false; showingReceiptSource = .library }
+            Button("Take photo") { amountFocused = false; showingCamera = true }
+            Button("Choose from library") { amountFocused = false; showingLibraryPicker = true }
             Button("Cancel", role: .cancel) { }
         }
-        .sheet(item: $showingReceiptSource) { source in
-            ReceiptPicker(source: source) { image in
+        .fullScreenCover(isPresented: $showingCamera) {
+            ReceiptPicker(source: .camera) { image in
+                showingCamera = false
                 guard let image else { return }
                 Haptics.success()
                 receiptImage = image
                 runReceiptOCR(on: image)
             }
             .ignoresSafeArea()
+        }
+        .sheet(isPresented: $showingLibraryPicker) {
+            ReceiptPicker(source: .library) { image in
+                showingLibraryPicker = false
+                guard let image else { return }
+                Haptics.success()
+                receiptImage = image
+                runReceiptOCR(on: image)
+            }
         }
     }
 
@@ -1938,7 +1956,6 @@ struct AddExpenseView: View {
 
     private func setupDefaults() {
         if isEditing { return }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { amountFocused = true }
         if selectedAccount == nil {
             if !lastUsedAccountID.isEmpty,
                let uuid = UUID(uuidString: lastUsedAccountID),

@@ -58,6 +58,13 @@ struct HomeView: View {
     @State private var lastCelebratedStreak: Int = 0
     @State private var showStreakSheet = false
     @State private var expandedStacks: Set<String> = []
+    /// Caches for RecurringEngine results. `nextDueDate` and `overdueDates`
+    /// loop through date sequences (up to 366 iterations per rule). As raw
+    /// computed properties they ran on EVERY body evaluation, causing jank
+    /// with many rules. These caches hold the engine output; cheap filtering
+    /// (isPaused, isRuleFulfilled, dismissedKeys) still runs per-render.
+    @State private var cachedNextDueDates: [UUID: Date] = [:]
+    @State private var cachedOverdueDates: [UUID: [Date]] = [:]
     private var networkMonitor = NetworkMonitor.shared
 
     @AppStorage("lastUsedAccountID") private var lastUsedAccountID: String = ""
@@ -133,7 +140,7 @@ struct HomeView: View {
         return allRecurringRules
             .filter { !$0.isPaused }
             .compactMap { rule -> (RecurringRule, Date)? in
-                guard let next = RecurringEngine.nextDueDate(for: rule),
+                guard let next = cachedNextDueDates[rule.id],
                       next < tomorrow else { return nil }
                 if isRuleFulfilled(rule, forDueDate: next, calendar: calendar) {
                     return nil
@@ -154,7 +161,7 @@ struct HomeView: View {
         let yesterday = calendar.date(byAdding: .day, value: -1, to: calendar.startOfDay(for: .now)) ?? .now
         var result: [(RecurringRule, Date)] = []
         for rule in allRecurringRules where !rule.isPaused && rule.kind == .expense {
-            let dates = RecurringEngine.overdueDates(for: rule)
+            let dates = cachedOverdueDates[rule.id] ?? []
             for date in dates {
                 guard date >= yesterday else { continue }
                 if !isRuleFulfilled(rule, forDueDate: date, calendar: calendar) {
@@ -408,6 +415,7 @@ struct HomeView: View {
             .scrollDismissesKeyboard(.immediately)
             .onAppear {
                 guard !appeared else { return }
+                refreshRecurringCaches()
                 // Delay the entrance so it plays after the launch
                 // animation overlay has faded out. When the animation
                 // is disabled, use a minimal delay for layout to settle.
@@ -419,6 +427,9 @@ struct HomeView: View {
                 }
                 checkAPIKeyPrompt()
                 checkBudgetStreakCelebration()
+            }
+            .onChange(of: allRecurringRules.count) { _, _ in
+                refreshRecurringCaches()
             }
             .navigationTitle("Tula")
             .navigationBarTitleDisplayMode(.large)
@@ -1707,6 +1718,25 @@ struct HomeView: View {
         }
     }
 
+    /// Recomputes the cached RecurringEngine results. Called once on
+    /// appear and again after actions that change rule state (log, skip,
+    /// rule add/delete). Cheap filtering (paused, fulfilled, dismissed)
+    /// still runs per-render via the computed properties above.
+    private func refreshRecurringCaches() {
+        var nextDates: [UUID: Date] = [:]
+        var overdueDates: [UUID: [Date]] = [:]
+        for rule in allRecurringRules where !rule.isPaused {
+            if let next = RecurringEngine.nextDueDate(for: rule) {
+                nextDates[rule.id] = next
+            }
+            if rule.kind == .expense {
+                overdueDates[rule.id] = RecurringEngine.overdueDates(for: rule)
+            }
+        }
+        cachedNextDueDates = nextDates
+        cachedOverdueDates = overdueDates
+    }
+
     private func confirmLog(rule: RecurringRule, date: Date) {
         confirmLogRule = rule
         confirmLogDate = date
@@ -1726,6 +1756,7 @@ struct HomeView: View {
             try? context.save(); WidgetRefresh.refresh(using: context)
         }
         NotificationManager.cancelConfirmation(ruleID: rule.id, dueDate: date)
+        refreshRecurringCaches()
         showToast("Skipped")
     }
 
@@ -1740,6 +1771,7 @@ struct HomeView: View {
             try? context.save(); WidgetRefresh.refresh(using: context)
         }
         NotificationManager.cancelConfirmation(ruleID: rule.id, dueDate: date)
+        refreshRecurringCaches()
         triggerSavePulse()
         showToast("Logged \(rule.name)")
     }
