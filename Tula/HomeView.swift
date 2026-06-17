@@ -1338,10 +1338,14 @@ struct HomeView: View {
         let gap: CGFloat = Spacing.md
         let peekGap: CGFloat = 14
         let peekCount = shouldStack ? min(all.count, 3) - 1 : 0
-
         let heights = all.map { measuredCardHeight(for: $0) }
         let frontH = heights.first ?? baseH
         let expandedTotal = heights.reduce(0, +) + CGFloat(max(all.count - 1, 0)) * gap
+        let visibleCount = shouldStack ? min(all.count, 3) : (all.isEmpty ? 0 : 1)
+        let collapsedHeight: CGFloat = (0..<visibleCount).reduce(0) { result, i in
+            let offsetY = CGFloat(min(i, 2)) * peekGap
+            return max(result, offsetY + heights[i])
+        }
 
         if !all.isEmpty {
             VStack(spacing: 0) {
@@ -1404,10 +1408,7 @@ struct HomeView: View {
                             )
                     }
                 }
-                .frame(height: isExpanded
-                       ? expandedTotal
-                       : frontH + CGFloat(peekCount) * peekGap,
-                       alignment: .top)
+                .frame(height: isExpanded ? expandedTotal : collapsedHeight+2, alignment: .top)
                 .animation(.spring(response: 0.42, dampingFraction: 0.72), value: isExpanded)
                 // Badge overlay when stacked — positioned as a corner
                 // notification badge so it doesn't clash with the swipe

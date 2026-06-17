@@ -426,15 +426,15 @@ struct AccountFormView: View {
     private static let accountIcons = [
         "building.columns", "creditcard", "banknote", "wallet.pass",
         "indianrupeesign.circle", "dollarsign.circle", "eurosign.circle",
-        "house.fill", "briefcase.fill", "graduationcap.fill",
-        "airplane", "car.fill", "cart.fill", "gift.fill",
-        "bag.fill", "bolt.fill", "phone.fill", "globe.americas.fill",
-        "heart.fill", "star.fill", "leaf.fill", "flame.fill",
-        "cup.and.saucer.fill", "fork.knife", "bed.double.fill",
-        "key.fill", "lock.fill", "shield.fill",
-        "paintbrush.fill", "camera.fill", "tv.fill", "headphones",
-        "bus.fill", "bicycle", "fuelpump.fill", "stethoscope",
-        "cross.case.fill", "pawprint.fill", "sparkles", "tag.fill"
+        "house", "briefcase", "graduationcap",
+        "airplane", "car", "cart", "gift",
+        "bag", "bolt", "phone", "globe.americas",
+        "heart", "star", "leaf", "flame",
+        "cup.and.saucer", "fork.knife", "bed.double",
+        "key", "lock", "shield",
+        "paintbrush", "camera", "tv", "headphones",
+        "bus", "bicycle", "fuelpump", "stethoscope",
+        "cross.case", "pawprint", "sparkles", "tag"
     ]
 
     @State private var customIconSearch = ""
