@@ -16,6 +16,11 @@ struct RecurringRulesView: View {
     @State private var editingRule: RecurringRule?
     @State private var ruleToDelete: RecurringRule?
     @State private var showingDeleteConfirm = false
+    @State private var ruleToLog: RecurringRule?
+    @State private var logDate: Date?
+    @State private var showingLogConfirm = false
+    @State private var showingVariableAmountSheet = false
+    @State private var variableAmount: Double = 0
 
     let showOnlyOverdue: Bool
 
@@ -26,6 +31,12 @@ struct RecurringRulesView: View {
     private var activeRules: [RecurringRule] { allRules.filter { !$0.isPaused } }
     private var pausedRules: [RecurringRule] { allRules.filter { $0.isPaused } }
 
+    private var monthlySubtitle: String {
+        let total = monthlyTotal(for: activeRules)
+        guard total > 0 else { return "" }
+        return "~\(total.formatted(.currency(code: currencyCode).precision(.fractionLength(0))))/month"
+    }
+
     private var overdueRules: [RecurringRule] {
         allRules.filter { rule in
             !rule.isPaused && !RecurringEngine.overdueDates(for: rule).isEmpty
@@ -34,30 +45,25 @@ struct RecurringRulesView: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(spacing: Spacing.md) {
-                    if showOnlyOverdue {
-                        if overdueRules.isEmpty {
-                            emptyState
-                        } else {
-                            section(title: "Overdue", rules: overdueRules)
-                        }
-                    } else if allRules.isEmpty {
-                        emptyState
+            Group {
+                if showOnlyOverdue {
+                    if overdueRules.isEmpty {
+                        ScrollView { emptyState.padding(.horizontal, Spacing.md).padding(.vertical, Spacing.sm) }
                     } else {
-                        if !activeRules.isEmpty {
-                            section(title: "Active", rules: activeRules)
-                        }
-                        if !pausedRules.isEmpty {
-                            section(title: "Paused", rules: pausedRules)
-                        }
+                        ruleList(sections: [("Overdue", overdueRules)])
                     }
+                } else if allRules.isEmpty {
+                    ScrollView { emptyState.padding(.horizontal, Spacing.md).padding(.vertical, Spacing.sm) }
+                } else {
+                    ruleList(sections:
+                        (activeRules.isEmpty ? [] : [("Active", activeRules)])
+                        + (pausedRules.isEmpty ? [] : [("Paused", pausedRules)])
+                    )
                 }
-                .padding(.horizontal, Spacing.md)
-                .padding(.vertical, Spacing.sm)
             }
             .background(Color(uiColor: .systemGroupedBackground))
             .navigationTitle(showOnlyOverdue ? "Overdue" : "Recurring")
+            .tulaNavigationSubtitle(showOnlyOverdue ? "" : monthlySubtitle)
             .navigationBarTitleDisplayMode(.large)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
@@ -94,91 +100,181 @@ struct RecurringRulesView: View {
             } message: {
                 Text("This recurring rule will be permanently removed.")
             }
+            .confirmationDialog(
+                "Log \(ruleToLog?.name ?? "expense")?",
+                isPresented: $showingLogConfirm,
+                titleVisibility: .visible
+            ) {
+                Button("Log") {
+                    if let rule = ruleToLog, let date = logDate {
+                        logRule(rule, date: date)
+                    }
+                }
+                Button("Cancel", role: .cancel) { }
+            } message: {
+                if let rule = ruleToLog {
+                    Text("This will record \(Currency.format(rule.amount, code: currencyCode)) as an expense.")
+                }
+            }
+            .sheet(isPresented: $showingVariableAmountSheet) {
+                variableAmountSheet
+            }
         }
+        .presentationDragIndicator(.hidden)
     }
 
-    private func section(title: String, rules: [RecurringRule]) -> some View {
-        VStack(alignment: .leading, spacing: Spacing.sm) {
-            SectionHeader(title: title.uppercased())
-            Card(padding: 0, cornerRadius: CornerRadius.medium) {
-                VStack(spacing: 0) {
-                    ForEach(rules) { rule in
-                        SwipeToDeleteRow {
-                            ruleToDelete = rule
-                            showingDeleteConfirm = true
-                        } content: {
-                            Button {
-                                Haptics.tap()
-                                editingRule = rule
-                            } label: {
-                                RuleRow(rule: rule)
-                                    .padding(.horizontal, Spacing.md)
-                            }
-                            .buttonStyle(PlainRowButtonStyle())
-                            .contextMenu {
-                                if !rule.isPaused {
-                                    Button {
-                                        skipNextOccurrence(rule)
-                                    } label: {
-                                        Label("Skip Next", systemImage: "forward.fill")
-                                    }
+    // MARK: - Native List
 
-                                    Button {
-                                        snoozeRule(rule, days: 7)
-                                    } label: {
-                                        Label("Snooze 1 Week", systemImage: "moon.zzz.fill")
-                                    }
-
-                                    Button {
-                                        snoozeRule(rule, days: 30)
-                                    } label: {
-                                        Label("Snooze 1 Month", systemImage: "calendar.badge.clock")
-                                    }
-                                } else {
-                                    Button {
-                                        resumeRule(rule)
-                                    } label: {
-                                        Label("Resume Now", systemImage: "play.fill")
-                                    }
-                                }
-
-                                Divider()
-
+    /// Uses a native `List` so `.swipeActions` work perfectly with
+    /// scrolling — no gesture conflicts, standard iOS discoverability.
+    private func ruleList(sections: [(title: String, rules: [RecurringRule])]) -> some View {
+        List {
+            ForEach(sections, id: \.title) { section in
+                Section {
+                    ForEach(section.rules) { rule in
+                        Button {
+                            Haptics.tap()
+                            editingRule = rule
+                        } label: {
+                            RuleRow(rule: rule)
+                        }
+                        .buttonStyle(.plain)
+                        .swipeActions(edge: .leading, allowsFullSwipe: true) {
+                            if !rule.isPaused {
                                 Button {
-                                    Haptics.tap()
-                                    editingRule = rule
+                                    markPaid(rule)
                                 } label: {
-                                    Label("Edit", systemImage: "pencil")
+                                    Label("Paid", systemImage: "checkmark.circle.fill")
                                 }
-
-                                Button(role: .destructive) {
-                                    ruleToDelete = rule
-                                    showingDeleteConfirm = true
-                                } label: {
-                                    Label("Delete", systemImage: "trash")
-                                }
+                                .tint(.green)
                             }
                         }
+                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                            Button(role: .destructive) {
+                                ruleToDelete = rule
+                                showingDeleteConfirm = true
+                            } label: {
+                                Label("Delete", systemImage: "trash")
+                            }
 
-                        if rule.id != rules.last?.id {
-                            Divider().padding(.leading, 64)
+                            if !rule.isPaused {
+                                Button {
+                                    skipNextOccurrence(rule)
+                                } label: {
+                                    Label("Skip", systemImage: "forward.fill")
+                                }
+                                .tint(.orange)
+                            }
+                        }
+                        .contextMenu {
+                            if !rule.isPaused {
+                                Button { markPaid(rule) } label: {
+                                    Label("Mark Paid", systemImage: "checkmark.circle.fill")
+                                }
+                                Button { skipNextOccurrence(rule) } label: {
+                                    Label("Skip Next", systemImage: "forward.fill")
+                                }
+                                Button { snoozeRule(rule, days: 7) } label: {
+                                    Label("Snooze 1 Week", systemImage: "moon.zzz.fill")
+                                }
+                                Button { snoozeRule(rule, days: 30) } label: {
+                                    Label("Snooze 1 Month", systemImage: "calendar.badge.clock")
+                                }
+                            } else {
+                                Button { resumeRule(rule) } label: {
+                                    Label("Resume Now", systemImage: "play.fill")
+                                }
+                            }
+                            Divider()
+                            Button { Haptics.tap(); editingRule = rule } label: {
+                                Label("Edit", systemImage: "pencil")
+                            }
+                            Button(role: .destructive) {
+                                ruleToDelete = rule
+                                showingDeleteConfirm = true
+                            } label: {
+                                Label("Delete", systemImage: "trash")
+                            }
                         }
                     }
+                } header: {
+                    Text(section.title)
                 }
             }
         }
+        .listStyle(.insetGrouped)
     }
 
-    /// Pauses the rule until just after the next due date, effectively
-    /// skipping one occurrence without deleting or editing the rule.
+    /// Variable amount input sheet — shown when logging a variable-amount
+    /// rule so the user can enter the actual bill amount.
+    private var variableAmountSheet: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    HStack {
+                        Text(ruleToLog?.name ?? "Amount")
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        FormattedAmountField(
+                            value: $variableAmount,
+                            currencyCode: currencyCode,
+                            placeholder: "0"
+                        )
+                    }
+                } header: {
+                    Text("How much was this bill?")
+                } footer: {
+                    if let rule = ruleToLog, rule.amount > 0 {
+                        Text("Last recorded: \(Currency.format(rule.amount, code: currencyCode))")
+                    }
+                }
+            }
+            .navigationTitle("Log Payment")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { showingVariableAmountSheet = false }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Log") {
+                        guard let rule = ruleToLog, let date = logDate else { return }
+                        logRule(rule, date: date, customAmount: variableAmount)
+                        showingVariableAmountSheet = false
+                    }
+                    .fontWeight(.semibold)
+                    .disabled(variableAmount <= 0)
+                }
+            }
+        }
+        .presentationDetents([.medium])
+    }
+
+    /// Skips the next occurrence of a recurring rule. For overdue rules,
+    /// advances `lastGeneratedDate` (and `lastPaidDate` for bills) past
+    /// all overdue dates so the overdue tag clears immediately. For
+    /// non-overdue rules, pauses until just after the next due date.
     private func skipNextOccurrence(_ rule: RecurringRule) {
-        guard let nextDue = RecurringEngine.nextDueDate(for: rule) else { return }
-        // Pause until the day after the next due date
-        let resumeDate = Calendar.current.date(byAdding: .day, value: 1, to: nextDue) ?? nextDue
-        withAnimation(AppAnimation.snappy) {
-            rule.isPaused = true
-            rule.pausedUntil = resumeDate
-            try? context.save()
+        let overdueDates = RecurringEngine.overdueDates(for: rule)
+        if !overdueDates.isEmpty {
+            // Skip all overdue occurrences by advancing the boundary
+            withAnimation(AppAnimation.snappy) {
+                if let latest = overdueDates.last {
+                    RecurringEngine.skipOccurrence(rule: rule, dueDate: latest)
+                    if rule.isBill {
+                        rule.lastPaidDate = .now
+                    }
+                }
+                try? context.save()
+            }
+        } else {
+            guard let nextDue = RecurringEngine.nextDueDate(for: rule) else { return }
+            // Pause until the day after the next due date
+            let resumeDate = Calendar.current.date(byAdding: .day, value: 1, to: nextDue) ?? nextDue
+            withAnimation(AppAnimation.snappy) {
+                rule.isPaused = true
+                rule.pausedUntil = resumeDate
+                try? context.save()
+            }
         }
         NotificationManager.cancelConfirmations(for: rule.id)
         Haptics.success()
@@ -215,6 +311,76 @@ struct RecurringRulesView: View {
             WidgetRefresh.refresh(using: context)
         }
         Haptics.success()
+    }
+
+    /// Route the "Mark Paid" action. Fixed-amount rules show a simple
+    /// confirmation dialog; variable-amount rules open the amount input
+    /// sheet so the user can type the actual bill amount.
+    private func markPaid(_ rule: RecurringRule) {
+        let overdueDates = RecurringEngine.overdueDates(for: rule)
+        let date = overdueDates.first ?? RecurringEngine.nextDueDate(for: rule) ?? .now
+        ruleToLog = rule
+        logDate = date
+
+        if rule.isVariable {
+            variableAmount = rule.amount  // pre-fill with last known amount
+            showingVariableAmountSheet = true
+        } else {
+            showingLogConfirm = true
+        }
+    }
+
+    /// Log a recurring rule occurrence as an expense. When `customAmount`
+    /// is provided (variable-amount bills), the expense is created with
+    /// that amount and the rule's stored amount is updated for next time.
+    private func logRule(_ rule: RecurringRule, date: Date, customAmount: Double? = nil) {
+        Haptics.success()
+        withAnimation(AppAnimation.snappy) {
+            // If the user entered a different amount, update the rule
+            // so next time it pre-fills with the latest value.
+            if let custom = customAmount, custom != rule.amount {
+                rule.amount = custom
+            }
+            RecurringEngine.createTransaction(rule: rule, date: date, in: context)
+            if rule.lastGeneratedDate == nil || rule.lastGeneratedDate! < date {
+                rule.lastGeneratedDate = date
+            }
+            // Update lastPaidDate for bill rules so the overdue tag clears.
+            // Use .now (not the overdue date) so BillReminderEngine sees it
+            // as paid in the current month — matches markAsPaid semantics.
+            if rule.isBill {
+                rule.lastPaidDate = .now
+            }
+            try? context.save()
+            WidgetRefresh.refresh(using: context)
+        }
+        NotificationManager.cancelConfirmation(ruleID: rule.id, dueDate: date)
+    }
+
+    private func monthlyTotal(for rules: [RecurringRule]) -> Double {
+        rules
+            .filter { $0.kind == .expense && !$0.isPaused }
+            .reduce(0.0) { sum, rule in
+                switch rule.frequency {
+                case .weekly:
+                    return sum + rule.amount * 4.33
+                case .monthly:
+                    return sum + rule.amount
+                case .yearly:
+                    return sum + rule.amount / 12.0
+                case .custom:
+                    switch rule.customUnit {
+                    case .day:
+                        return sum + rule.amount * (30.0 / Double(max(rule.customInterval, 1)))
+                    case .week:
+                        return sum + rule.amount * (4.33 / Double(max(rule.customInterval, 1)))
+                    case .month:
+                        return sum + rule.amount / Double(max(rule.customInterval, 1))
+                    case .year:
+                        return sum + rule.amount / (12.0 * Double(max(rule.customInterval, 1)))
+                    }
+                }
+            }
     }
 
     private var emptyState: some View {
@@ -342,7 +508,7 @@ private struct RuleRow: View {
                 }
             }
         }
-        .padding(.vertical, Spacing.md)
+        .padding(.vertical, Spacing.xs)
         .opacity(rule.isPaused ? 0.6 : 1)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(rule.name), \(rule.isVariable ? "variable amount" : Currency.format(rule.amount, code: currencyCode)), \(rule.cadenceLabel)")
@@ -433,7 +599,7 @@ struct RecurringRuleFormView: View {
             _pauseUntil = State(initialValue: r.pausedUntil ?? .now.addingTimeInterval(60 * 60 * 24 * 7))
             _isVariable = State(initialValue: r.isVariable)
             _isBill = State(initialValue: r.isBill)
-            _billDueDayOfMonth = State(initialValue: r.dueDayOfMonth)
+            _billDueDayOfMonth = State(initialValue: max(r.dueDayOfMonth, 1))
             _reminderDaysBefore = State(initialValue: r.reminderDaysBefore)
         } else {
             _name = State(initialValue: "")
@@ -520,13 +686,11 @@ struct RecurringRuleFormView: View {
             Form {
                 detailsSection
                 billSection
-                typeSection
                 routingSection
                 scheduleSection
                 confirmationSection
-                noteSection
-                pauseSection
                 if isEditing {
+                    pauseSection
                     deleteSection
                 }
             }
@@ -559,28 +723,35 @@ struct RecurringRuleFormView: View {
         Section {
             TextField("Name (e.g. Rent, Netflix)", text: $name)
                 .textInputAutocapitalization(.words)
-            HStack {
-                Text(isVariable ? "Reference Amount" : "Amount")
-                Spacer()
-                FormattedAmountField(
-                    value: $amount,
-                    currencyCode: currencyCode,
-                    placeholder: isVariable ? "Optional" : "0"
-                )
+            if !isVariable {
+                HStack {
+                    Text("Amount")
+                    Spacer()
+                    FormattedAmountField(
+                        value: $amount,
+                        currencyCode: currencyCode,
+                        placeholder: "0"
+                    )
+                }
             }
             Toggle(isOn: $isVariable.animation(.snappy(duration: 0.25))) {
                 Text("Variable amount")
             }
             .onChange(of: isVariable) { _, newValue in
-                if newValue { confirmationRequired = true }
+                if newValue {
+                    confirmationRequired = true
+                    amount = 0
+                }
             }
             TextField("Merchant (optional)", text: $merchant)
                 .textInputAutocapitalization(.words)
+            TextField("Note (optional)", text: $note, axis: .vertical)
+                .lineLimit(2...4)
         } header: {
             Text("Details")
         } footer: {
             if isVariable {
-                Text("Amount varies each time (e.g. power bill, fuel). You'll be asked to enter the actual amount.")
+                Text("Amount varies each time (e.g. power bill, fuel). You'll enter the actual amount when logging.")
             } else if !merchant.trimmingCharacters(in: .whitespaces).isEmpty {
                 Text("Expenses will be logged under \"\(merchant.trimmingCharacters(in: .whitespaces))\" as merchant.")
             }
@@ -599,10 +770,18 @@ struct RecurringRuleFormView: View {
                         .foregroundStyle(.secondary)
                 }
             }
+            .onChange(of: isBill) { _, newValue in
+                if newValue {
+                    dayOfMonth = billDueDayOfMonth
+                }
+            }
 
             if isBill {
                 Stepper(value: $billDueDayOfMonth, in: 1...31) {
                     Text("Due on day \(billDueDayOfMonth)")
+                }
+                .onChange(of: billDueDayOfMonth) { _, newValue in
+                    dayOfMonth = newValue
                 }
 
                 Stepper(value: $reminderDaysBefore, in: 1...14) {
@@ -618,7 +797,8 @@ struct RecurringRuleFormView: View {
         }
     }
 
-    private var typeSection: some View {
+    @ViewBuilder
+    private var routingSection: some View {
         Section {
             Picker("Type", selection: $kind) {
                 Text("Expense").tag(RecurringKind.expense)
@@ -626,35 +806,17 @@ struct RecurringRuleFormView: View {
                 Text("Transfer").tag(RecurringKind.transfer)
             }
             .pickerStyle(.segmented)
-        } header: {
-            Text("Type")
-        }
-    }
+            .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
 
-    @ViewBuilder
-    private var routingSection: some View {
-        if kind == .expense {
-            expenseRoutingSection
-        } else {
-            transferRoutingSection
-        }
-    }
-
-    private var expenseRoutingSection: some View {
-        Section {
-            categoryPicker
-            accountPicker(selection: $account, label: "Pay from")
+            if kind == .expense {
+                categoryPicker
+                accountPicker(selection: $account, label: "Pay from")
+            } else {
+                accountPicker(selection: $fromAccount, label: "From")
+                accountPicker(selection: $toAccount, label: "To")
+            }
         } header: {
-            Text("Category & Account")
-        }
-    }
-
-    private var transferRoutingSection: some View {
-        Section {
-            accountPicker(selection: $fromAccount, label: "From")
-            accountPicker(selection: $toAccount, label: "To")
-        } header: {
-            Text("Routing")
+            Text("Type & Account")
         }
     }
 
@@ -672,14 +834,7 @@ struct RecurringRuleFormView: View {
         }
     }
 
-    private var noteSection: some View {
-        Section {
-            TextField("Optional", text: $note, axis: .vertical)
-                .lineLimit(2...4)
-        } header: {
-            Text("Note")
-        }
-    }
+
 
     /// Ask-before-logging toggle. When on, the rule's occurrences don't
     /// auto-log — instead the app schedules an interactive notification
@@ -797,7 +952,11 @@ struct RecurringRuleFormView: View {
         if frequency == .weekly {
             weekdayPickerRow
         } else if frequency == .monthly {
-            monthlyStepperRow
+            // When isBill, the bill due day drives the schedule — no
+            // separate day-of-month picker needed.
+            if !isBill {
+                monthlyStepperRow
+            }
         } else if frequency == .custom {
             customIntervalRow
             customUnitRow
@@ -1093,77 +1252,4 @@ struct RecurringRuleFormView: View {
     }
 }
 
-// MARK: - Swipe To Delete Row
 
-private struct SwipeToDeleteRow<Content: View>: View {
-    let onDelete: () -> Void
-    @ViewBuilder let content: () -> Content
-
-    @State private var offset: CGFloat = 0
-    @State private var hapticFired = false
-
-    private let deleteWidth: CGFloat = 80
-    private let commitThreshold: CGFloat = 90
-
-    var body: some View {
-        ZStack(alignment: .trailing) {
-            HStack {
-                Spacer()
-                Button {
-                    onDelete()
-                    withAnimation(.snappy(duration: 0.25)) { offset = 0 }
-                } label: {
-                    VStack(spacing: 2) {
-                        Image(systemName: "trash")
-                            .font(.subheadline.weight(.semibold))
-                        Text("Delete")
-                            .font(.caption2.weight(.medium))
-                    }
-                    .foregroundStyle(.white)
-                    .frame(width: deleteWidth)
-                    .frame(maxHeight: .infinity)
-                    .background(Color.red)
-                }
-                .buttonStyle(.plain)
-            }
-            .opacity(offset < -1 ? 1 : 0)
-
-            content()
-                .offset(x: offset)
-                .gesture(
-                    DragGesture(minimumDistance: 12)
-                        .onChanged { value in
-                            let raw = value.translation.width
-                            if raw > 0 {
-                                offset = raw * 0.15
-                            } else if abs(raw) > 130 {
-                                let excess = abs(raw) - 130
-                                offset = -(130 + excess * 0.3)
-                            } else {
-                                offset = raw
-                            }
-
-                            if abs(raw) > commitThreshold && !hapticFired {
-                                Haptics.tap()
-                                hapticFired = true
-                            } else if abs(raw) < commitThreshold {
-                                hapticFired = false
-                            }
-                        }
-                        .onEnded { value in
-                            let raw = value.translation.width
-                            if raw < -commitThreshold {
-                                withAnimation(.snappy(duration: 0.25)) {
-                                    offset = -deleteWidth
-                                }
-                            } else {
-                                withAnimation(.snappy(duration: 0.25)) {
-                                    offset = 0
-                                }
-                            }
-                        }
-                )
-        }
-        .clipped()
-    }
-}

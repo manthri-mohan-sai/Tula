@@ -379,60 +379,119 @@ struct AccountFormView: View {
         }
     }
 
+    @State private var customColor: Color = .blue
+
+    private static let palette = [
+        "#4A90E2", "#7BA68D", "#D97706", "#8B2C3A", "#9775FA",
+        "#F783AC", "#51CF66", "#FFD43B", "#22B8CF", "#FF6B6B",
+        "#E03E3E", "#2D9CDB", "#27AE60", "#F2994A", "#9B51E0",
+        "#1ABC9C", "#E74C8B", "#8E44AD", "#3498DB", "#E67E22"
+    ]
+
     // MARK: - Pickers
 
     private var colorPicker: some View {
-        let palette = [
-            "#4A90E2", "#7BA68D", "#D97706", "#8B2C3A", "#9775FA",
-            "#F783AC", "#51CF66", "#FFD43B", "#22B8CF", "#FF6B6B"
-        ]
-        return ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: Spacing.md) {
-                ForEach(palette, id: \.self) { hex in
-                    Circle()
-                        .fill(Color(hex: hex))
-                        .frame(width: 32, height: 32)
-                        .overlay(
-                            Circle().stroke(
-                                colorHex == hex ? Color.primary : .clear,
-                                lineWidth: 2
+        VStack(alignment: .leading, spacing: Spacing.sm) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: Spacing.md) {
+                    ForEach(Self.palette, id: \.self) { hex in
+                        Circle()
+                            .fill(Color(hex: hex))
+                            .frame(width: 32, height: 32)
+                            .overlay(
+                                Circle().stroke(
+                                    colorHex == hex ? Color.primary : .clear,
+                                    lineWidth: 2
+                                )
+                                .padding(-3)
                             )
-                        )
-                        .overlay(
-                            Circle().stroke(Color(uiColor: .systemBackground), lineWidth: 2)
-                                .padding(2)
-                                .opacity(colorHex == hex ? 1 : 0)
-                        )
-                        .onTapGesture { colorHex = hex }
+                            .onTapGesture { colorHex = hex }
+                    }
                 }
+                .padding(.vertical, 8)
+                .padding(.horizontal, 12)
             }
-            .padding(.vertical, 4)
+            .scrollClipDisabled(false)
+            .mask(
+                Capsule()
+                    .padding(.vertical, -2)
+            )
+            ColorPicker("Custom color", selection: $customColor, supportsOpacity: false)
+                .onChange(of: customColor) { _, newValue in
+                    colorHex = newValue.toHex()
+                }
         }
     }
 
+    private static let accountIcons = [
+        "building.columns", "creditcard", "banknote", "wallet.pass",
+        "indianrupeesign.circle", "dollarsign.circle", "eurosign.circle",
+        "house.fill", "briefcase.fill", "graduationcap.fill",
+        "airplane", "car.fill", "cart.fill", "gift.fill",
+        "bag.fill", "bolt.fill", "phone.fill", "globe.americas.fill",
+        "heart.fill", "star.fill", "leaf.fill", "flame.fill",
+        "cup.and.saucer.fill", "fork.knife", "bed.double.fill",
+        "key.fill", "lock.fill", "shield.fill",
+        "paintbrush.fill", "camera.fill", "tv.fill", "headphones",
+        "bus.fill", "bicycle", "fuelpump.fill", "stethoscope",
+        "cross.case.fill", "pawprint.fill", "sparkles", "tag.fill"
+    ]
+
+    @State private var customIconSearch = ""
+
     private var iconPicker: some View {
-        let icons = [
-            "building.columns", "creditcard", "banknote", "wallet.pass",
-            "indianrupeesign.circle", "dollarsign.circle", "eurosign.circle",
-            "house.fill", "briefcase.fill", "graduationcap.fill",
-            "airplane", "car.fill", "cart.fill", "gift.fill"
-        ]
-        return ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: Spacing.md) {
-                ForEach(icons, id: \.self) { icon in
-                    let color = Color(hex: colorHex)
-                    ZStack {
-                        Circle()
-                            .fill(iconKey == icon ? color : color.opacity(0.15))
-                            .frame(width: 42, height: 42)
-                        Image(systemName: icon)
-                            .font(.subheadline)
-                            .foregroundStyle(iconKey == icon ? .white : color)
-                    }
-                    .onTapGesture { iconKey = icon }
+        let columns = Array(repeating: GridItem(.flexible(), spacing: 10), count: 6)
+        let color = Color(hex: colorHex)
+        return VStack(spacing: 12) {
+            LazyVGrid(columns: columns, spacing: 10) {
+                ForEach(Self.accountIcons, id: \.self) { icon in
+                    iconCell(icon: icon, color: color)
                 }
             }
-            .padding(.vertical, 4)
+
+            // Custom SF Symbol search
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Custom Icon")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+                HStack(spacing: 10) {
+                    TextField("SF Symbol name, e.g. globe", text: $customIconSearch)
+                        .font(.subheadline)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    if !customIconSearch.trimmingCharacters(in: .whitespaces).isEmpty {
+                        let symbolName = customIconSearch.trimmingCharacters(in: .whitespaces)
+                        if UIImage(systemName: symbolName) != nil {
+                            Button {
+                                Haptics.selection()
+                                iconKey = symbolName
+                            } label: {
+                                iconCell(icon: symbolName, color: color)
+                            }
+                            .buttonStyle(.plain)
+                        } else {
+                            Image(systemName: "xmark.circle")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func iconCell(icon: String, color: Color) -> some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(iconKey == icon ? color : color.opacity(0.12))
+                .frame(height: 44)
+            Image(systemName: icon)
+                .font(.body)
+                .foregroundStyle(iconKey == icon ? .white : color)
+        }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            Haptics.selection()
+            iconKey = icon
         }
     }
 

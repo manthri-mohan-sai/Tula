@@ -414,7 +414,7 @@ final class ShareSession: ObservableObject {
                let gateResult,
                !gateResult.shouldCallAI,
                !forceCloudAI {
-                return "\(gateResult.reason) Tap Retry if this is a receipt."
+                return "\(gateResult.reason) Tap Try Again if this is a receipt."
             }
             if smartResult == nil {
                 return await MainActor.run { CloudAIParser.lastParseError }
@@ -427,8 +427,8 @@ final class ShareSession: ObservableObject {
         }()
 
         let (categoryNames, accountEntries, matchedAccountName) = await Self.loadPickerData(
-            paymentMode: smartResult?.paymentMode,
-            cardLast4: smartResult?.cardLast4
+            paymentMode: smartResult?.paymentMode ?? regexResult?.paymentMode,
+            cardLast4: smartResult?.cardLast4 ?? regexResult?.cardLast4
         )
 
         await MainActor.run { [weak self] in

@@ -1540,7 +1540,7 @@ struct AddExpenseView: View {
                    let gateResult,
                    !gateResult.shouldCallAI,
                    !forceCloudAI {
-                    scanErrorMessage = "\(gateResult.reason) Tap Retry if this is a receipt."
+                    scanErrorMessage = "\(gateResult.reason) Tap Try Again if this is a receipt."
                     canRetryAIGate = true
                 } else if smartResult == nil && (isDirectImageMode || regexResult == nil) {
                     scanErrorMessage = CloudAIParser.lastParseError

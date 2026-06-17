@@ -152,38 +152,43 @@ struct ShareRootView: View {
     /// the parsed values are correct even when our heuristics are
     /// uncertain. The banner is a heads-up, not a gate.
     private func warningBanner(_ text: String) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(spacing: 12) {
             HStack(spacing: 10) {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .font(.subheadline)
-                    .foregroundStyle(.orange)
-                Text(text)
-                    .font(.footnote)
-                    .foregroundStyle(.primary)
-                    .multilineTextAlignment(.leading)
+                Image(systemName: "info.circle.fill")
+                    .font(.body)
+                    .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Heads Up")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(.primary)
+                    Text(text)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 Spacer(minLength: 0)
             }
             if session.canRetryAIGate {
-                Button("Retry") {
+                Button {
                     session.retryAIGateBypass()
-                    }
-                    .font(.caption.weight(.semibold))
-                    .foregroundColor(.white)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 10)
-                    .background(Color.orange)
-                    .clipShape(RoundedRectangle(cornerRadius: 20))
+                } label: {
+                    Text("Try Again")
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(brand)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 10)
+                        .background(brand.opacity(0.12))
+                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .contentShape(Rectangle())
             }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
+        .padding(14)
         .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(Color.orange.opacity(0.12))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .strokeBorder(Color.orange.opacity(0.25), lineWidth: 0.5)
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color(.secondarySystemBackground))
         )
     }
 
@@ -551,9 +556,9 @@ struct ShareRootView: View {
         VStack(spacing: 6) {
             Image(uiImage: image)
                 .resizable()
-                .aspectRatio(contentMode: .fill)
+                .aspectRatio(contentMode: .fit)
                 .frame(maxWidth: .infinity)
-                .frame(height: 160)
+                .frame(maxHeight: 200)
                 .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                 .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                 .onTapGesture { showingReceiptFullscreen = true }
@@ -570,14 +575,22 @@ struct ShareRootView: View {
                 .fill(Color(.secondarySystemBackground))
         )
         .fullScreenCover(isPresented: $showingReceiptFullscreen) {
-            ZStack {
+            ZStack(alignment: .topTrailing) {
                 Color.black.ignoresSafeArea()
                 Image(uiImage: image)
                     .resizable()
                     .aspectRatio(contentMode: .fit)
                     .ignoresSafeArea()
+                Button {
+                    showingReceiptFullscreen = false
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.title2)
+                        .symbolRenderingMode(.palette)
+                        .foregroundStyle(.white, .white.opacity(0.3))
+                        .padding(16)
+                }
             }
-            .onTapGesture { showingReceiptFullscreen = false }
         }
     }
 

@@ -15,6 +15,7 @@ enum HomeDestination: Hashable {
 
 struct HomeView: View {
     @Environment(\.modelContext) private var context
+    @Environment(\.scenePhase) private var scenePhase
     @Query(sort: \Expense.date, order: .reverse) private var allExpenses: [Expense]
     @Query(sort: \Account.sortOrder) private var allAccounts: [Account]
     @Query(sort: \Category.sortOrder) private var allCategories: [Category]
@@ -32,6 +33,8 @@ struct HomeView: View {
     @State private var confirmLogRule: RecurringRule?
     @State private var confirmLogDate: Date?
     @State private var showingLogConfirm = false
+    @State private var showingLogAmountSheet = false
+    @State private var logAmountValue: Double = 0
     @State private var confirmSkipRule: RecurringRule?
     @State private var confirmSkipDate: Date?
     @State private var showingSkipConfirm = false
@@ -46,7 +49,7 @@ struct HomeView: View {
     /// Counter (not bool) handles concurrent multi-entry parses correctly.
     @State private var smartParseInFlight: Int = 0
     @State private var heroTapPulse: Bool = false
-    @State private var dismissedInsightIDs: Set<String> = []
+    @AppStorage("dismissedInsightIDs") private var dismissedInsightIDsRaw: String = ""
     @State private var dismissedUpcomingKeys: Set<String> = []
     @State private var recurringSuggestionToCreate: RecurringSuggestion?
     @State private var appeared = false
@@ -102,6 +105,22 @@ struct HomeView: View {
             return Color.tulaBrandFallback
         }
         return Color(hex: hex)
+    }
+
+    /// Persisted set of insight IDs the user has dismissed. Stored as a
+    /// comma-separated string in @AppStorage so dismissals survive app
+    /// restarts. Insight IDs are deterministic (same data → same IDs),
+    /// so dismissed insights stay gone until the underlying data changes
+    /// and the InsightEngine produces fresh IDs.
+    private var dismissedInsightIDs: Set<String> {
+        guard !dismissedInsightIDsRaw.isEmpty else { return [] }
+        return Set(dismissedInsightIDsRaw.split(separator: ",").map(String.init))
+    }
+
+    private func dismissInsight(_ id: String) {
+        var ids = dismissedInsightIDs
+        ids.insert(id)
+        dismissedInsightIDsRaw = ids.joined(separator: ",")
     }
 
     /// Count of expenses missing a category — the Quick Log voice flow can
@@ -389,21 +408,8 @@ struct HomeView: View {
                     ShareSheet(items: [image])
                 }
             }
-            .confirmationDialog(
-                "Log \(confirmLogRule?.name ?? "expense")?",
-                isPresented: $showingLogConfirm,
-                titleVisibility: .visible
-            ) {
-                Button("Log") {
-                    if let rule = confirmLogRule, let date = confirmLogDate {
-                        logUpcoming(rule: rule, date: date)
-                    }
-                }
-                Button("Cancel", role: .cancel) { }
-            } message: {
-                if let rule = confirmLogRule {
-                    Text("This will record \(Currency.format(rule.amount, code: currencyCode)) as an expense.")
-                }
+            .sheet(isPresented: $showingLogAmountSheet) {
+                logAmountSheet
             }
             .confirmationDialog(
                 "Skip \(confirmSkipRule?.name ?? "expense")?",
@@ -461,6 +467,11 @@ struct HomeView: View {
         }
         .onChange(of: allRecurringRules.count) { _, _ in
             refreshRecurringCaches()
+        }
+        .onChange(of: scenePhase) { _, newPhase in
+            if newPhase == .active {
+                refreshRecurringCaches()
+            }
         }
         .navigationTitle("Tula")
         .navigationBarTitleDisplayMode(.large)
@@ -1271,20 +1282,66 @@ struct HomeView: View {
         }
     }
 
-    /// Context cards — all live in a ZStack so they can animate offset
-    /// (sliding out from behind the top card). When stacked, secondary
-    /// cards sit behind the top card with slight peek offsets. When
-    /// expanded, they spring out to their natural positions.
+    /// Measures the height a context card needs based on its text content.
+    /// Uses UIKit text measurement against the actual available width,
+    /// clamped to a minimum of 60 so the card never shrinks below standard.
+    private func measuredCardHeight(for context: HomeContext) -> CGFloat {
+        let baseH: CGFloat = 60
+        guard case .insight(let insight) = context else { return baseH }
+
+        // Available width for text = screen - scroll padding - card padding - icon - spacings - dismiss button
+        let screenW = UIScreen.main.bounds.width
+        let textWidth = screenW
+            - Spacing.xl * 2       // scroll content horizontal padding
+            - Spacing.md * 2       // card horizontal padding
+            - 36                   // icon circle
+            - Spacing.md * 2       // HStack spacings
+            - 28                   // dismiss/chevron area
+            - Spacing.md           // outer HStack gap
+
+        // Use semibold to match .subheadline.weight(.semibold) in the view
+        let baseTitleFont = UIFont.preferredFont(forTextStyle: .subheadline)
+        let titleFont = UIFont.systemFont(ofSize: baseTitleFont.pointSize, weight: .semibold)
+        let detailFont = UIFont.preferredFont(forTextStyle: .caption1)
+        let maxTitleLines: CGFloat = 2
+        let maxDetailLines: CGFloat = 4
+
+        let rawTitleH = ceil((insight.title as NSString).boundingRect(
+            with: CGSize(width: textWidth, height: .greatestFiniteMagnitude),
+            options: .usesLineFragmentOrigin,
+            attributes: [.font: titleFont],
+            context: nil
+        ).height)
+        let titleH = min(rawTitleH, ceil(titleFont.lineHeight * maxTitleLines))
+
+        let rawDetailH = ceil((insight.detail as NSString).boundingRect(
+            with: CGSize(width: textWidth, height: .greatestFiniteMagnitude),
+            options: .usesLineFragmentOrigin,
+            attributes: [.font: detailFont],
+            context: nil
+        ).height)
+        let detailH = min(rawDetailH, ceil(detailFont.lineHeight * maxDetailLines))
+
+        let verticalPadding: CGFloat = (Spacing.sm + 2) * 2
+        let textSpacing: CGFloat = 2
+        let needed = titleH + textSpacing + detailH + verticalPadding
+
+        return max(needed, baseH)
+    }
+
     @ViewBuilder
     private var contextSections: some View {
         let all = overdueContexts + upcomingContexts + otherContexts
         let isExpanded = expandedStacks.contains("contexts")
         let shouldStack = all.count > 1
-        let cardH: CGFloat = 60
+        let baseH: CGFloat = 60
         let gap: CGFloat = Spacing.md
-        let slot: CGFloat = cardH + gap
         let peekGap: CGFloat = 14
         let peekCount = shouldStack ? min(all.count, 3) - 1 : 0
+
+        let heights = all.map { measuredCardHeight(for: $0) }
+        let frontH = heights.first ?? baseH
+        let expandedTotal = heights.reduce(0, +) + CGFloat(max(all.count - 1, 0)) * gap
 
         if !all.isEmpty {
             VStack(spacing: 0) {
@@ -1296,18 +1353,16 @@ struct HomeView: View {
                         }
                     } label: {
                         HStack(spacing: 4) {
-                            Image(systemName: "chevron.up") // Fixed: Usually "Show less" points up, not down
+                            Image(systemName: "chevron.up")
                                 .font(.caption2.weight(.bold))
                             Text("Show less")
                                 .font(.caption.weight(.semibold))
                         }
-                        // Style adjustments for adaptive contrast
                         .foregroundStyle(.secondary)
                         .padding(.horizontal, 12)
                         .padding(.vertical, 6)
                         .background {
                             Capsule()
-                                // Combines a material blur with a dynamic background shape fill
                                 .fill(.thinMaterial)
                                 .background(Capsule().fill(Color(.systemBackground).opacity(0.4)))
                                 .overlay {
@@ -1324,12 +1379,14 @@ struct HomeView: View {
                 ZStack(alignment: .top) {
                     // Render back-to-front so card 0 is visually on top.
                     ForEach(Array(all.enumerated()).reversed(), id: \.element.identifier) { index, context in
+                        let h = heights[index]
+                        let yExpanded = heights.prefix(index).reduce(0, +) + CGFloat(index) * gap
                         contextRow(for: context)
-                            .frame(height: cardH)
+                            .frame(height: h)
                             .shadow(color: Color(.label).opacity(isExpanded ? 0 : 0.06),
                                     radius: 4, y: 2)
                             .offset(y: isExpanded
-                                    ? CGFloat(index) * slot
+                                    ? yExpanded
                                     : CGFloat(min(index, 2)) * peekGap)
                             .scaleEffect(isExpanded
                                          ? 1.0
@@ -1337,7 +1394,7 @@ struct HomeView: View {
                                          anchor: .top)
                             .opacity(isExpanded ? 1.0 : (index <= 2 ? 1.0 : 0.0))
                             .zIndex(Double(all.count - index))
-                            .allowsHitTesting(isExpanded)
+                            .allowsHitTesting(isExpanded || !shouldStack)
                             .animation(
                                 .spring(response: 0.42, dampingFraction: 0.72)
                                 .delay(isExpanded
@@ -1348,8 +1405,8 @@ struct HomeView: View {
                     }
                 }
                 .frame(height: isExpanded
-                       ? CGFloat(all.count) * slot - gap
-                       : cardH + CGFloat(peekCount) * peekGap,
+                       ? expandedTotal
+                       : frontH + CGFloat(peekCount) * peekGap,
                        alignment: .top)
                 .animation(.spring(response: 0.42, dampingFraction: 0.72), value: isExpanded)
                 // Badge overlay when stacked — positioned as a corner
@@ -1519,11 +1576,9 @@ struct HomeView: View {
                     showHint: true,
                     onDismiss: {
                         Haptics.tap()
-                        let keys = Set(upcomingRecurring.map {
-                            "\($0.rule.id)_\(Int($0.date.timeIntervalSince1970))"
-                        })
+                        let key = "\(rule.id)_\(Int(date.timeIntervalSince1970))"
                         withAnimation(AppAnimation.snappy) {
-                            dismissedUpcomingKeys.formUnion(keys)
+                            _ = dismissedUpcomingKeys.insert(key)
                         }
                     }
                 )
@@ -1550,8 +1605,8 @@ struct HomeView: View {
                 for: context,
                 showHint: false,
                 onDismiss: {
-                    _ = withAnimation(AppAnimation.snappy) {
-                        dismissedInsightIDs.insert(insight.id)
+                    withAnimation(AppAnimation.snappy) {
+                        dismissInsight(insight.id)
                     }
                     Haptics.tap()
                 },
@@ -1580,6 +1635,8 @@ struct HomeView: View {
         let color = contextColor(for: context)
         let title = contextTitle(for: context)
         let detail = contextDetail(for: context)
+        let isInsight: Bool
+        if case .insight = context { isInsight = true } else { isInsight = false }
 
         return HStack(spacing: Spacing.md) {
             HStack(spacing: Spacing.md) {
@@ -1592,16 +1649,17 @@ struct HomeView: View {
                         .foregroundStyle(color)
                 }
 
-                VStack(alignment: .leading, spacing: 1) {
+                VStack(alignment: .leading, spacing: 2) {
                     Text(title)
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(.primary)
-                        .lineLimit(1)
+                        .lineLimit(isInsight ? 2 : 1)
                     Text(detail)
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                        .lineLimit(2)
+                        .lineLimit(isInsight ? 4 : 1)
                 }
+                .fixedSize(horizontal: false, vertical: true)
 
                 Spacer(minLength: 0)
             }
@@ -1674,10 +1732,53 @@ struct HomeView: View {
         cachedOverdueDates = overdueDates
     }
 
+    /// Amount input sheet for logging upcoming/overdue occurrences.
+    /// Pre-fills with the rule's stored amount; user can edit before logging.
+    private var logAmountSheet: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    HStack {
+                        Text(confirmLogRule?.name ?? "Amount")
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        FormattedAmountField(
+                            value: $logAmountValue,
+                            currencyCode: currencyCode,
+                            placeholder: "0"
+                        )
+                    }
+                } footer: {
+                    if let rule = confirmLogRule, rule.amount > 0 {
+                        Text("Rule amount: \(Currency.format(rule.amount, code: currencyCode))")
+                    }
+                }
+            }
+            .navigationTitle("Log Payment")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { showingLogAmountSheet = false }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Log") {
+                        guard let rule = confirmLogRule, let date = confirmLogDate else { return }
+                        logUpcoming(rule: rule, date: date, customAmount: logAmountValue)
+                        showingLogAmountSheet = false
+                    }
+                    .fontWeight(.semibold)
+                    .disabled(logAmountValue <= 0)
+                }
+            }
+        }
+        .presentationDetents([.medium])
+    }
+
     private func confirmLog(rule: RecurringRule, date: Date) {
         confirmLogRule = rule
         confirmLogDate = date
-        showingLogConfirm = true
+        logAmountValue = rule.amount
+        showingLogAmountSheet = true
     }
 
     private func confirmSkip(rule: RecurringRule, date: Date) {
@@ -1690,6 +1791,9 @@ struct HomeView: View {
         Haptics.tap()
         withAnimation(AppAnimation.snappy) {
             RecurringEngine.skipOccurrence(rule: rule, dueDate: date)
+            if rule.isBill {
+                rule.lastPaidDate = .now
+            }
             try? context.save(); WidgetRefresh.refresh(using: context)
         }
         NotificationManager.cancelConfirmation(ruleID: rule.id, dueDate: date)
@@ -1697,14 +1801,25 @@ struct HomeView: View {
         showToast("Skipped")
     }
 
-    /// Log a single upcoming occurrence from the home row. Creates the
-    /// expense immediately using the rule's saved fields, same path as
-    /// the notification "Log it" action. Cancels any pending notification
-    /// for this date so the user isn't asked twice.
-    private func logUpcoming(rule: RecurringRule, date: Date) {
+    /// Log a single upcoming/overdue occurrence from the home row.
+    /// Uses the amount the user entered in the amount sheet. Cancels
+    /// any pending notification for this date so the user isn't asked twice.
+    private func logUpcoming(rule: RecurringRule, date: Date, customAmount: Double? = nil) {
         Haptics.success()
         withAnimation(AppAnimation.snappy) {
+            // Update the rule's stored amount if the user entered a different one
+            if let custom = customAmount, custom != rule.amount {
+                rule.amount = custom
+            }
             RecurringEngine.createTransaction(rule: rule, date: date, in: context)
+            // Advance the boundary so the engine treats this occurrence
+            // as handled — prevents the overdue card from persisting.
+            if rule.lastGeneratedDate == nil || rule.lastGeneratedDate! < date {
+                rule.lastGeneratedDate = date
+            }
+            if rule.isBill {
+                rule.lastPaidDate = .now
+            }
             try? context.save(); WidgetRefresh.refresh(using: context)
         }
         NotificationManager.cancelConfirmation(ruleID: rule.id, dueDate: date)
@@ -1842,7 +1957,15 @@ struct HomeView: View {
                     let rule = MerchantRule(pattern: title, category: category, isUserDefined: true)
                     modelCtx.insert(rule)
                     try? modelCtx.save()
-                    showToast("Rule created for \(title)")
+                    withAnimation(AppAnimation.snappy) {
+                        dismissInsight(insight.id)
+                    }
+                    Haptics.success()
+                    showToast("Rule created for \(title)") {
+                        modelCtx.delete(rule)
+                        try? modelCtx.save()
+                        Haptics.warning()
+                    }
                 }
             default:
                 break

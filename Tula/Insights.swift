@@ -62,6 +62,18 @@ enum InsightEngine {
         dailyBudget: Double? = nil
     ) -> [Insight] {
         var insights: [Insight] = []
+
+        // DEBUG — remove after testing dynamic card height
+        insights.append(Insight(
+            id: "debug_\(Date.now.timeIntervalSince1970)",
+            kind: .monthPace,
+            title: "Auto-categorize Veeraju Milk Supply?",
+            detail: "Always Groceries · Milk on SBI Bank — you've logged 11 expenses here with the same category.",
+            icon: "wand.and.stars",
+            color: .orange,
+            priority: 100
+        ))
+
         let calendar = Calendar.current
         let now = Date.now
 
@@ -321,7 +333,7 @@ enum InsightEngine {
                     id: "merchantRule-\(merchant)",
                     kind: .merchantAutoRule,
                     title: "Auto-categorize \(displayName)?",
-                    detail: "You've logged \(exps.count) expenses here — always \(topCat!.name) on \(topAcc!.name).",
+                    detail: "Always \(topCat!.name) · \(topAcc!.name) — \(exps.count) expenses logged.",
                     icon: "wand.and.stars",
                     color: Color(hex: topCat!.colorHex),
                     priority: 3,

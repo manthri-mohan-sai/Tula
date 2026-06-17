@@ -493,11 +493,13 @@ enum NotificationManager {
     /// replaced — safe to call repeatedly across app launches.
     static func scheduleConfirmation(ruleID: UUID, ruleName: String,
                                        amount: Double, currencyCode: String,
-                                       dueDate: Date) {
+                                       dueDate: Date, isBill: Bool = false) {
         let content = UNMutableNotificationContent()
         content.title = ruleName
         let amountStr = Currency.format(amount, code: currencyCode)
-        content.body = "\(amountStr) · Did you have this?"
+        content.body = isBill
+            ? "\(amountStr) · Due — tap to log payment"
+            : "\(amountStr) · Did you have this?"
         content.sound = .default
         content.categoryIdentifier = confirmCategoryID
 

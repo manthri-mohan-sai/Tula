@@ -184,20 +184,21 @@ struct TulaApp: App {
                         OnboardingView()
                     }
 
+                // Lock screen sits behind the splash animation so it's
+                // already rendered when the splash finishes — no flash.
+                // FaceID triggers silently during the splash via onAppear;
+                // if it succeeds, the lock clears before splash ends and
+                // the user goes straight to home.
                 if isLocked {
                     AppLockView {
                         withAnimation(AppAnimation.gentle) {
                             isLocked = false
                         }
                     }
-                    .transition(.opacity)
-                    .zIndex(3)
+                    .zIndex(2)
                 }
 
-                // Launch animation plays AFTER Face ID unlock completes.
-                // While locked, we hold the animation; once isLocked flips
-                // to false the animation view appears and plays normally.
-                if !launchAnimationDone && !isLocked {
+                if !launchAnimationDone {
                     LaunchAnimationView {
                         launchAnimationDone = true
                     }
@@ -206,7 +207,7 @@ struct TulaApp: App {
                             launchAnimationDone = true
                         }
                     }
-                    .zIndex(2)
+                    .zIndex(3)
                 }
             }
         }
@@ -222,6 +223,20 @@ struct TulaApp: App {
                    Date.now.timeIntervalSince(bg) < Double(appLockDelay) {
                     withAnimation(AppAnimation.gentle) {
                         isLocked = false
+                    }
+                }
+
+                // Auto-trigger FaceID when returning from background
+                // while still locked (beyond grace period). AppLockView's
+                // onAppear only fires once; this covers subsequent returns.
+                if appLockEnabled && isLocked && launchAnimationDone {
+                    Task {
+                        let success = await AppLockManager.authenticate()
+                        if success {
+                            withAnimation(AppAnimation.gentle) {
+                                isLocked = false
+                            }
+                        }
                     }
                 }
 

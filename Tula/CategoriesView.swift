@@ -349,38 +349,117 @@ struct CategoryFormView: View {
         }
     }
 
+    private static let iconSections: [(title: String, icons: [String])] = [
+        ("Food & Drink", [
+            "fork.knife", "cup.and.saucer", "takeoutbag.and.cup.and.straw",
+            "wineglass", "carrot"
+        ]),
+        ("Home & Utilities", [
+            "house", "lightbulb", "drop", "flame",
+            "wifi", "tv", "trash", "wrench.and.screwdriver"
+        ]),
+        ("Transport", [
+            "car", "fuelpump", "parkingsign.circle",
+            "bus", "tram", "airplane", "bicycle"
+        ]),
+        ("Shopping", [
+            "cart", "bag", "tshirt", "shoe.2", "gift"
+        ]),
+        ("Health & Wellness", [
+            "cross.case", "pills", "heart", "bandage",
+            "figure.run", "scissors", "comb"
+        ]),
+        ("Entertainment", [
+            "ticket", "gamecontroller", "music.note",
+            "party.popper", "popcorn"
+        ]),
+        ("Education & Work", [
+            "book.closed", "graduationcap", "briefcase",
+            "desktopcomputer", "folder"
+        ]),
+        ("Finance", [
+            "banknote", "creditcard", "building.columns",
+            "chart.pie", "lock", "arrow.up.right.circle",
+            "arrow.down.left.circle", "indianrupeesign.circle"
+        ]),
+        ("People & Family", [
+            "person", "person.2", "figure.2.and.child.holdinghands",
+            "pawprint"
+        ]),
+        ("Other", [
+            "calendar", "bell", "tag", "signature",
+            "shippingbox", "hands.sparkles", "leaf",
+            "questionmark.circle"
+        ])
+    ]
+
+    private static let categoryIcons: [String] = iconSections.flatMap(\.icons)
+
+    @State private var customIconSearch = ""
+
     private var iconPicker: some View {
-        let icons = [
-            "fork.knife", "cart.fill", "car.fill", "bag.fill", "popcorn.fill",
-            "bolt.fill", "house.fill", "cross.case.fill", "book.fill", "airplane",
-            "drop.fill", "ellipsis.circle.fill", "gift.fill", "tshirt.fill",
-            "fuelpump.fill", "phone.fill", "gamecontroller.fill", "music.note",
-            "wrench.and.screwdriver.fill", "stethoscope", "graduationcap.fill",
-            "pawprint.fill", "leaf.fill", "tag.fill"
-        ]
-        return ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: Spacing.md) {
-                ForEach(icons, id: \.self) { icon in
-                    let color = Color(hex: colorHex)
-                    ZStack {
-                        Circle()
-                            .fill(iconKey == icon ? color : color.opacity(0.15))
-                            .frame(width: 42, height: 42)
-                        Image(systemName: icon)
-                            .font(.subheadline)
-                            .foregroundStyle(iconKey == icon ? .white : color)
+        let columns = Array(repeating: GridItem(.flexible(), spacing: 10), count: 6)
+        let color = Color(hex: colorHex)
+        return VStack(alignment: .leading, spacing: 14) {
+            ForEach(Self.iconSections, id: \.title) { section in
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(section.title)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .textCase(.uppercase)
+                    LazyVGrid(columns: columns, spacing: 10) {
+                        ForEach(section.icons, id: \.self) { icon in
+                            iconCell(icon: icon, color: color)
+                        }
                     }
-                    .onTapGesture { iconKey = icon }
                 }
             }
-            .padding(.vertical, 8)
-            .padding(.horizontal, 12)
+
+            // Custom SF Symbol search
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Custom Icon")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .textCase(.uppercase)
+                HStack(spacing: 10) {
+                    TextField("SF Symbol name, e.g. globe", text: $customIconSearch)
+                        .font(.subheadline)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    if !customIconSearch.trimmingCharacters(in: .whitespaces).isEmpty {
+                        let symbolName = customIconSearch.trimmingCharacters(in: .whitespaces)
+                        if UIImage(systemName: symbolName) != nil {
+                            Button {
+                                Haptics.selection()
+                                iconKey = symbolName
+                            } label: {
+                                iconCell(icon: symbolName, color: color)
+                            }
+                            .buttonStyle(.plain)
+                        } else {
+                            Image(systemName: "xmark.circle")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
         }
-        .scrollClipDisabled(false)
-        .mask(
-            Capsule()
-                .padding(.vertical, -2)
-        )
+    }
+
+    private func iconCell(icon: String, color: Color) -> some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(iconKey == icon ? color : color.opacity(0.12))
+                .frame(height: 44)
+            Image(systemName: icon)
+                .font(.body)
+                .foregroundStyle(iconKey == icon ? .white : color)
+        }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            Haptics.selection()
+            iconKey = icon
+        }
     }
 
     private func save() {

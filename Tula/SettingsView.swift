@@ -2,6 +2,7 @@ import SwiftUI
 import SwiftData
 import WidgetKit
 import UserNotifications
+import UniformTypeIdentifiers
 
 /// Top-level settings screen reached from the Home toolbar.
 ///
@@ -67,6 +68,8 @@ struct SettingsView: View {
     @State private var showingTransfer = false
     @State private var showingImport = false
     @State private var showingOnboarding = false
+    @State private var showingBackupFolderPicker = false
+    @State private var customBackupFolderName: String? = BackupManager.customBackupDirectoryName
 
     private var notificationSummary: String {
         let count = [reminderEnabled, summaryEnabled, budgetAlertsEnabled].filter { $0 }.count
@@ -113,6 +116,19 @@ struct SettingsView: View {
             .sheet(isPresented: $showingBackup) { BackupRestoreView() }
             .sheet(isPresented: $showingExport) { ExportView() }
             .sheet(isPresented: $showingImport) { ImportView() }
+            .fileImporter(
+                isPresented: $showingBackupFolderPicker,
+                allowedContentTypes: [.folder]
+            ) { result in
+                switch result {
+                case .success(let url):
+                    if BackupManager.setCustomBackupDirectory(url) {
+                        customBackupFolderName = url.lastPathComponent
+                    }
+                case .failure:
+                    break
+                }
+            }
             .sheet(isPresented: $showingCurrencyPicker) {
                 CurrencyPickerView(selectedCode: $primaryCurrencyCode)
             }
@@ -820,6 +836,31 @@ struct SettingsView: View {
 
             settingsLinkRow(title: "Backup & Restore", icon: "externaldrive.fill", color: .gray) {
                 showingBackup = true
+            }
+
+            Button {
+                showingBackupFolderPicker = true
+            } label: {
+                HStack {
+                    settingsLabel("Auto-Backup Location", icon: "folder.fill", color: .orange)
+                    Spacer()
+                    Text(customBackupFolderName ?? "Default")
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            .buttonStyle(.plain)
+
+            if customBackupFolderName != nil {
+                Button {
+                    BackupManager.clearCustomBackupDirectory()
+                    customBackupFolderName = nil
+                } label: {
+                    settingsLabel("Reset to Default Location", icon: "arrow.counterclockwise", color: .red)
+                }
             }
         } header: {
             Text("Privacy")

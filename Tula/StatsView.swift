@@ -15,7 +15,7 @@ enum StatsPeriod: String, CaseIterable, Identifiable {
         switch self {
         case .week: return "Week"
         case .month: return "Month"
-        case .sixMonths: return "6M"
+        case .sixMonths: return "6 Months"
         }
     }
 }
@@ -283,7 +283,7 @@ struct StatsView: View {
                     if hasAnySpend {
                         insightGrid
                         if period != .month { insightCalloutPill }
-                        chartCard
+                        if period != .month { chartCard }
                         if period == .month { spendingCalendarCard }
                         if period != .month && !weekdayData.isEmpty { weekdayChartCard }
                         if !categoryBreakdown.isEmpty { categoryBreakdownCard }
@@ -324,7 +324,6 @@ struct StatsView: View {
                     periodOffset = 0
                     pinnedChartDate = nil
                     selectedCalendarDay = nil
-                    categoryBarsAppeared = false
                 }
             }
             .onChange(of: periodOffset) { _, _ in
@@ -335,7 +334,6 @@ struct StatsView: View {
                     pinnedChartDate = nil
                     selectedCalendarDay = nil
                 }
-                categoryBarsAppeared = false
             }
             .onChange(of: chartSelectedDate) { old, new in
                 // When the user lifts their finger, persist the last

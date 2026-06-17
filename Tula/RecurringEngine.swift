@@ -144,7 +144,8 @@ enum RecurringEngine {
                     ruleName: rule.name,
                     amount: rule.amount,
                     currencyCode: code,
-                    dueDate: nextDate
+                    dueDate: nextDate,
+                    isBill: rule.isBill
                 )
                 scheduled += 1
             }

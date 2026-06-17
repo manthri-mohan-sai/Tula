@@ -160,6 +160,42 @@ enum BackupManager {
     private static let autoBackupDir = "AutoBackups"
     private static let maxAutoBackups = 7
     private static let lastAutoBackupKey = "lastAutoBackupDate"
+    private static let customBackupBookmarkKey = "autoBackupBookmarkData"
+
+    /// Saves a security-scoped bookmark for the user-selected backup folder.
+    static func setCustomBackupDirectory(_ url: URL) -> Bool {
+        guard url.startAccessingSecurityScopedResource() else { return false }
+        defer { url.stopAccessingSecurityScopedResource() }
+        do {
+            let bookmarkData = try url.bookmarkData(
+                options: .minimalBookmark,
+                includingResourceValuesForKeys: nil,
+                relativeTo: nil
+            )
+            UserDefaults.standard.set(bookmarkData, forKey: customBackupBookmarkKey)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    /// Clears the custom backup directory, reverting to the default Documents path.
+    static func clearCustomBackupDirectory() {
+        UserDefaults.standard.removeObject(forKey: customBackupBookmarkKey)
+    }
+
+    /// Returns the display name of the custom backup directory, if set.
+    static var customBackupDirectoryName: String? {
+        guard let bookmarkData = UserDefaults.standard.data(forKey: customBackupBookmarkKey) else {
+            return nil
+        }
+        var isStale = false
+        guard let url = try? URL(
+            resolvingBookmarkData: bookmarkData,
+            bookmarkDataIsStale: &isStale
+        ) else { return nil }
+        return url.lastPathComponent
+    }
 
     @MainActor
     static func autoBackupIfNeeded(context: ModelContext) {
@@ -191,6 +227,26 @@ enum BackupManager {
     }
 
     private static func autoBackupDirectory() throws -> URL {
+        // Use custom backup directory if a bookmark was saved
+        if let bookmarkData = UserDefaults.standard.data(forKey: customBackupBookmarkKey) {
+            var isStale = false
+            if let url = try? URL(
+                resolvingBookmarkData: bookmarkData,
+                bookmarkDataIsStale: &isStale
+            ) {
+                if url.startAccessingSecurityScopedResource() {
+                    // Don't call stopAccessingSecurityScopedResource here —
+                    // the caller needs the URL to remain accessible for writing.
+                    // The auto-release handles it at the end of the scope.
+                    if !FileManager.default.fileExists(atPath: url.path) {
+                        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+                    }
+                    return url
+                }
+            }
+        }
+
+        // Default: Documents/AutoBackups
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         let dir = docs.appendingPathComponent(autoBackupDir)
         if !FileManager.default.fileExists(atPath: dir.path) {

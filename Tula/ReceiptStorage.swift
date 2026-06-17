@@ -132,6 +132,16 @@ enum ReceiptStorage {
         /// and so the smart parser can use it as a prompt hint.
         let documentType: DocumentType
 
+        /// Last 4 digits of the card/account used for payment, extracted
+        /// via regex from masked card numbers on the receipt. Used as a
+        /// fallback when the AI parser doesn't return card info.
+        let cardLast4: String?
+
+        /// Payment mode detected from the receipt text (e.g. "credit",
+        /// "debit", "upi", "cash", "net banking"). Helps match the
+        /// transaction to the right account in the user's account list.
+        let paymentMode: String?
+
         /// Confidence assessment of the parse result. UI uses this to
         /// decide whether to surface a "please verify" warning. We
         /// can't reliably KNOW we got the right answer — but we can
@@ -205,20 +215,20 @@ enum ReceiptStorage {
                 return nil
             case .medium:
                 if merchant == nil || (merchant?.isEmpty ?? true) {
-                    return "Couldn't find a merchant name. Please verify."
+                    return "Merchant name wasn't detected. You may want to add it manually."
                 }
-                return "Some details may need a quick check."
+                return "Some details may need a quick review before saving."
             case .low:
                 if amount == nil {
-                    return "Couldn't extract an amount — please enter it manually."
+                    return "We couldn't read the total. Please enter the amount manually."
                 }
                 if (amount ?? 0) < 10 {
-                    return "The amount we read looks too low. Please verify."
+                    return "The detected amount seems unusually low. Please verify."
                 }
                 if rawText.count < 50 {
-                    return "We couldn't read this receipt clearly. Please verify all fields."
+                    return "This receipt was difficult to read. Please check all fields."
                 }
-                return "Several details look uncertain — please verify before saving."
+                return "Some details look uncertain. Please review before saving."
             }
         }
 
@@ -320,7 +330,7 @@ enum ReceiptStorage {
             || normalized.contains("\u{20B9}")
 
         let hasMoneyPattern = normalized.range(
-            of: #"(?i)(₹|rs\.?|inr)\s*\d{1,7}(?:[.,]\d{1,2})?|\b(total|amount|paid|due|bill)\b[^\n]{0,20}\d{1,7}(?:[.,]\d{1,2})?"#,
+            of: #"(?is)(₹|rs\.?|inr)\s*\d{1,7}(?:[.,]\d{1,2})?|\b(total|amount\s*paid|amount|paid|due|bill)\b[\s\S]{0,30}\d{1,7}(?:[.,]\d{1,2})?"#,
             options: .regularExpression
         ) != nil
 
@@ -358,11 +368,11 @@ enum ReceiptStorage {
         if allow {
             reason = "Receipt-like text detected."
         } else if normalized.isEmpty {
-            reason = "This image does not seem to contain readable receipt text."
+            reason = "No readable text found. Try sharing a clearer photo of your receipt."
         } else if !hasMoneyPattern {
-            reason = "Couldn't find total/amount patterns in this image."
+            reason = "We couldn't identify receipt patterns in this image. Make sure you're sharing a receipt or invoice with a visible total."
         } else {
-            reason = "This image looks unrelated to bills or receipts."
+            reason = "This doesn't appear to be a receipt or invoice. Try sharing a photo of your bill."
         }
 
         return ReceiptLikelihoodResult(
@@ -630,7 +640,7 @@ enum ReceiptStorage {
         // uses VisionKit for higher accuracy; the share extension
         // sacrifices that accuracy for a memory-safe cold start.
         guard let cgImage = scaled.cgImage else {
-            return ParseResult(amount: nil, merchant: nil, items: [], date: nil, rawText: "", documentType: .generic)
+            return ParseResult(amount: nil, merchant: nil, items: [], date: nil, rawText: "", documentType: .generic, cardLast4: nil, paymentMode: nil)
         }
         let observations: [VNRecognizedTextObservation] = await withCheckedContinuation { continuation in
             autoreleasepool {
@@ -689,13 +699,16 @@ enum ReceiptStorage {
             items = extractLineItems(from: lines, total: amount)
         }
 
+        let rawText = lines.joined(separator: "\n")
         return ParseResult(
             amount: amount,
             merchant: merchant,
             items: items,
             date: date,
-            rawText: lines.joined(separator: "\n"),
-            documentType: documentType
+            rawText: rawText,
+            documentType: documentType,
+            cardLast4: extractCardLast4(from: rawText),
+            paymentMode: extractPaymentMode(from: rawText)
         )
     }
 
@@ -713,7 +726,7 @@ enum ReceiptStorage {
         // for the heuristic.
         let prepared = preprocessImage(image)
         guard let cgImage = prepared.cgImage ?? image.cgImage else {
-            return ParseResult(amount: nil, merchant: nil, items: [], date: nil, rawText: "", documentType: .generic)
+            return ParseResult(amount: nil, merchant: nil, items: [], date: nil, rawText: "", documentType: .generic, cardLast4: nil, paymentMode: nil)
         }
 
         // Capture observations off the main actor — Vision callbacks may
@@ -890,8 +903,139 @@ enum ReceiptStorage {
             items: items,
             date: date,
             rawText: rawText,
-            documentType: documentType
+            documentType: documentType,
+            cardLast4: extractCardLast4(from: rawText),
+            paymentMode: extractPaymentMode(from: rawText)
         )
+    }
+
+    // MARK: - Card / Payment Mode Extraction
+    //
+    // Extract card last-4 digits and payment mode from raw OCR text.
+    // These serve as fallback signals when the AI parser doesn't
+    // return card info — the share extension uses them to auto-match
+    // the transaction to the right account.
+
+    /// Extract last 4 digits from masked card numbers on receipts.
+    /// Covers common formats:
+    ///   - Asterisk-masked: `****1234`, `**** 1234`, `XXXX1234`, `xxxx 1234`
+    ///   - Dot-masked: `••••1234`, `....1234`
+    ///   - Full masked: `1234-XXXX-XXXX-5678`, `1234 **** **** 5678`
+    ///   - Labeled: `Card ending 1234`, `Card ending in 1234`, `A/C ...1234`
+    ///   - Partial visible: `5765XXXXXXXX9068`, `4367********2845`
+    private static func extractCardLast4(from text: String) -> String? {
+        let patterns: [(pattern: String, group: Int)] = [
+            // "Card ending 1234" / "card ending in 1234" / "card no ending 1234"
+            (#"(?i)card\s*(?:no\.?)?\s*ending\s*(?:in\s*)?(\d{4})"#, 1),
+            // "A/C ...1234" / "Ac No ...5678" / "Account ...1234"
+            (#"(?i)(?:a/?c|account)\s*(?:no\.?\s*)?\.{2,}\s*(\d{4})"#, 1),
+            // "ending with 1234" / "ends in 1234" / "ends with 1234"
+            (#"(?i)end(?:s|ing)\s+(?:with|in)\s+(\d{4})"#, 1),
+            // "last 4 digits: 1234" / "last four digits 1234"
+            (#"(?i)last\s+(?:4|four)\s+digits\s*:?\s*(\d{4})"#, 1),
+            // Full masked: "1234-****-****-5678" or "1234 XXXX XXXX 5678"
+            (#"(?i)\d{4}[\s\-]?[*xX]{4}[\s\-]?[*xX]{4}[\s\-]?(\d{4})"#, 1),
+            // Partial visible: "5765XXXXXXXX9068" / "4367********2845"
+            (#"(?i)\d{4}[xX*]{6,8}(\d{4})"#, 1),
+            // "****1234" / "**** 1234" / "XXXX1234" / "xxxx 1234" / "....1234" / "••••1234"
+            (#"(?:[*xX•\.]{4})\s?(\d{4})"#, 1),
+            // "XX-1234" / "**-5678" (some POS terminals)
+            (#"[*xX]{2,4}[\-](\d{4})"#, 1),
+        ]
+
+        for (pattern, group) in patterns {
+            if let regex = try? NSRegularExpression(pattern: pattern),
+               let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+               match.numberOfRanges > group,
+               let range = Range(match.range(at: group), in: text) {
+                let digits = String(text[range])
+                // Sanity: must be exactly 4 digits, skip trivial sequences
+                if digits.count == 4, digits != "0000" {
+                    return digits
+                }
+            }
+        }
+        return nil
+    }
+
+    /// Detect payment mode from receipt text. Returns a lowercase
+    /// string like "credit card", "debit card", "upi", "cash",
+    /// "net banking", or the bank/wallet name when identifiable.
+    private static func extractPaymentMode(from text: String) -> String? {
+        let lower = text.lowercased()
+
+        // UPI patterns (strongest signal — very specific)
+        let upiPatterns = [
+            "upi ref", "upi transaction", "upi id", "paid via upi",
+            "google pay", "phonepe", "paytm upi", "bhim upi",
+            "@ybl", "@paytm", "@okaxis", "@oksbi", "@okhdfcbank",
+            "@apl", "@icici", "@upi"
+        ]
+        if upiPatterns.contains(where: { lower.contains($0) }) {
+            // Try to identify the specific UPI app
+            if lower.contains("google pay") || lower.contains("gpay") { return "google pay" }
+            if lower.contains("phonepe") { return "phonepe" }
+            if lower.contains("paytm") { return "paytm" }
+            return "upi"
+        }
+
+        // Credit card
+        if lower.contains("credit card") || lower.contains("credit crd") {
+            return "credit card"
+        }
+        // Debit card
+        if lower.contains("debit card") || lower.contains("debit crd") {
+            return "debit card"
+        }
+        // Generic "card" with context (avoid matching "card holder")
+        if let _ = lower.range(of: #"(?:paid|payment|pay)\s*(?:by|via|with|mode:?\s*)card"#, options: .regularExpression) {
+            return "card"
+        }
+
+        // Net banking
+        if lower.contains("net banking") || lower.contains("netbanking")
+            || lower.contains("neft") || lower.contains("imps")
+            || lower.contains("rtgs") || lower.contains("internet banking") {
+            return "net banking"
+        }
+
+        // Cash
+        let cashPatterns = [
+            "paid by cash", "paid in cash", "payment mode: cash",
+            "payment mode cash", "cash payment", "cash tendered",
+            "cash received", "mode: cash", "mode cash"
+        ]
+        if cashPatterns.contains(where: { lower.contains($0) }) {
+            return "cash"
+        }
+
+        // Wallet
+        if lower.contains("paytm wallet") || lower.contains("mobikwik")
+            || lower.contains("freecharge") || lower.contains("amazon pay") {
+            if lower.contains("amazon pay") { return "amazon pay" }
+            if lower.contains("paytm wallet") { return "paytm wallet" }
+            return "wallet"
+        }
+
+        // Bank name detection (when card info is present nearby)
+        let bankPatterns: [(keyword: String, name: String)] = [
+            ("hdfc", "hdfc"), ("icici", "icici"), ("sbi ", "sbi"),
+            ("axis bank", "axis"), ("kotak", "kotak"),
+            ("bob ", "bank of baroda"), ("idfc", "idfc"),
+            ("yes bank", "yes bank"), ("indusind", "indusind"),
+            ("rbl", "rbl"), ("federal bank", "federal"),
+            ("canara", "canara"), ("pnb", "pnb"),
+            ("union bank", "union bank"), ("iob", "iob"),
+        ]
+        // Only match bank names if there's card context nearby
+        if lower.contains("card") || lower.contains("****")
+            || lower.contains("xxxx") || lower.contains("a/c") {
+            for (keyword, name) in bankPatterns {
+                if lower.contains(keyword) { return name }
+            }
+        }
+
+        return nil
     }
 
     // MARK: - Document Classification
