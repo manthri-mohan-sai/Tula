@@ -1338,7 +1338,9 @@ struct HomeView: View {
         let gap: CGFloat = Spacing.md
         let peekGap: CGFloat = 14
         let peekCount = shouldStack ? min(all.count, 3) - 1 : 0
-        let heights = all.map { measuredCardHeight(for: $0) }
+
+        let useCompact = shouldStack && !isExpanded
+        let heights = all.map { useCompact ? baseH : measuredCardHeight(for: $0) }
         let frontH = heights.first ?? baseH
         let expandedTotal = heights.reduce(0, +) + CGFloat(max(all.count - 1, 0)) * gap
         let visibleCount = shouldStack ? min(all.count, 3) : (all.isEmpty ? 0 : 1)
@@ -1385,7 +1387,7 @@ struct HomeView: View {
                     ForEach(Array(all.enumerated()).reversed(), id: \.element.identifier) { index, context in
                         let h = heights[index]
                         let yExpanded = heights.prefix(index).reduce(0, +) + CGFloat(index) * gap
-                        contextRow(for: context)
+                        contextRow(for: context, compactMode: useCompact)
                             .frame(height: h)
                             .shadow(color: Color(.label).opacity(isExpanded ? 0 : 0.06),
                                     radius: 4, y: 2)
@@ -1555,7 +1557,7 @@ struct HomeView: View {
     /// - `.review` / `.insight`: a single tap target with chevron. No
     ///   swipe actions because there isn't a one-click resolution.
     @ViewBuilder
-    private func contextRow(for context: HomeContext) -> some View {
+    private func contextRow(for context: HomeContext, compactMode: Bool = false) -> some View {
         switch context {
         case .upcoming(let rule, let date):
             SwipeableContextRow(
@@ -1575,6 +1577,7 @@ struct HomeView: View {
                 contextRowBody(
                     for: context,
                     showHint: true,
+                    compactMode: compactMode,
                     onDismiss: {
                         Haptics.tap()
                         let key = "\(rule.id)_\(Int(date.timeIntervalSince1970))"
@@ -1599,12 +1602,13 @@ struct HomeView: View {
                     handleContextTap(context)
                 }
             ) {
-                contextRowBody(for: context, showHint: true)
+                contextRowBody(for: context, showHint: true, compactMode: compactMode)
             }
         case .insight(let insight):
             contextRowBody(
                 for: context,
                 showHint: false,
+                compactMode: compactMode,
                 onDismiss: {
                     withAnimation(AppAnimation.snappy) {
                         dismissInsight(insight.id)
@@ -1621,7 +1625,7 @@ struct HomeView: View {
                 Haptics.tap()
                 handleContextTap(context)
             } label: {
-                contextRowBody(for: context, showHint: false)
+                contextRowBody(for: context, showHint: false, compactMode: compactMode)
             }
             .buttonStyle(.plain)
         }
@@ -1631,13 +1635,14 @@ struct HomeView: View {
     /// `showHint` adds a faint "swipe" affordance on the trailing edge to
     /// hint that the row is swipeable (since swipe is non-discoverable by
     /// default). For non-swipeable contexts, shows a chevron instead.
-    private func contextRowBody(for context: HomeContext, showHint: Bool, onDismiss: (() -> Void)? = nil, onTap: (() -> Void)? = nil) -> some View {
+    private func contextRowBody(for context: HomeContext, showHint: Bool, compactMode: Bool = false, onDismiss: (() -> Void)? = nil, onTap: (() -> Void)? = nil) -> some View {
         let icon = contextIcon(for: context)
         let color = contextColor(for: context)
         let title = contextTitle(for: context)
         let detail = contextDetail(for: context)
         let isInsight: Bool
         if case .insight = context { isInsight = true } else { isInsight = false }
+        let expandedInsight = isInsight && !compactMode
 
         return HStack(spacing: Spacing.md) {
             HStack(spacing: Spacing.md) {
@@ -1654,13 +1659,13 @@ struct HomeView: View {
                     Text(title)
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(.primary)
-                        .lineLimit(isInsight ? 2 : 1)
+                        .lineLimit(expandedInsight ? 2 : 1)
                     Text(detail)
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                        .lineLimit(isInsight ? 4 : 1)
+                        .lineLimit(expandedInsight ? 4 : 1)
                 }
-                .fixedSize(horizontal: false, vertical: true)
+                .fixedSize(horizontal: false, vertical: expandedInsight)
 
                 Spacer(minLength: 0)
             }
@@ -1694,7 +1699,7 @@ struct HomeView: View {
             }
         }
         .padding(.horizontal, Spacing.md)
-        .padding(.vertical, Spacing.sm + 2)
+        .padding(.vertical, Spacing.sm)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
@@ -1736,43 +1741,137 @@ struct HomeView: View {
     /// Amount input sheet for logging upcoming/overdue occurrences.
     /// Pre-fills with the rule's stored amount; user can edit before logging.
     private var logAmountSheet: some View {
-        NavigationStack {
-            Form {
-                Section {
-                    HStack {
-                        Text(confirmLogRule?.name ?? "Amount")
+        let rule = confirmLogRule
+        let iconName = rule?.category?.iconKey ?? "arrow.clockwise"
+        let iconColor = Color(hex: rule?.category?.colorHex ?? "#D97706")
+
+        return NavigationStack {
+            ScrollView {
+                VStack(spacing: Spacing.xxl) {
+
+                    // MARK: Header — icon + rule name + cadence
+                    VStack(spacing: Spacing.sm) {
+                        ZStack {
+                            Circle()
+                                .fill(iconColor.opacity(0.15))
+                                .frame(width: 52, height: 52)
+                            Image(systemName: iconName)
+                                .font(.title3.weight(.semibold))
+                                .foregroundStyle(iconColor)
+                        }
+                        Text(rule?.name ?? "Payment")
+                            .font(.headline)
+                        if let cadence = rule?.cadenceLabel {
+                            Text(cadence.capitalized)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .padding(.top, Spacing.md)
+
+                    // MARK: Amount hero
+                    VStack(spacing: Spacing.sm) {
+                        Text(Currency.symbol(for: currencyCode))
+                            .font(.title2.weight(.medium))
                             .foregroundStyle(.secondary)
-                        Spacer()
                         FormattedAmountField(
                             value: $logAmountValue,
                             currencyCode: currencyCode,
-                            placeholder: "0"
+                            placeholder: "0",
+                            font: .system(size: 48, weight: .bold, design: .rounded),
+                            alignment: .center
                         )
+                        .frame(maxWidth: .infinity)
+                        .foregroundStyle(logAmountValue > 0 ? .primary : .tertiary)
+
+                        if let rule, rule.amount > 0, rule.isVariable {
+                            Text("Estimated · \(Currency.format(rule.amount, code: currencyCode))")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            Text("Tap to edit amount")
+                                .font(.caption)
+                                .foregroundStyle(.tertiary)
+                        }
                     }
-                } footer: {
-                    if let rule = confirmLogRule, rule.amount > 0 {
-                        Text("Rule amount: \(Currency.format(rule.amount, code: currencyCode))")
+
+                    // MARK: Info card
+                    VStack(spacing: 0) {
+                        if let cat = rule?.category {
+                            logInfoRow(
+                                icon: cat.iconKey,
+                                color: Color(hex: cat.colorHex),
+                                label: cat.name
+                            )
+                        }
+                        if let acc = rule?.account {
+                            if rule?.category != nil { Divider().padding(.leading, 44) }
+                            logInfoRow(
+                                icon: acc.iconKey,
+                                color: Color(hex: acc.colorHex),
+                                label: acc.name
+                            )
+                        }
+                        if let date = confirmLogDate {
+                            if rule?.category != nil || rule?.account != nil {
+                                Divider().padding(.leading, 44)
+                            }
+                            logInfoRow(
+                                icon: "calendar",
+                                color: .secondary,
+                                label: date.formatted(.dateTime.day().month(.wide).year())
+                            )
+                        }
                     }
+                    .padding(.vertical, Spacing.xs)
+                    .background(
+                        RoundedRectangle(cornerRadius: CornerRadius.medium, style: .continuous)
+                            .fill(Color.tulaCardSurface)
+                    )
+                    .padding(.horizontal, Spacing.xl)
+
+                    // MARK: Log button
+                    Button {
+                        guard let rule = confirmLogRule, let date = confirmLogDate else { return }
+                        logUpcoming(rule: rule, date: date, customAmount: logAmountValue)
+                        showingLogAmountSheet = false
+                    } label: {
+                        Text("Log Payment")
+                            .font(.body.weight(.semibold))
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, Spacing.md)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(Color.tulaBrandFallback)
+                    .disabled(logAmountValue <= 0)
+                    .padding(.horizontal, Spacing.xl)
                 }
+                .padding(.bottom, Spacing.xl)
             }
-            .navigationTitle("Log Payment")
-            .navigationBarTitleDisplayMode(.inline)
+            .scrollDismissesKeyboard(.immediately)
+            .background(Color.tulaBackground)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { showingLogAmountSheet = false }
                 }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Log") {
-                        guard let rule = confirmLogRule, let date = confirmLogDate else { return }
-                        logUpcoming(rule: rule, date: date, customAmount: logAmountValue)
-                        showingLogAmountSheet = false
-                    }
-                    .fontWeight(.semibold)
-                    .disabled(logAmountValue <= 0)
-                }
             }
         }
-        .presentationDetents([.medium])
+        .presentationDetents([.medium, .large])
+    }
+
+    private func logInfoRow(icon: String, color: Color, label: String) -> some View {
+        HStack(spacing: Spacing.md) {
+            Image(systemName: icon)
+                .font(.subheadline)
+                .foregroundStyle(color)
+                .frame(width: 24)
+            Text(label)
+                .font(.subheadline)
+                .foregroundStyle(.primary)
+            Spacer()
+        }
+        .padding(.horizontal, Spacing.lg)
+        .padding(.vertical, Spacing.sm + 2)
     }
 
     private func confirmLog(rule: RecurringRule, date: Date) {
