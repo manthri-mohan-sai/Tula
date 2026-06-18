@@ -13,6 +13,46 @@ enum HomeDestination: Hashable {
     case allExpenses(filter: ExpenseFilter?, searchFocused: Bool)
 }
 
+/// Data needed to present the "Log recurring expense" sheet.
+/// All display properties are eagerly captured at creation time so
+/// SwiftData's lazy relationship faulting cannot produce stale/nil
+/// values on the sheet's first render.
+struct LogConfirmationItem: Identifiable {
+    let id = UUID()
+    let rule: RecurringRule
+    let date: Date
+    // Eagerly captured display data — avoids lazy-load misses
+    let ruleName: String
+    let iconName: String
+    let iconColor: Color
+    let cadenceLabel: String
+    let amount: Double
+    let isVariable: Bool
+    let categoryName: String?
+    let categoryIcon: String?
+    let categoryColor: Color?
+    let accountName: String?
+    let accountIcon: String?
+    let accountColor: Color?
+
+    init(rule: RecurringRule, date: Date) {
+        self.rule = rule
+        self.date = date
+        self.ruleName = rule.name
+        self.iconName = rule.category?.iconKey ?? "arrow.clockwise"
+        self.iconColor = Color(hex: rule.category?.colorHex ?? "#D97706")
+        self.cadenceLabel = rule.cadenceLabel
+        self.amount = rule.amount
+        self.isVariable = rule.isVariable
+        self.categoryName = rule.category?.name
+        self.categoryIcon = rule.category?.iconKey
+        self.categoryColor = rule.category.map { Color(hex: $0.colorHex) }
+        self.accountName = rule.account?.name
+        self.accountIcon = rule.account?.iconKey
+        self.accountColor = rule.account.map { Color(hex: $0.colorHex) }
+    }
+}
+
 struct HomeView: View {
     @Environment(\.modelContext) private var context
     @Environment(\.scenePhase) private var scenePhase
@@ -30,11 +70,7 @@ struct HomeView: View {
     @State private var showingSettings = false
     @State private var showingRecurring = false
     @State private var showingOverdueOnly = false
-    @State private var confirmLogRule: RecurringRule?
-    @State private var confirmLogDate: Date?
-    @State private var showingLogConfirm = false
-    @State private var showingLogAmountSheet = false
-    @State private var logAmountValue: Double = 0
+    @State private var logConfirmation: LogConfirmationItem?
     @State private var confirmSkipRule: RecurringRule?
     @State private var confirmSkipDate: Date?
     @State private var showingSkipConfirm = false
@@ -56,6 +92,18 @@ struct HomeView: View {
     @State private var showingAPIKeyPrompt = false
     @State private var showingTransfer = false
     @State private var showingReceiptGallery = false
+    /// Three independent drift phases at incommensurate periods (8s, 11s, 14s).
+    /// Their compound motion creates fluid, organic glow movement that never
+    /// visually repeats — similar to Apple Music's ambient background effect.
+    @State private var drift1: Bool = false
+    @State private var drift2: Bool = false
+    @State private var drift3: Bool = false
+    /// Explicit state-driven accent color for the glow. Updated via
+    /// withAnimation so SwiftUI interpolates the RGB values smoothly.
+    @State private var glowColor: Color = .tulaBrandFallback
+    /// Brief brightness pulse during color transitions — glow "breathes"
+    /// as it shifts, then settles.
+    @State private var glowPulse: Bool = false
 
     @State private var expandedStacks: Set<String> = []
     /// Caches for RecurringEngine results. `nextDueDate` and `overdueDates`
@@ -98,13 +146,25 @@ struct HomeView: View {
     /// Accent color for the page gradient — top-spending category this month,
     /// falling back to brand color when there's no spending yet.
     private var pageAccentColor: Color {
-        let grouped = Dictionary(grouping: thisMonthExpenses, by: { $0.category?.colorHex })
+        let hex = topCategoryHex
+        return hex.isEmpty ? Color.tulaBrandFallback : Color(hex: hex)
+    }
+
+    /// Hex string of the top-spending category. Used as an animation value
+    /// so SwiftUI can detect color changes and crossfade the glow smoothly.
+    /// Filters out uncategorized expenses — they must not dominate the
+    /// accent color, otherwise it always falls back to brand amber.
+    private var topCategoryHex: String {
+        let withCategory = thisMonthExpenses.filter { $0.category != nil }
+        // Group by category ID, not colorHex — two categories can share
+        // the same color, inflating one group's total incorrectly.
+        let grouped = Dictionary(grouping: withCategory, by: { $0.category!.id })
         guard let top = grouped.max(by: {
             $0.value.reduce(0) { $0 + $1.amount } < $1.value.reduce(0) { $0 + $1.amount }
-        }), let hex = top.key else {
-            return Color.tulaBrandFallback
+        }) else {
+            return ""
         }
-        return Color(hex: hex)
+        return top.value.first?.category?.colorHex ?? ""
     }
 
     /// Persisted set of insight IDs the user has dismissed. Stored as a
@@ -357,19 +417,71 @@ struct HomeView: View {
 
     private var scrollBackground: some View {
         GeometryReader { geometry in
-            VStack(spacing: 0) {
-                LinearGradient(
-                    colors: [pageAccentColor.opacity(0.12), pageAccentColor.opacity(0.05), Color.tulaBackground],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-                .frame(height: geometry.size.height * 0.45)
+            let w = geometry.size.width
+            let h = geometry.size.height
+
+            ZStack {
                 Color.tulaBackground
+
+                // Primary glow — compound drift from three independent phases
+                // creates fluid, organic motion. Each drift bool oscillates
+                // at a different period, so the combined path never repeats.
+                Circle()
+                    .fill(glowColor)
+                    .frame(width: w * 0.85, height: w * 0.85)
+                    .blur(radius: w * 0.32)
+                    .opacity(glowPulse ? 0.42 : 0.28)
+                    .scaleEffect(drift3 ? 1.05 : 0.96)
+                    .position(
+                        x: w * 0.5 + (drift1 ? 16 : -16) + (drift2 ? -7 : 7),
+                        y: h * 0.14 + (drift1 ? -8 : 8) + (drift3 ? 5 : -5)
+                    )
+
+                // Secondary glow — same three drifts wired differently so the
+                // two blobs orbit each other in a lava-lamp style.
+                Circle()
+                    .fill(glowColor)
+                    .frame(width: w * 0.5, height: w * 0.5)
+                    .blur(radius: w * 0.2)
+                    .opacity(glowPulse ? 0.22 : 0.14)
+                    .scaleEffect(drift1 ? 1.04 : 0.94)
+                    .position(
+                        x: w * 0.32 + (drift2 ? 10 : -10) + (drift3 ? -5 : 5),
+                        y: h * 0.09 + (drift3 ? 7 : -7) + (drift1 ? -4 : 4)
+                    )
             }
         }
         .ignoresSafeArea()
         .accessibilityHidden(true)
         .onTapGesture { hideKeyboard() }
+        .onAppear {
+            glowColor = pageAccentColor
+            withAnimation(.easeInOut(duration: 8).repeatForever(autoreverses: true)) {
+                drift1 = true
+            }
+            withAnimation(.easeInOut(duration: 11).repeatForever(autoreverses: true)) {
+                drift2 = true
+            }
+            withAnimation(.easeInOut(duration: 14).repeatForever(autoreverses: true)) {
+                drift3 = true
+            }
+        }
+        .onChange(of: topCategoryHex) { _, _ in
+            // 1. Flash brighter — glow inhales
+            withAnimation(.easeOut(duration: 0.4)) {
+                glowPulse = true
+            }
+            // 2. Slowly shift to the new color
+            withAnimation(.spring(duration: 2.5, bounce: 0.05)) {
+                glowColor = pageAccentColor
+            }
+            // 3. Settle brightness — glow exhales
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                withAnimation(.easeInOut(duration: 1.5)) {
+                    glowPulse = false
+                }
+            }
+        }
     }
 
     var body: some View {
@@ -408,8 +520,17 @@ struct HomeView: View {
                     ShareSheet(items: [image])
                 }
             }
-            .sheet(isPresented: $showingLogAmountSheet) {
-                logAmountSheet
+            .sheet(item: $logConfirmation) { item in
+                LogAmountSheetView(
+                    item: item,
+                    currencyCode: currencyCode,
+                    onLog: { rule, date, amount in
+                        logUpcoming(rule: rule, date: date, customAmount: amount)
+                    },
+                    onMarkPaid: { rule, date in
+                        markAlreadyPaid(rule: rule, date: date)
+                    }
+                )
             }
             .confirmationDialog(
                 "Skip \(confirmSkipRule?.name ?? "expense")?",
@@ -486,8 +607,8 @@ struct HomeView: View {
     private var scrollContent: some View {
         VStack(alignment: .leading, spacing: Spacing.xl) {
             heroSection
-                .shadow(color: .black.opacity(0.06), radius: 6, y: 4)
-                .shadow(color: pageAccentColor.opacity(0.05), radius: 24, y: 6)
+                .shadow(color: .black.opacity(0.05), radius: 8, y: 4)
+                .shadow(color: pageAccentColor.opacity(0.18), radius: 28, y: 6)
             if !networkMonitor.isConnected {
                 offlineBanner
                     .transition(.move(edge: .top).combined(with: .opacity))
@@ -767,10 +888,10 @@ struct HomeView: View {
         let isUp = change > 0
         let symbol = isUp ? "arrow.up.right" : "arrow.down.right"
         let color: Color = isUp ? .red : .green
-        let percent = Int(abs(change * 100).rounded())
+        let label = formatDeltaPercent(change)
         return HStack(spacing: 3) {
             Image(systemName: symbol).font(.caption2.weight(.bold))
-            Text("\(percent)%").font(.caption.weight(.semibold))
+            Text(label).font(.caption.weight(.semibold))
         }
         .padding(.horizontal, Spacing.sm)
         .padding(.vertical, 3)
@@ -1286,7 +1407,7 @@ struct HomeView: View {
     /// Uses UIKit text measurement against the actual available width,
     /// clamped to a minimum of 60 so the card never shrinks below standard.
     private func measuredCardHeight(for context: HomeContext) -> CGFloat {
-        let baseH: CGFloat = 60
+        let baseH: CGFloat = 64
         guard case .insight(let insight) = context else { return baseH }
 
         // Available width for text = screen - scroll padding - card padding - icon - spacings - dismiss button
@@ -1294,7 +1415,7 @@ struct HomeView: View {
         let textWidth = screenW
             - Spacing.xl * 2       // scroll content horizontal padding
             - Spacing.md * 2       // card horizontal padding
-            - 36                   // icon circle
+            - 38                   // icon circle
             - Spacing.md * 2       // HStack spacings
             - 28                   // dismiss/chevron area
             - Spacing.md           // outer HStack gap
@@ -1322,39 +1443,57 @@ struct HomeView: View {
         ).height)
         let detailH = min(rawDetailH, ceil(detailFont.lineHeight * maxDetailLines))
 
-        let verticalPadding: CGFloat = (Spacing.sm + 2) * 2
+        // .padding(.vertical, Spacing.md) = Spacing.md * 2, plus buffer
+        // for SwiftUI text layout differences vs UIKit boundingRect
+        let verticalPadding: CGFloat = Spacing.md * 2 + 8
         let textSpacing: CGFloat = 2
         let needed = titleH + textSpacing + detailH + verticalPadding
 
         return max(needed, baseH)
     }
 
+    // MARK: - Context Card Stack (Notification Center style)
+    //
+    // Reimplemented from scratch. Key design decisions:
+    //
+    // 1. ALL card types go through `contextRowBody` directly — no wrapper
+    //    differences (SwipeableContextRow vs Button) that could cause
+    //    different view-tree structures and break animation propagation.
+    //
+    // 2. Card positioning uses `CardSlideEffect` (a GeometryEffect with
+    //    explicit `animatableData`) instead of `.offset(y:)`. This
+    //    guarantees SwiftUI interpolates the y position during animation.
+    //
+    // 3. `withAnimation` in the tap handlers is the SOLE animation driver.
+    //    No `.animation(value:)` modifier — avoids conflicting animation
+    //    sources that can cause partial or skipped animations.
+
     @ViewBuilder
     private var contextSections: some View {
         let all = overdueContexts + upcomingContexts + otherContexts
         let isExpanded = expandedStacks.contains("contexts")
         let shouldStack = all.count > 1
-        let baseH: CGFloat = 60
+        let baseH: CGFloat = 64
         let gap: CGFloat = Spacing.md
         let peekGap: CGFloat = 14
-        let peekCount = shouldStack ? min(all.count, 3) - 1 : 0
+        let stackSpring = Animation.spring(response: 0.42, dampingFraction: 0.72)
 
         let useCompact = shouldStack && !isExpanded
         let heights = all.map { useCompact ? baseH : measuredCardHeight(for: $0) }
-        let frontH = heights.first ?? baseH
         let expandedTotal = heights.reduce(0, +) + CGFloat(max(all.count - 1, 0)) * gap
         let visibleCount = shouldStack ? min(all.count, 3) : (all.isEmpty ? 0 : 1)
         let collapsedHeight: CGFloat = (0..<visibleCount).reduce(0) { result, i in
             let offsetY = CGFloat(min(i, 2)) * peekGap
             return max(result, offsetY + heights[i])
         }
+        let cardShape = RoundedRectangle(cornerRadius: 14, style: .continuous)
 
         if !all.isEmpty {
             VStack(spacing: 0) {
-                // Collapse button above the stack
+                // Collapse button
                 if shouldStack && isExpanded {
                     Button {
-                        withAnimation(.spring(response: 0.42, dampingFraction: 0.72)) {
+                        withAnimation(stackSpring) {
                             _ = expandedStacks.remove("contexts")
                         }
                     } label: {
@@ -1380,41 +1519,32 @@ struct HomeView: View {
                     }
                     .buttonStyle(.plain)
                     .padding(.bottom, Spacing.md)
+                    .transition(.move(edge: .top).combined(with: .opacity))
                 }
 
+                // Card stack
                 ZStack(alignment: .top) {
-                    // Render back-to-front so card 0 is visually on top.
                     ForEach(Array(all.enumerated()).reversed(), id: \.element.identifier) { index, context in
-                        let h = heights[index]
                         let yExpanded = heights.prefix(index).reduce(0, +) + CGFloat(index) * gap
+                        let yCollapsed = CGFloat(min(index, 2)) * peekGap
+
                         contextRow(for: context, compactMode: useCompact)
-                            .frame(height: h)
+                            .frame(height: heights[index], alignment: .top)
+                            .clipShape(cardShape)
                             .shadow(color: Color(.label).opacity(isExpanded ? 0 : 0.06),
                                     radius: 4, y: 2)
-                            .offset(y: isExpanded
-                                    ? yExpanded
-                                    : CGFloat(min(index, 2)) * peekGap)
-                            .scaleEffect(isExpanded
-                                         ? 1.0
-                                         : max(1.0 - CGFloat(index) * 0.025, 0.93),
+                            .modifier(CardSlideEffect(yOffset: isExpanded ? yExpanded : yCollapsed))
+                            .scaleEffect(isExpanded ? 1.0 : max(1.0 - CGFloat(index) * 0.025, 0.93),
                                          anchor: .top)
                             .opacity(isExpanded ? 1.0 : (index <= 2 ? 1.0 : 0.0))
                             .zIndex(Double(all.count - index))
                             .allowsHitTesting(isExpanded || !shouldStack)
-                            .animation(
-                                .spring(response: 0.42, dampingFraction: 0.72)
-                                .delay(isExpanded
-                                       ? Double(all.count - 1 - index) * 0.04
-                                       : Double(index) * 0.03),
-                                value: isExpanded
-                            )
                     }
                 }
-                .frame(height: isExpanded ? expandedTotal : collapsedHeight+2, alignment: .top)
-                .animation(.spring(response: 0.42, dampingFraction: 0.72), value: isExpanded)
-                // Badge overlay when stacked — positioned as a corner
-                // notification badge so it doesn't clash with the swipe
-                // hint arrows inside the card.
+                // Expanded: extra breathing room absorbs spring overshoot
+                // so the last card doesn't get clipped mid-animation.
+                .frame(height: isExpanded ? expandedTotal + 8 : collapsedHeight + 2, alignment: .top)
+                .clipped()
                 .overlay(alignment: .topTrailing) {
                     if shouldStack && !isExpanded {
                         Text("\(all.count)")
@@ -1433,21 +1563,18 @@ struct HomeView: View {
                             .transition(.scale.combined(with: .opacity))
                     }
                 }
-                // Tap-to-expand overlay — only when stacked.
                 .overlay {
                     if shouldStack && !isExpanded {
                         Color.clear
                             .contentShape(Rectangle())
                             .onTapGesture {
                                 Haptics.tap()
-                                withAnimation(.spring(response: 0.42, dampingFraction: 0.72)) {
+                                withAnimation(stackSpring) {
                                     _ = expandedStacks.insert("contexts")
                                 }
                             }
                     }
                 }
-
-
             }
         }
     }
@@ -1605,21 +1732,23 @@ struct HomeView: View {
                 contextRowBody(for: context, showHint: true, compactMode: compactMode)
             }
         case .insight(let insight):
-            contextRowBody(
-                for: context,
-                showHint: false,
-                compactMode: compactMode,
-                onDismiss: {
-                    withAnimation(AppAnimation.snappy) {
-                        dismissInsight(insight.id)
+            Button {
+                Haptics.tap()
+                handleContextTap(context)
+            } label: {
+                contextRowBody(
+                    for: context,
+                    showHint: false,
+                    compactMode: compactMode,
+                    onDismiss: {
+                        withAnimation(AppAnimation.snappy) {
+                            dismissInsight(insight.id)
+                        }
+                        Haptics.tap()
                     }
-                    Haptics.tap()
-                },
-                onTap: {
-                    Haptics.tap()
-                    handleContextTap(context)
-                }
-            )
+                )
+            }
+            .buttonStyle(.plain)
         case .review, .recurringOverflow, .overdueOverflow:
             Button {
                 Haptics.tap()
@@ -1649,9 +1778,9 @@ struct HomeView: View {
                 ZStack {
                     Circle()
                         .fill(color.opacity(0.15))
-                        .frame(width: 36, height: 36)
+                        .frame(width: 38, height: 38)
                     Image(systemName: icon)
-                        .font(.subheadline.weight(.semibold))
+                        .font(.subheadline.weight(.medium))
                         .foregroundStyle(color)
                 }
 
@@ -1666,7 +1795,6 @@ struct HomeView: View {
                         .lineLimit(expandedInsight ? 4 : 1)
                 }
                 .fixedSize(horizontal: false, vertical: expandedInsight)
-
                 Spacer(minLength: 0)
             }
             .contentShape(Rectangle())
@@ -1699,7 +1827,8 @@ struct HomeView: View {
             }
         }
         .padding(.horizontal, Spacing.md)
-        .padding(.vertical, Spacing.sm)
+        .padding(.vertical, Spacing.md)
+        .frame(minHeight: 64, alignment: .leading)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
@@ -1738,147 +1867,10 @@ struct HomeView: View {
         cachedOverdueDates = overdueDates
     }
 
-    /// Amount input sheet for logging upcoming/overdue occurrences.
-    /// Pre-fills with the rule's stored amount; user can edit before logging.
-    private var logAmountSheet: some View {
-        let rule = confirmLogRule
-        let iconName = rule?.category?.iconKey ?? "arrow.clockwise"
-        let iconColor = Color(hex: rule?.category?.colorHex ?? "#D97706")
-
-        return NavigationStack {
-            ScrollView {
-                VStack(spacing: Spacing.xxl) {
-
-                    // MARK: Header — icon + rule name + cadence
-                    VStack(spacing: Spacing.sm) {
-                        ZStack {
-                            Circle()
-                                .fill(iconColor.opacity(0.15))
-                                .frame(width: 52, height: 52)
-                            Image(systemName: iconName)
-                                .font(.title3.weight(.semibold))
-                                .foregroundStyle(iconColor)
-                        }
-                        Text(rule?.name ?? "Payment")
-                            .font(.headline)
-                        if let cadence = rule?.cadenceLabel {
-                            Text(cadence.capitalized)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    .padding(.top, Spacing.md)
-
-                    // MARK: Amount hero
-                    VStack(spacing: Spacing.sm) {
-                        Text(Currency.symbol(for: currencyCode))
-                            .font(.title2.weight(.medium))
-                            .foregroundStyle(.secondary)
-                        FormattedAmountField(
-                            value: $logAmountValue,
-                            currencyCode: currencyCode,
-                            placeholder: "0",
-                            font: .system(size: 48, weight: .bold, design: .rounded),
-                            alignment: .center
-                        )
-                        .frame(maxWidth: .infinity)
-                        .foregroundStyle(logAmountValue > 0 ? .primary : .tertiary)
-
-                        if let rule, rule.amount > 0, rule.isVariable {
-                            Text("Estimated · \(Currency.format(rule.amount, code: currencyCode))")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        } else {
-                            Text("Tap to edit amount")
-                                .font(.caption)
-                                .foregroundStyle(.tertiary)
-                        }
-                    }
-
-                    // MARK: Info card
-                    VStack(spacing: 0) {
-                        if let cat = rule?.category {
-                            logInfoRow(
-                                icon: cat.iconKey,
-                                color: Color(hex: cat.colorHex),
-                                label: cat.name
-                            )
-                        }
-                        if let acc = rule?.account {
-                            if rule?.category != nil { Divider().padding(.leading, 44) }
-                            logInfoRow(
-                                icon: acc.iconKey,
-                                color: Color(hex: acc.colorHex),
-                                label: acc.name
-                            )
-                        }
-                        if let date = confirmLogDate {
-                            if rule?.category != nil || rule?.account != nil {
-                                Divider().padding(.leading, 44)
-                            }
-                            logInfoRow(
-                                icon: "calendar",
-                                color: .secondary,
-                                label: date.formatted(.dateTime.day().month(.wide).year())
-                            )
-                        }
-                    }
-                    .padding(.vertical, Spacing.xs)
-                    .background(
-                        RoundedRectangle(cornerRadius: CornerRadius.medium, style: .continuous)
-                            .fill(Color.tulaCardSurface)
-                    )
-                    .padding(.horizontal, Spacing.xl)
-
-                    // MARK: Log button
-                    Button {
-                        guard let rule = confirmLogRule, let date = confirmLogDate else { return }
-                        logUpcoming(rule: rule, date: date, customAmount: logAmountValue)
-                        showingLogAmountSheet = false
-                    } label: {
-                        Text("Log Payment")
-                            .font(.body.weight(.semibold))
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, Spacing.md)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(Color.tulaBrandFallback)
-                    .disabled(logAmountValue <= 0)
-                    .padding(.horizontal, Spacing.xl)
-                }
-                .padding(.bottom, Spacing.xl)
-            }
-            .scrollDismissesKeyboard(.immediately)
-            .background(Color.tulaBackground)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { showingLogAmountSheet = false }
-                }
-            }
-        }
-        .presentationDetents([.medium, .large])
-    }
-
-    private func logInfoRow(icon: String, color: Color, label: String) -> some View {
-        HStack(spacing: Spacing.md) {
-            Image(systemName: icon)
-                .font(.subheadline)
-                .foregroundStyle(color)
-                .frame(width: 24)
-            Text(label)
-                .font(.subheadline)
-                .foregroundStyle(.primary)
-            Spacer()
-        }
-        .padding(.horizontal, Spacing.lg)
-        .padding(.vertical, Spacing.sm + 2)
-    }
+    // Sheet extracted to LogAmountSheetView (standalone struct below)
 
     private func confirmLog(rule: RecurringRule, date: Date) {
-        confirmLogRule = rule
-        confirmLogDate = date
-        logAmountValue = rule.amount
-        showingLogAmountSheet = true
+        logConfirmation = LogConfirmationItem(rule: rule, date: date)
     }
 
     private func confirmSkip(rule: RecurringRule, date: Date) {
@@ -1899,6 +1891,23 @@ struct HomeView: View {
         NotificationManager.cancelConfirmation(ruleID: rule.id, dueDate: date)
         refreshRecurringCaches()
         showToast("Skipped")
+    }
+
+    /// Mark a recurring occurrence as already paid without creating a
+    /// duplicate expense. Advances the rule boundary past this date
+    /// so the card disappears from the home screen.
+    private func markAlreadyPaid(rule: RecurringRule, date: Date) {
+        Haptics.success()
+        withAnimation(AppAnimation.snappy) {
+            RecurringEngine.skipOccurrence(rule: rule, dueDate: date)
+            if rule.isBill {
+                rule.lastPaidDate = .now
+            }
+            try? context.save(); WidgetRefresh.refresh(using: context)
+        }
+        NotificationManager.cancelConfirmation(ruleID: rule.id, dueDate: date)
+        refreshRecurringCaches()
+        showToast("Marked as paid")
     }
 
     /// Log a single upcoming/overdue occurrence from the home row.
@@ -2582,6 +2591,209 @@ private struct SwipeableContextRow<Content: View>: View {
         )
     }
 }
+
+// MARK: - Log Amount Sheet
+
+/// Standalone sheet for logging a recurring expense occurrence.
+/// Uses a clean VStack layout inside a NavigationStack with system
+/// grouped-style detail rows, a prominent hero amount area, and a
+/// pinned bottom button — following Apple HIG patterns.
+private struct LogAmountSheetView: View {
+    let item: LogConfirmationItem
+    let currencyCode: String
+    let onLog: (RecurringRule, Date, Double) -> Void
+    let onMarkPaid: (RecurringRule, Date) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var amountValue: Double
+
+    init(item: LogConfirmationItem, currencyCode: String,
+         onLog: @escaping (RecurringRule, Date, Double) -> Void,
+         onMarkPaid: @escaping (RecurringRule, Date) -> Void) {
+        self.item = item
+        self.currencyCode = currencyCode
+        self.onLog = onLog
+        self.onMarkPaid = onMarkPaid
+        _amountValue = State(initialValue: item.amount)
+    }
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 0) {
+                // Scrollable content
+                ScrollView {
+                    VStack(spacing: 24) {
+                        amountHero
+                        detailSection
+                    }
+                    .padding(.top, 8)
+                    .padding(.bottom, 24)
+                }
+                .scrollDismissesKeyboard(.immediately)
+                .scrollBounceBehavior(.basedOnSize)
+
+                // Pinned bottom button
+                logButton
+            }
+            .background(Color(.systemGroupedBackground))
+            .navigationTitle(item.ruleName)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+    }
+
+    // MARK: - Amount hero
+
+    private var amountHero: some View {
+        VStack(spacing: 12) {
+            ZStack {
+                Circle()
+                    .fill(item.iconColor.opacity(0.12))
+                    .frame(width: 52, height: 52)
+                Image(systemName: item.iconName)
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(item.iconColor)
+            }
+
+            FormattedAmountField(
+                value: $amountValue,
+                currencyCode: currencyCode,
+                placeholder: Currency.format(0, code: currencyCode),
+                font: .system(size: 48, weight: .bold, design: .rounded),
+                alignment: .center
+            )
+            .frame(maxWidth: .infinity)
+            .foregroundStyle(amountValue > 0 ? .primary : .quaternary)
+
+            if item.amount > 0, item.isVariable {
+                Text("Usually \(Currency.format(item.amount, code: currencyCode))")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.horizontal, 20)
+    }
+
+    // MARK: - Detail rows (system grouped style)
+
+    private var detailSection: some View {
+        VStack(spacing: 0) {
+            if let catName = item.categoryName,
+               let catIcon = item.categoryIcon,
+               let catColor = item.categoryColor {
+                detailRow(icon: catIcon, color: catColor, title: "Category", value: catName)
+                Divider().padding(.leading, 56)
+            }
+
+            if let accName = item.accountName,
+               let accIcon = item.accountIcon,
+               let accColor = item.accountColor {
+                detailRow(icon: accIcon, color: accColor, title: "Account", value: accName)
+                Divider().padding(.leading, 56)
+            }
+
+            detailRow(
+                icon: "calendar",
+                color: .blue,
+                title: "Date",
+                value: item.date.formatted(.dateTime.weekday(.abbreviated).day().month(.abbreviated))
+            )
+            Divider().padding(.leading, 56)
+
+            detailRow(
+                icon: "repeat",
+                color: .secondary,
+                title: "Repeats",
+                value: item.cadenceLabel.capitalized
+            )
+        }
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color(.secondarySystemGroupedBackground))
+        )
+        .padding(.horizontal, 16)
+    }
+
+    private func detailRow(icon: String, color: Color, title: String, value: String) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: icon)
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(color)
+                .frame(width: 28, height: 28)
+                .background(color.opacity(0.12), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .padding(.leading, 16)
+
+            Text(title)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+
+            Spacer()
+
+            Text(value)
+                .font(.subheadline)
+                .foregroundStyle(.primary)
+                .padding(.trailing, 16)
+        }
+        .padding(.vertical, 11)
+    }
+
+    // MARK: - Log button
+
+    private var logButton: some View {
+        VStack(spacing: 12) {
+            Button {
+                onLog(item.rule, item.date, amountValue)
+                dismiss()
+            } label: {
+                Text("Log \(item.ruleName)")
+                    .font(.body.weight(.semibold))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 14)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(Color.tulaBrandFallback)
+            .disabled(amountValue <= 0)
+
+            Button {
+                onMarkPaid(item.rule, item.date)
+                dismiss()
+            } label: {
+                Text("Already logged this")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 8)
+        .padding(.bottom, 12)
+        .background(Color(.systemGroupedBackground))
+    }
+}
+
+/// Animatable geometry effect for card stack positioning.
+/// Unlike `.offset(y:)`, this declares `yOffset` as explicit `animatableData`,
+/// guaranteeing SwiftUI interpolates the value during animation even when
+/// the view's structural identity changes through `_ConditionalContent` branches.
+private struct CardSlideEffect: GeometryEffect {
+    var yOffset: CGFloat
+
+    var animatableData: CGFloat {
+        get { yOffset }
+        set { yOffset = newValue }
+    }
+
+    func effectValue(size: CGSize) -> ProjectionTransform {
+        ProjectionTransform(CGAffineTransform(translationX: 0, y: yOffset))
+    }
+}
+
+
 
 
 

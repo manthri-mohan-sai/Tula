@@ -758,8 +758,10 @@ struct BudgetCard: View {
 
 
     private var percentText: String {
-        let pct = Int(min(progressValue, 9.99) * 100)
-        return "\(pct)%"
+        if progressValue >= 2.0 {
+            return "\(Int(progressValue))x"
+        }
+        return "\(Int((progressValue * 100).rounded()))%"
     }
 
     private var ringColor: Color {
@@ -1078,7 +1080,10 @@ struct BudgetTransactionsView: View {
     }
 
     private var percentText: String {
-        "\(Int(min(progressValue, 9.99) * 100))%"
+        if progressValue >= 2.0 {
+            return "\(Int(progressValue))x"
+        }
+        return "\(Int((progressValue * 100).rounded()))%"
     }
 
     private var status: Budget.Status { budget.status(in: expenses) }

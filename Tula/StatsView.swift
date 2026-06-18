@@ -260,12 +260,12 @@ struct StatsView: View {
 
         // 3. Spending pace vs previous period
         if let trend = trendVsPrevious, isCurrentPeriod {
-            let pct = Int(abs(trend * 100).rounded())
+            let label = formatDeltaPercent(trend)
             let periodWord = period == .week ? "week" : "month"
             if trend > 0.15 {
-                return "Spending \(pct)% faster than last \(periodWord)"
+                return "Spending \(label) faster than last \(periodWord)"
             } else if trend < -0.15 {
-                return "\(pct)% under last \(periodWord)'s pace"
+                return "\(label) under last \(periodWord)'s pace"
             }
         }
 
@@ -503,11 +503,11 @@ struct StatsView: View {
     private func trendBadge(_ trend: Double) -> some View {
         let isUp = trend > 0
         let color: Color = isUp ? .red : .green
-        let percent = Int(abs(trend * 100).rounded())
+        let label = formatDeltaPercent(trend)
         return HStack(spacing: 2) {
             Image(systemName: isUp ? "arrow.up.right" : "arrow.down.right")
                 .font(.caption2.weight(.bold))
-            Text("\(percent)%")
+            Text(label)
                 .font(.caption2.weight(.semibold))
         }
         .padding(.horizontal, Spacing.sm)

@@ -96,6 +96,13 @@ enum ExportManager {
     /// mode so we always use the lighter hex.
     private static let brandColor = UIColor(red: 0.85, green: 0.46, blue: 0.10, alpha: 1.0)
 
+    /// PDF always renders on a white background regardless of the device's
+    /// appearance mode, so we resolve semantic colors against light traits.
+    private static let lightTraits = UITraitCollection(userInterfaceStyle: .light)
+    private static let textPrimary = UIColor.label.resolvedColor(with: lightTraits)
+    private static let textSecondary = UIColor.secondaryLabel.resolvedColor(with: lightTraits)
+    private static let textTertiary = UIColor.tertiaryLabel.resolvedColor(with: lightTraits)
+
     // MARK: - Public API
 
     static func export(
@@ -487,7 +494,7 @@ enum ExportManager {
         // Title
         let titleAttrs: [NSAttributedString.Key: Any] = [
             .font: UIFont.systemFont(ofSize: 26, weight: .bold),
-            .foregroundColor: UIColor.label
+            .foregroundColor: textPrimary
         ]
         NSAttributedString(string: title, attributes: titleAttrs)
             .draw(at: CGPoint(x: PDF.margin, y: y + 14))
@@ -495,7 +502,7 @@ enum ExportManager {
         // Subtitle
         let subtitleAttrs: [NSAttributedString.Key: Any] = [
             .font: UIFont.systemFont(ofSize: 12, weight: .medium),
-            .foregroundColor: UIColor.secondaryLabel
+            .foregroundColor: textSecondary
         ]
         NSAttributedString(string: subtitle, attributes: subtitleAttrs)
             .draw(at: CGPoint(x: PDF.margin, y: y + 46))
@@ -507,7 +514,7 @@ enum ExportManager {
                                    at y: CGFloat, pageRect: CGRect) -> CGFloat {
         let labelAttrs: [NSAttributedString.Key: Any] = [
             .font: UIFont.systemFont(ofSize: 11, weight: .medium),
-            .foregroundColor: UIColor.secondaryLabel,
+            .foregroundColor: textSecondary,
             .kern: 0.5
         ]
         NSAttributedString(string: "TOTAL SPENT", attributes: labelAttrs)
@@ -515,14 +522,14 @@ enum ExportManager {
 
         let amountAttrs: [NSAttributedString.Key: Any] = [
             .font: UIFont.monospacedDigitSystemFont(ofSize: 48, weight: .bold),
-            .foregroundColor: UIColor.label
+            .foregroundColor: textPrimary
         ]
         NSAttributedString(string: Currency.format(total, code: currencyCode), attributes: amountAttrs)
             .draw(at: CGPoint(x: PDF.margin, y: y + 16))
 
         let countAttrs: [NSAttributedString.Key: Any] = [
             .font: UIFont.systemFont(ofSize: 13),
-            .foregroundColor: UIColor.secondaryLabel
+            .foregroundColor: textSecondary
         ]
         NSAttributedString(string: "\(count) expense\(count == 1 ? "" : "s")",
                            attributes: countAttrs)
@@ -577,7 +584,7 @@ enum ExportManager {
 
         let labelAttrs: [NSAttributedString.Key: Any] = [
             .font: UIFont.systemFont(ofSize: 9, weight: .semibold),
-            .foregroundColor: UIColor.secondaryLabel,
+            .foregroundColor: textSecondary,
             .kern: 0.5
         ]
         NSAttributedString(string: label, attributes: labelAttrs)
@@ -585,7 +592,7 @@ enum ExportManager {
 
         let valueAttrs: [NSAttributedString.Key: Any] = [
             .font: UIFont.monospacedDigitSystemFont(ofSize: 20, weight: .semibold),
-            .foregroundColor: UIColor.label
+            .foregroundColor: textPrimary
         ]
         NSAttributedString(string: value, attributes: valueAttrs)
             .draw(at: CGPoint(x: rect.minX + pad, y: rect.minY + pad + 13))
@@ -593,7 +600,7 @@ enum ExportManager {
         if let sub = sub {
             let subAttrs: [NSAttributedString.Key: Any] = [
                 .font: UIFont.systemFont(ofSize: 9),
-                .foregroundColor: UIColor.tertiaryLabel
+                .foregroundColor: textTertiary
             ]
             NSAttributedString(string: sub, attributes: subAttrs)
                 .draw(in: CGRect(x: rect.minX + pad, y: rect.minY + pad + 38,
@@ -607,7 +614,7 @@ enum ExportManager {
                                            at y: CGFloat, pageRect: CGRect) -> CGFloat {
         let attrs: [NSAttributedString.Key: Any] = [
             .font: UIFont.systemFont(ofSize: 17, weight: .bold),
-            .foregroundColor: UIColor.label
+            .foregroundColor: textPrimary
         ]
         NSAttributedString(string: text, attributes: attrs)
             .draw(at: CGPoint(x: PDF.margin, y: y))
@@ -653,7 +660,7 @@ enum ExportManager {
         // Center total
         let totalLabel: [NSAttributedString.Key: Any] = [
             .font: UIFont.systemFont(ofSize: 8, weight: .semibold),
-            .foregroundColor: UIColor.secondaryLabel,
+            .foregroundColor: textSecondary,
             .kern: 0.5
         ]
         let totalLabelStr = NSAttributedString(string: "TOTAL", attributes: totalLabel)
@@ -663,7 +670,7 @@ enum ExportManager {
 
         let totalAttrs: [NSAttributedString.Key: Any] = [
             .font: UIFont.monospacedDigitSystemFont(ofSize: 15, weight: .semibold),
-            .foregroundColor: UIColor.label
+            .foregroundColor: textPrimary
         ]
         let totalStr = NSAttributedString(string: Currency.compact(total, code: currencyCode),
                                             attributes: totalAttrs)
@@ -699,7 +706,7 @@ enum ExportManager {
         // Name
         let nameAttrs: [NSAttributedString.Key: Any] = [
             .font: UIFont.systemFont(ofSize: 11, weight: .medium),
-            .foregroundColor: UIColor.label
+            .foregroundColor: textPrimary
         ]
         let nameStr = NSAttributedString(string: name, attributes: nameAttrs)
         nameStr.draw(at: CGPoint(x: rect.minX + 16, y: rect.minY + 4))
@@ -709,7 +716,7 @@ enum ExportManager {
         let pctText = "\(pct)% · \(Currency.format(amount, code: currencyCode))"
         let pctAttrs: [NSAttributedString.Key: Any] = [
             .font: UIFont.monospacedDigitSystemFont(ofSize: 10, weight: .medium),
-            .foregroundColor: UIColor.secondaryLabel
+            .foregroundColor: textSecondary
         ]
         let pctStr = NSAttributedString(string: pctText, attributes: pctAttrs)
         let pSize = pctStr.size()
@@ -771,7 +778,7 @@ enum ExportManager {
         // X-axis labels — first, middle, last
         let xLabelAttrs: [NSAttributedString.Key: Any] = [
             .font: UIFont.systemFont(ofSize: 8),
-            .foregroundColor: UIColor.secondaryLabel
+            .foregroundColor: textSecondary
         ]
         if let first = series.first {
             NSAttributedString(string: formatShortDay(first.day), attributes: xLabelAttrs)
@@ -786,7 +793,7 @@ enum ExportManager {
         // Y-axis hint — max value annotation
         let maxAttrs: [NSAttributedString.Key: Any] = [
             .font: UIFont.monospacedDigitSystemFont(ofSize: 8, weight: .medium),
-            .foregroundColor: UIColor.tertiaryLabel
+            .foregroundColor: textTertiary
         ]
         let maxStr = NSAttributedString(string: "max \(Currency.compact(maxVal, code: currencyCode))",
                                           attributes: maxAttrs)
@@ -851,7 +858,7 @@ enum ExportManager {
 
         let nameAttrs: [NSAttributedString.Key: Any] = [
             .font: UIFont.systemFont(ofSize: 11, weight: .semibold),
-            .foregroundColor: UIColor.label
+            .foregroundColor: textPrimary
         ]
         NSAttributedString(string: stat.name, attributes: nameAttrs)
             .draw(at: CGPoint(x: rect.minX + 24, y: rect.midY - 7))
@@ -859,7 +866,7 @@ enum ExportManager {
         // Right-side: amount and percent
         let amountAttrs: [NSAttributedString.Key: Any] = [
             .font: UIFont.monospacedDigitSystemFont(ofSize: 11, weight: .semibold),
-            .foregroundColor: UIColor.label
+            .foregroundColor: textPrimary
         ]
         let amountText = "\(Currency.format(stat.amount, code: currencyCode))   \(percent)%"
         let amountStr = NSAttributedString(string: amountText, attributes: amountAttrs)
@@ -896,14 +903,14 @@ enum ExportManager {
 
         let nameAttrs: [NSAttributedString.Key: Any] = [
             .font: UIFont.systemFont(ofSize: 11, weight: .medium),
-            .foregroundColor: UIColor.label
+            .foregroundColor: textPrimary
         ]
         NSAttributedString(string: stat.name, attributes: nameAttrs)
             .draw(at: CGPoint(x: rect.minX, y: rect.midY - 7))
 
         let countAttrs: [NSAttributedString.Key: Any] = [
             .font: UIFont.systemFont(ofSize: 10),
-            .foregroundColor: UIColor.secondaryLabel
+            .foregroundColor: textSecondary
         ]
         let countStr = NSAttributedString(string: "\(stat.count)×", attributes: countAttrs)
         let cs = countStr.size()
@@ -911,7 +918,7 @@ enum ExportManager {
 
         let amountAttrs: [NSAttributedString.Key: Any] = [
             .font: UIFont.monospacedDigitSystemFont(ofSize: 11, weight: .semibold),
-            .foregroundColor: UIColor.label
+            .foregroundColor: textPrimary
         ]
         let amountStr = NSAttributedString(string: Currency.format(stat.amount, code: currencyCode),
                                              attributes: amountAttrs)
@@ -1001,7 +1008,7 @@ enum ExportManager {
         var x = PDF.margin
         let attrs: [NSAttributedString.Key: Any] = [
             .font: font,
-            .foregroundColor: isHeader ? UIColor.secondaryLabel : UIColor.label
+            .foregroundColor: isHeader ? textSecondary : textPrimary
         ]
         for (i, field) in fields.enumerated() {
             let w = columnWidths[i]

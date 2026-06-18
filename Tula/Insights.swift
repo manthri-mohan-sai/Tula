@@ -1,6 +1,23 @@
 import Foundation
 import SwiftUI
 
+// MARK: - Change Formatting
+
+/// Formats a fractional change (e.g. 0.32 → "32%", 91.98 → "93x") into a
+/// compact, human-readable label. For changes ≥ 200% (3x or more) switches
+/// to a multiplier format following Apple's Screen Time convention — "93x"
+/// reads far better than "9198%". Returns just the number portion; callers
+/// add directional words ("above", "below") as needed.
+func formatDeltaPercent(_ change: Double) -> String {
+    let absChange = abs(change)
+    let percent = Int((absChange * 100).rounded())
+    if percent >= 200 {
+        let multiplier = Int(absChange + 1) // ratio = change + 1; truncate
+        return "\(multiplier)x"
+    }
+    return "\(percent)%"
+}
+
 // MARK: - Models
 
 /// One actionable observation about the user's spending. Insights are
@@ -62,17 +79,6 @@ enum InsightEngine {
         dailyBudget: Double? = nil
     ) -> [Insight] {
         var insights: [Insight] = []
-
-        // DEBUG — remove after testing dynamic card height
-        insights.append(Insight(
-            id: "debug_\(Date.now.timeIntervalSince1970)",
-            kind: .monthPace,
-            title: "Auto-categorize Veeraju Milk Supply?",
-            detail: "Always Groceries · Milk on SBI Bank — you've logged 11 expenses here with the same category.",
-            icon: "wand.and.stars",
-            color: .orange,
-            priority: 100
-        ))
 
         let calendar = Calendar.current
         let now = Date.now
@@ -160,10 +166,11 @@ enum InsightEngine {
                     // Only show if meaningfully different
                     if percent >= 20 {
                         let isUp = change > 0
+                        let label = formatDeltaPercent(change)
                         insights.append(Insight(
                             id: "monthPace",
                             kind: .monthPace,
-                            title: "\(percent)% \(isUp ? "above" : "below") last month",
+                            title: "\(label) \(isUp ? "above" : "below") last month",
                             detail: "At this point in \(now.formatted(.dateTime.month(.wide))).",
                             icon: isUp ? "arrow.up.right.circle.fill" : "arrow.down.right.circle.fill",
                             color: isUp ? .red : .green,
@@ -205,14 +212,8 @@ enum InsightEngine {
 
                 let ratio = amount / monthlyAvg
                 if ratio >= 1.5 {
-                    let multiplier = ratio
-                    let title: String
-                    if multiplier >= 5 {
-                        title = "\(cat.name) \(Int(multiplier))x higher"
-                    } else {
-                        let percent = Int(((ratio - 1) * 100).rounded())
-                        title = "\(cat.name) +\(percent)%"
-                    }
+                    let changeLabel = formatDeltaPercent(ratio - 1)
+                    let title = "\(cat.name) +\(changeLabel)"
                     insights.append(Insight(
                         id: "catAlert-\(cat.id)",
                         kind: .categoryAlert,
@@ -220,7 +221,7 @@ enum InsightEngine {
                         detail: "Above your typical monthly \(cat.name.lowercased()) spend.",
                         icon: cat.iconKey,
                         color: Color(hex: cat.colorHex),
-                        priority: multiplier >= 3 ? 5 : 3,
+                        priority: ratio >= 3 ? 5 : 3,
                         categoryID: catID
                     ))
                 }
