@@ -24,6 +24,8 @@ struct FormattedAmountField: View {
             .keyboardType(.decimalPad)
             .font(font)
             .multilineTextAlignment(alignment)
+            .accessibilityLabel("Amount")
+            .accessibilityValue(value > 0 ? formatted(value) : "empty")
             .onAppear { text = formatted(value) }
             .onChange(of: text) { _, newValue in handleTextChange(newValue) }
             .onChange(of: value) { _, newValue in

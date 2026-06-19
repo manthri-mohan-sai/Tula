@@ -11,6 +11,8 @@ struct AccountDetailView: View {
 
     @State private var showingPayBill = false
     @State private var showingTransfer = false
+    @State private var showingTopUp = false
+    @State private var showingEditAccount = false
     @State private var editingExpense: Expense?
 
     private var color: Color { Color(hex: account.colorHex) }
@@ -31,14 +33,7 @@ struct AccountDetailView: View {
         return items.sorted { $0.date > $1.date }
     }
 
-    /// The balance label that fits the account kind's mental model.
-    private var balanceLabel: String {
-        switch account.kind {
-        case .creditCard: return "Outstanding"
-        case .cash: return "On hand"
-        case .bank, .wallet: return "Net flow this period"
-        }
-    }
+    private var balanceLabel: String { account.displayLabel }
 
     var body: some View {
         ScrollView {
@@ -64,6 +59,28 @@ struct AccountDetailView: View {
         }
         .navigationTitle(account.name)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    Haptics.tap()
+                    showingEditAccount = true
+                } label: {
+                    Image(systemName: "pencil")
+                        .font(.body.weight(.medium))
+                }
+                .tint(.primary)
+                .accessibilityLabel("Edit account")
+            }
+        }
+        .sheet(isPresented: $showingEditAccount) {
+            AccountFormView(account: account)
+        }
+        .sheet(isPresented: $showingTopUp) {
+            TransferFormView(
+                presetKind: .topUp,
+                presetToAccount: account
+            )
+        }
         .sheet(isPresented: $showingPayBill) {
             TransferFormView(
                 presetKind: .cardBillPayment,
@@ -109,12 +126,12 @@ struct AccountDetailView: View {
                 .tracking(0.8)
                 .padding(.top, Spacing.sm)
 
-            Text(Currency.format(account.derivedBalance, code: currencyCode))
+            Text(Currency.format(account.displayAmount, code: currencyCode))
                 .font(.system(size: 36, weight: .bold, design: .rounded))
                 .minimumScaleFactor(0.5)
                 .lineLimit(1)
-                .contentTransition(.numericText(value: account.derivedBalance))
-                .animation(.snappy(duration: 0.35), value: account.derivedBalance)
+                .contentTransition(.numericText(value: account.displayAmount))
+                .animation(.snappy(duration: 0.35), value: account.displayAmount)
 
             if account.kind == .creditCard, let limit = account.creditLimit, limit > 0 {
                 creditLimitBar(used: account.derivedBalance, limit: limit)
@@ -172,6 +189,15 @@ struct AccountDetailView: View {
                 ) {
                     Haptics.tap()
                     showingPayBill = true
+                }
+            }
+            if account.kind == .wallet || account.kind == .cash {
+                primaryActionButton(
+                    title: "Top Up",
+                    icon: "plus.circle.fill"
+                ) {
+                    Haptics.tap()
+                    showingTopUp = true
                 }
             }
             secondaryActionButton(
@@ -318,6 +344,7 @@ struct TransferRow: View {
         case .cardBillPayment: return "indianrupeesign.circle.fill"
         case .withdrawal:      return "arrow.up.right.circle.fill"
         case .deposit:         return "arrow.down.left.circle.fill"
+        case .topUp:           return "plus.circle.fill"
         case .generic:         return "arrow.left.arrow.right.circle.fill"
         }
     }
@@ -330,6 +357,18 @@ struct TransferRow: View {
             return perspective == .incoming ? "Cash withdrawn" : "Withdrew cash"
         case .deposit:
             return perspective == .incoming ? "Cash deposited" : "Deposited cash"
+        case .topUp:
+            if perspective == .incoming {
+                if let from = transfer.fromAccount {
+                    return "Top up from \(from.name)"
+                }
+                return "Top up"
+            } else {
+                if let to = transfer.toAccount {
+                    return "Top up to \(to.name)"
+                }
+                return "Top up"
+            }
         case .generic:
             if let other = (perspective == .incoming ? transfer.fromAccount : transfer.toAccount) {
                 return perspective == .incoming ? "From \(other.name)" : "To \(other.name)"

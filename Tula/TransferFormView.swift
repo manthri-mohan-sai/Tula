@@ -54,7 +54,11 @@ struct TransferFormView: View {
     }
 
     private var canSave: Bool {
-        amount > 0 && fromAccount != nil && toAccount != nil && fromAccount?.id != toAccount?.id
+        guard amount > 0, toAccount != nil else { return false }
+        if presetKind == .topUp {
+            return fromAccount == nil || fromAccount?.id != toAccount?.id
+        }
+        return fromAccount != nil && fromAccount?.id != toAccount?.id
     }
 
     private var titleText: String {
@@ -62,6 +66,7 @@ struct TransferFormView: View {
         case .cardBillPayment: return "Pay Card Bill"
         case .withdrawal:      return "Withdraw Cash"
         case .deposit:         return "Deposit Cash"
+        case .topUp:           return "Top Up"
         default:               return "Transfer"
         }
     }
@@ -136,7 +141,7 @@ struct TransferFormView: View {
     private var fromSection: some View {
         VStack(alignment: .leading, spacing: Spacing.md) {
             HStack(alignment: .firstTextBaseline) {
-                SectionHeader(title: "From")
+                SectionHeader(title: presetKind == .topUp ? "Source (optional)" : "From")
                 Spacer()
                 if let from = fromAccount {
                     Text(Currency.format(from.derivedBalance, code: currencyCode))
@@ -148,7 +153,8 @@ struct TransferFormView: View {
             accountStrip(
                 accounts: fromOptions,
                 selection: $fromAccount,
-                isLocked: presetFromAccount != nil
+                isLocked: presetFromAccount != nil,
+                allowsDeselection: presetKind == .topUp
             )
         }
     }
@@ -205,7 +211,8 @@ struct TransferFormView: View {
 
     private func accountStrip(accounts: [Account],
                               selection: Binding<Account?>,
-                              isLocked: Bool) -> some View {
+                              isLocked: Bool,
+                              allowsDeselection: Bool = false) -> some View {
         let ordered: [Account] = {
             guard let selectedID = selection.wrappedValue?.id,
                   let idx = accounts.firstIndex(where: { $0.id == selectedID }) else {
@@ -230,7 +237,11 @@ struct TransferFormView: View {
                             guard !isLocked else { return }
                             Haptics.selection()
                             withAnimation(AppAnimation.snappy) {
-                                selection.wrappedValue = account
+                                if allowsDeselection && selection.wrappedValue?.id == account.id {
+                                    selection.wrappedValue = nil
+                                } else {
+                                    selection.wrappedValue = account
+                                }
                             }
                         }
                         .opacity(isLocked && selection.wrappedValue?.id != account.id ? 0.4 : 1)
@@ -283,13 +294,20 @@ struct TransferFormView: View {
     // MARK: - Save
 
     private func save() {
-        guard let from = fromAccount, let to = toAccount, amount > 0 else { return }
+        guard let to = toAccount, amount > 0 else { return }
 
-        let resolvedKind: TransferKind = presetKind ?? inferKind(from: from, to: to)
+        let resolvedKind: TransferKind
+        if let preset = presetKind {
+            resolvedKind = preset
+        } else if let from = fromAccount {
+            resolvedKind = inferKind(from: from, to: to)
+        } else {
+            resolvedKind = .generic
+        }
 
         let transfer = Transfer(
             amount: amount,
-            fromAccount: from,
+            fromAccount: fromAccount,
             toAccount: to,
             date: date,
             kind: resolvedKind,

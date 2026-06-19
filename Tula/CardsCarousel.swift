@@ -58,7 +58,7 @@ struct CardsCarousel: View {
                         // continuously rather than only at snap points.
                         .scrollTransition(.interactive) { content, phase in
                             content
-                                .scaleEffect(phase.isIdentity ? 1.0 : 0.92)
+                                .scaleEffect(AppAnimation.reduceMotion ? 1.0 : (phase.isIdentity ? 1.0 : 0.92))
                                 .opacity(phase.isIdentity ? 1.0 : 0.55)
                         }
                         .onTapGesture {
@@ -133,13 +133,7 @@ struct AccountCardView: View {
         }
     }
 
-    private var balanceLabel: String {
-        switch account.kind {
-        case .creditCard: return "Outstanding"
-        case .cash:       return "On Hand"
-        case .bank, .wallet: return "Net Flow"
-        }
-    }
+    private var balanceLabel: String { account.displayLabel }
 
     private var hasChip: Bool { account.kind == .creditCard }
 
@@ -295,14 +289,14 @@ struct AccountCardView: View {
     /// a duplicate brand mark in shadow.
     private var bottomRow: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(Currency.format(account.derivedBalance, code: currencyCode))
+            Text(Currency.format(account.displayAmount, code: currencyCode))
                 .font(.system(size: 30, weight: .bold, design: .rounded))
                 .foregroundStyle(.white)
                 .lineLimit(1)
                 .minimumScaleFactor(0.5)
                 .shadow(color: .black.opacity(0.20), radius: 1, y: 0.5)
-                .contentTransition(.numericText(value: account.derivedBalance))
-                .animation(.snappy(duration: 0.35), value: account.derivedBalance)
+                .contentTransition(.numericText(value: account.displayAmount))
+                .animation(.snappy(duration: 0.35), value: account.displayAmount)
 
             Text(balanceLabel.uppercased())
                 .font(.caption2.weight(.bold))

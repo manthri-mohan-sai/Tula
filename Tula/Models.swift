@@ -75,6 +75,34 @@ final class Account {
             return openingBalance + incoming - outgoing - expenseTotal
         }
     }
+
+    /// User-facing amount — avoids showing confusing negative "Net flow" on
+    /// wallets/cash that the user isn't actively maintaining. When the derived
+    /// balance is negative (more expenses than top-ups), we show the total
+    /// spent instead — always positive, always useful.
+    var displayAmount: Double {
+        switch kind {
+        case .wallet, .cash:
+            if derivedBalance < 0 {
+                return expenses.reduce(0) { $0 + $1.amount }
+            }
+            return derivedBalance
+        case .creditCard, .bank:
+            return derivedBalance
+        }
+    }
+
+    /// Label that matches `displayAmount` semantics.
+    var displayLabel: String {
+        switch kind {
+        case .creditCard: return "Outstanding"
+        case .bank:       return "Net flow"
+        case .cash:
+            return derivedBalance < 0 ? "Spent" : "On hand"
+        case .wallet:
+            return derivedBalance < 0 ? "Spent" : "Balance"
+        }
+    }
 }
 
 enum AccountKind: String, Codable, CaseIterable {
@@ -231,6 +259,7 @@ enum TransferKind: String, Codable {
     case cardBillPayment   // Bank → Credit Card
     case withdrawal        // Bank → Cash (ATM, etc.)
     case deposit           // Cash → Bank
+    case topUp             // External → Wallet/Cash (cashback, rewards, refund)
 }
 
 // MARK: - Recurring Rule

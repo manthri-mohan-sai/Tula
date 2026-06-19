@@ -243,6 +243,7 @@ struct TulaApp: App {
                 let activeContainer = sharedContainer
                 Task.detached {
                     let ctx = ModelContext(activeContainer)
+
                     let upcomingRecurrings = buildUpcomingRecurrings(in: ctx)
                     await MainActor.run {
                         let mainCtx = ModelContext(activeContainer)

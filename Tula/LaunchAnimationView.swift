@@ -177,6 +177,25 @@ struct LaunchAnimationView: View {
     }
 
     private func runTimeline() {
+        // Reduce Motion: skip the balance animation entirely.
+        // Show the wordmark briefly, then open the portal with a
+        // simple crossfade. Total duration ~1.2s.
+        if AppAnimation.reduceMotion {
+            dotOpacity = 0
+            wordmarkOpacity = 1
+            wordmarkOffset = 0
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                withAnimation(.easeInOut(duration: 0.35)) {
+                    wordmarkOpacity = 0
+                    portalRadius = 1500
+                }
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                onComplete()
+            }
+            return
+        }
+
         // 0.00 – 0.18s — single dot fades in
         withAnimation(.easeOut(duration: 0.18)) {
             dotOpacity = 1.0

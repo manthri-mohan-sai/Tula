@@ -542,8 +542,8 @@ struct AddExpenseView: View {
         .buttonStyle(PressableScaleStyle(scale: 0.95))
         .onAppear {
             // Trigger the breathing pulse animation once per exact-match
-            // chip when it first appears.
-            if suggestion.isExactAmountMatch {
+            // chip when it first appears. Skipped under Reduce Motion.
+            if suggestion.isExactAmountMatch && !AppAnimation.reduceMotion {
                 let chipID = suggestion.id
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
                     withAnimation(
@@ -763,6 +763,8 @@ struct AddExpenseView: View {
                         .font(.subheadline.weight(.medium))
                         .foregroundStyle(catColor)
                 }
+                .frame(minWidth: 44, minHeight: 44)
+                .contentShape(Rectangle())
             }
 
             // Labels — all neutral colors
@@ -829,8 +831,11 @@ struct AddExpenseView: View {
                         .font(.title3)
                         .symbolRenderingMode(.hierarchical)
                         .foregroundStyle(.red)
+                        .frame(minWidth: 44, minHeight: 44)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Remove split")
                 .transition(.scale.combined(with: .opacity))
             }
         }

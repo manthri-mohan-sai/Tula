@@ -119,15 +119,7 @@ private struct AccountListRow: View {
 
     private var color: Color { Color(hex: account.colorHex) }
 
-    /// The label for the balance line varies by account kind to reflect
-    /// what the number actually means.
-    private var balanceLabel: String {
-        switch account.kind {
-        case .creditCard: return "Outstanding"
-        case .cash: return "On hand"
-        case .bank, .wallet: return "Net flow"
-        }
-    }
+    private var balanceLabel: String { account.displayLabel }
 
     var body: some View {
         HStack(spacing: Spacing.md) {
@@ -151,7 +143,7 @@ private struct AccountListRow: View {
             Spacer()
 
             VStack(alignment: .trailing, spacing: 2) {
-                Text(Currency.format(account.derivedBalance, code: currencyCode))
+                Text(Currency.format(account.displayAmount, code: currencyCode))
                     .font(.subheadline.weight(.semibold))
                     .monospacedDigit()
                 Image(systemName: "chevron.right")

@@ -399,19 +399,8 @@ struct StatsView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(Spacing.lg)
-        .background(
-            RoundedRectangle(cornerRadius: CornerRadius.large, style: .continuous)
-                .fill(
-                    LinearGradient(
-                        colors: [
-                            Color.tulaBrandFallback.opacity(0.12),
-                            Color.tulaBrandFallback.opacity(0.04)
-                        ],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                )
-        )
+        .compositingGroup()
+        .tulaHeroSurface(cornerRadius: CornerRadius.large)
         .contentShape(Rectangle())
         .gesture(
             DragGesture(minimumDistance: 40)

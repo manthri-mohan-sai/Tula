@@ -844,25 +844,8 @@ struct HomeView: View {
                 .padding(.vertical, Spacing.md - 2)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(
-                ZStack {
-                    // Opaque base so the card has visible "mass" for shadows.
-                    RoundedRectangle(cornerRadius: CornerRadius.large, style: .continuous)
-                        .fill(Color(.systemBackground))
-                    // Brand gradient overlay on top of the opaque base.
-                    RoundedRectangle(cornerRadius: CornerRadius.large, style: .continuous)
-                        .fill(
-                            LinearGradient(
-                                colors: [
-                                    Color.tulaBrandFallback.opacity(0.08),
-                                    Color.tulaBrandFallback.opacity(0.02)
-                                ],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
-                        )
-                }
-            )
+            .compositingGroup()
+            .tulaHeroSurface(cornerRadius: CornerRadius.large)
             .clipShape(RoundedRectangle(cornerRadius: CornerRadius.large, style: .continuous))
             .scaleEffect(heroTapPulse ? 1.02 : 1.0)
             .animation(.spring(response: 0.35, dampingFraction: 0.6), value: heroTapPulse)

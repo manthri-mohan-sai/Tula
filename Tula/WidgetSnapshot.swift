@@ -104,11 +104,14 @@ struct WidgetSnapshot: Codable, Equatable {
         var percentage: Double
     }
 
+
+
     init(currencyCode: String, todayTotal: Double, monthTotal: Double,
          monthlyBudgetCap: Double, topBudgets: [Entry], dailyTotals: [Double],
          upcomingRecurrings: [UpcomingRecurring], categoryBreakdown: [CategorySpend],
          lastMonthTotal: Double, lastMonthSameDayTotal: Double = 0,
-         lastMonthTillDayTotal: Double = 0, generatedAt: Date) {
+         lastMonthTillDayTotal: Double = 0,
+         generatedAt: Date) {
         self.currencyCode = currencyCode
         self.todayTotal = todayTotal
         self.monthTotal = monthTotal
@@ -204,3 +207,4 @@ enum WidgetStorage {
         return snapshot
     }
 }
+

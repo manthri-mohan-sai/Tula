@@ -73,6 +73,31 @@ enum AppAnimation {
 
     /// Press feedback — subtle scale + opacity on tap.
     static let press: Animation = .spring(response: 0.18, dampingFraction: 0.7)
+
+    /// True when the user has enabled Settings → Accessibility → Reduce Motion.
+    /// Cached per process — the value doesn't change while the app is running.
+    /// `nonisolated(unsafe)` because the value is set once at process start
+    /// and never mutated — safe to read from any isolation context.
+    nonisolated(unsafe) static let reduceMotion: Bool = UIAccessibility.isReduceMotionEnabled
+
+    /// Returns a minimal crossfade when Reduce Motion is on, otherwise the
+    /// full spring. Every `withAnimation(AppAnimation.adaptive(.bouncy))`
+    /// call automatically respects the setting with zero per-site logic.
+    static func adaptive(_ animation: Animation) -> Animation {
+        reduceMotion ? .easeInOut(duration: 0.15) : animation
+    }
+}
+
+// MARK: - Reduce Motion View Modifier
+
+/// Conditionally applies an animation only when Reduce Motion is off.
+/// When Reduce Motion is on, the content transition is instant (no
+/// animation at all) or uses a minimal crossfade.
+extension View {
+    /// Wraps `.animation(_:value:)` with a Reduce Motion check.
+    func motionSafeAnimation<V: Equatable>(_ animation: Animation, value: V) -> some View {
+        self.animation(AppAnimation.reduceMotion ? nil : animation, value: value)
+    }
 }
 
 // MARK: - Liquid Glass
@@ -116,6 +141,25 @@ struct LiquidGlass: ViewModifier {
 extension View {
     func tulaGlass(cornerRadius: CGFloat = CornerRadius.medium) -> some View {
         modifier(LiquidGlass(cornerRadius: cornerRadius))
+    }
+
+    /// Hero card surface — Liquid Glass on iOS 26, standard card background
+    /// on older systems. Use this for top-level summary cards (HomeView
+    /// hero, StatsView hero, OverallBudgetCard) to get glass when available
+    /// without breaking the existing look on older iOS.
+    @ViewBuilder
+    func tulaHeroSurface(cornerRadius: CGFloat = CornerRadius.large) -> some View {
+        if #available(iOS 26.0, *) {
+            self.glassEffect(
+                .regular,
+                in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+            )
+        } else {
+            self.background(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(Color.tulaCardSurface)
+            )
+        }
     }
 }
 
@@ -194,9 +238,9 @@ struct PressableScaleStyle: ButtonStyle {
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .scaleEffect(configuration.isPressed ? scale : 1)
+            .scaleEffect(AppAnimation.reduceMotion ? 1 : (configuration.isPressed ? scale : 1))
             .opacity(configuration.isPressed ? 0.85 : 1)
-            .animation(AppAnimation.press, value: configuration.isPressed)
+            .animation(AppAnimation.reduceMotion ? nil : AppAnimation.press, value: configuration.isPressed)
     }
 }
 

@@ -32,6 +32,8 @@ struct SwipeActionRow<Content: View>: View {
         // Critical for clean swipes inside scroll containers — the parent's
         // shape gets passed down so action buttons clip cleanly.
         .contentShape(Rectangle())
+        .accessibilityAction(named: "Edit") { onEdit() }
+        .accessibilityAction(named: "Delete") { onDelete() }
     }
 
     // MARK: - Background actions
@@ -77,6 +79,8 @@ struct SwipeActionRow<Content: View>: View {
         .foregroundStyle(.white)
         .frame(width: actionWidth)
         .frame(maxHeight: .infinity)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(title)
     }
 
     // MARK: - Foreground content

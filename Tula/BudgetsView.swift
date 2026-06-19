@@ -22,9 +22,6 @@ struct BudgetsView: View {
     @State private var showingAddBudget   = false
     @State private var showingOverallEdit = false
     @State private var editingBudget: Budget?
-    @State private var selectedTab: BudgetTab = .overall
-
-    private enum BudgetTab { case overall, category }
 
     // MARK: - Derived
 
@@ -140,22 +137,56 @@ struct BudgetsView: View {
     // MARK: - Body
 
     var body: some View {
-        VStack(spacing: 0) {
-            // Segmented tab picker
-            Picker("Budget View", selection: $selectedTab) {
-                Text("Overall").tag(BudgetTab.overall)
-                Text("Category").tag(BudgetTab.category)
-            }
-            .pickerStyle(.segmented)
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
+        ScrollView {
+            VStack(alignment: .leading, spacing: Spacing.lg) {
+                // Overall summary — always visible as the hero card
+                OverallBudgetCard(
+                    categoryBudgets:   allCategoryBudgets,
+                    overallBudget:     overallBudget,
+                    monthlyEquivalent: monthlyEquivalent,
+                    displayTotal:      overallDisplayTotal,
+                    uncategorized:     uncategorizedAmount,
+                    totalMonthlySpent: totalMonthlySpent,
+                    expenses:          expenses,
+                    currencyCode:      currencyCode
+                ) {
+                    showingOverallEdit = true
+                }
 
-            // Tab content
-            if selectedTab == .overall {
-                overallTab
-            } else {
-                categoryTab
+                // Category budgets
+                if sectionedBudgets.isEmpty {
+                    categoryEmptyPrompt
+                } else {
+                    budgetCallout
+
+                    ForEach(sectionedBudgets, id: \.period) { section in
+                        VStack(alignment: .leading, spacing: 14) {
+                            Text(section.period.displayName)
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                                .padding(.horizontal, 4)
+
+                            ForEach(section.budgets) { budget in
+                                NavigationLink {
+                                    BudgetTransactionsView(
+                                        budget: budget,
+                                        expenses: expenses,
+                                        currencyCode: currencyCode
+                                    )
+                                } label: {
+                                    BudgetCard(budget: budget,
+                                               expenses: expenses,
+                                               currencyCode: currencyCode)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                    }
+                }
             }
+            .padding(.horizontal, 16)
+            .padding(.top, Spacing.sm)
+            .padding(.bottom, Spacing.lg)
         }
         .background {
             VStack(spacing: 0) {
@@ -197,69 +228,6 @@ struct BudgetsView: View {
         .sheet(item: $editingBudget) { b in
             BudgetFormView(existingBudget: b,
                            categoryAutoTotal: categoryMonthlySum)
-        }
-    }
-
-    // MARK: - Overall tab
-
-    private var overallTab: some View {
-        ScrollView {
-            OverallBudgetCard(
-                categoryBudgets:   allCategoryBudgets,
-                overallBudget:     overallBudget,
-                monthlyEquivalent: monthlyEquivalent,
-                displayTotal:      overallDisplayTotal,
-                uncategorized:     uncategorizedAmount,
-                totalMonthlySpent: totalMonthlySpent,
-                expenses:          expenses,
-                currencyCode:      currencyCode
-            ) {
-                showingOverallEdit = true
-            }
-            .padding(.horizontal, 16)
-            .padding(.top, 8)
-            .padding(.bottom, 20)
-        }
-    }
-
-    // MARK: - Category tab
-
-    private var categoryTab: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                if sectionedBudgets.isEmpty {
-                    categoryEmptyPrompt
-                } else {
-                    budgetCallout
-
-                    ForEach(sectionedBudgets, id: \.period) { section in
-                        VStack(alignment: .leading, spacing: 14) {
-                            Text(section.period.displayName)
-                                .font(.subheadline.weight(.semibold))
-                                .foregroundStyle(.secondary)
-                                .padding(.horizontal, 4)
-
-                            ForEach(section.budgets) { budget in
-                                NavigationLink {
-                                    BudgetTransactionsView(
-                                        budget: budget,
-                                        expenses: expenses,
-                                        currencyCode: currencyCode
-                                    )
-                                } label: {
-                                    BudgetCard(budget: budget,
-                                               expenses: expenses,
-                                               currencyCode: currencyCode)
-                                }
-                                .buttonStyle(.plain)
-                            }
-                        }
-                    }
-                }
-            }
-            .padding(.horizontal, 16)
-            .padding(.top, 8)
-            .padding(.bottom, 20)
         }
     }
 
@@ -414,10 +382,8 @@ struct OverallBudgetCard: View {
             }
         }
         .padding(16)
-        .background(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(Color.tulaCardSurface)
-        )
+        .compositingGroup()
+        .tulaHeroSurface(cornerRadius: 16)
     }
 
     // MARK: - Header
@@ -573,7 +539,7 @@ struct OverallBudgetCard: View {
 
     // MARK: - Stacked Bar + Legend (iCloud-style)
 
-    @State private var barAnimated = false
+    @State private var barAnimated = true
 
     private var spentSortedBudgets: [Budget] {
         categoryBudgets
@@ -617,11 +583,6 @@ struct OverallBudgetCard: View {
                     .fill(Color(uiColor: .tertiarySystemFill))
             )
             .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-            .onAppear {
-                withAnimation(.spring(response: 0.65, dampingFraction: 0.82).delay(0.15)) {
-                    barAnimated = true
-                }
-            }
 
             let columns = [GridItem(.flexible(), alignment: .leading),
                            GridItem(.flexible(), alignment: .leading)]
