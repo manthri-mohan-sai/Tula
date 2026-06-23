@@ -53,6 +53,57 @@ enum CornerRadius {
     static let xLarge: CGFloat = 28        // sheets, large containers
 }
 
+// MARK: - Adaptive Layout
+
+/// iPad-aware layout constants. On compact (iPhone, iPad Slide Over),
+/// content fills as before. On regular (iPad full-screen, large split),
+/// content is constrained to a comfortable reading width and centered.
+enum AdaptiveLayout {
+    /// Maximum content width for main scrollable areas.
+    /// ~58% of iPad Pro 12.9" landscape, ~78% portrait.
+    static let maxContentWidth: CGFloat = 800
+
+    /// Whether the device is an iPad, regardless of size class.
+    /// Useful inside sheets where `horizontalSizeClass` is compact
+    /// even on iPad.
+    static let isIPad: Bool = UIDevice.current.userInterfaceIdiom == .pad
+
+    /// Category grid columns: 4 on iPhone, 6 on iPad.
+    /// Uses device idiom (not size class) so it works correctly
+    /// inside sheets where iPad has compact size class.
+    static func categoryGridColumns(isRegular: Bool) -> Int {
+        (isRegular || isIPad) ? 6 : 4
+    }
+}
+
+/// Constrains content to `AdaptiveLayout.maxContentWidth` on regular
+/// horizontal size class, centering it. On compact, applies standard
+/// horizontal padding unchanged.
+struct AdaptiveContentWidth: ViewModifier {
+    @Environment(\.horizontalSizeClass) private var sizeClass
+    var compactPadding: CGFloat = Spacing.xl
+
+    func body(content: Content) -> some View {
+        if sizeClass == .regular {
+            content
+                .frame(maxWidth: AdaptiveLayout.maxContentWidth, alignment: .leading)
+                .frame(maxWidth: .infinity)
+                .padding(.horizontal, Spacing.xxl)
+        } else {
+            content
+                .padding(.horizontal, compactPadding)
+        }
+    }
+}
+
+extension View {
+    /// Constrains width to a comfortable reading size on iPad,
+    /// preserving full-width layout on iPhone.
+    func adaptiveContentWidth(compactPadding: CGFloat = Spacing.xl) -> some View {
+        modifier(AdaptiveContentWidth(compactPadding: compactPadding))
+    }
+}
+
 // MARK: - Physics Animations
 
 /// Tuned per interaction context — same defaults always look generic.
@@ -308,3 +359,62 @@ enum SFSymbols {
         return "sparkles"
     }
 }
+// MARK: - Time-of-Day Ambience
+
+/// Computes a color temperature shift based on the hour of day. Morning
+/// light is warm and golden; evening shifts cooler. Applied to the home
+/// glow so the app feels subtly alive — different each time you open it.
+enum TimeAmbience {
+    struct Tint {
+        let hueShift: Double          // added to hue (0-1 range)
+        let saturationShift: Double
+        let brightnessShift: Double
+        let opacityMultiplier: Double // glow opacity scale
+    }
+
+    static func current(at date: Date = .now) -> Tint {
+        let hour = Calendar.current.component(.hour, from: date)
+        switch hour {
+        case 5..<10:  return Tint(hueShift: 0.03, saturationShift: 0.05,
+                                  brightnessShift: 0.08, opacityMultiplier: 1.1)
+        case 10..<16: return Tint(hueShift: 0, saturationShift: 0,
+                                  brightnessShift: 0, opacityMultiplier: 1.0)
+        case 16..<20: return Tint(hueShift: -0.02, saturationShift: 0.05,
+                                  brightnessShift: -0.03, opacityMultiplier: 0.95)
+        default:      return Tint(hueShift: -0.04, saturationShift: 0.08,
+                                  brightnessShift: -0.06, opacityMultiplier: 0.88)
+        }
+    }
+
+    /// Applies the ambient tint to a color via HSB transform.
+    static func apply(_ tint: Tint, to color: Color) -> Color {
+        var h: CGFloat = 0, s: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        UIColor(color).getHue(&h, saturation: &s, brightness: &b, alpha: &a)
+        return Color(
+            hue: fmod(Double(h) + tint.hueShift + 1.0, 1.0),
+            saturation: min(max(Double(s) + tint.saturationShift, 0), 1),
+            brightness: min(max(Double(b) + tint.brightnessShift, 0), 1)
+        )
+    }
+}
+
+// MARK: - Spending Velocity
+
+/// Computes a drift speed multiplier based on today's spending intensity.
+/// Heavy spending → faster glow drift (more energetic). Quiet day →
+/// slower drift (calmer). The home glow literally breathes with your habits.
+enum SpendingVelocity {
+    /// Returns a multiplier for drift animation durations.
+    /// - 1.0 = normal pace
+    /// - <1.0 = faster (heavy spending day, 2x+ daily average)
+    /// - >1.0 = slower (quiet day, near zero spending)
+    static func driftMultiplier(todayTotal: Double, monthAvgPerDay: Double) -> Double {
+        guard monthAvgPerDay > 0 else { return 1.0 }
+        let ratio = todayTotal / monthAvgPerDay
+        if ratio >= 2.0 { return 0.6 }
+        if ratio <= 0.1 { return 1.4 }
+        // Linear: ratio 0.1→2.0 maps to 1.4→0.6
+        return 1.4 - (ratio - 0.1) * (0.8 / 1.9)
+    }
+}
+

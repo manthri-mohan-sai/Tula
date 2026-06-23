@@ -269,7 +269,6 @@ struct LaunchAnimationView: View {
         withAnimation(.spring(response: 1.0, dampingFraction: 0.82).delay(2.46)) {
             portalRadius = 1500
         }
-
         // 3.50s — Hand off.
         DispatchQueue.main.asyncAfter(deadline: .now() + 3.50) {
             onComplete()

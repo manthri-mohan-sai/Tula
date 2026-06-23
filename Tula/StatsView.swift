@@ -58,6 +58,9 @@ struct StatsView: View {
     /// Drives the staggered fill animation for category proportion bars.
     @State private var categoryBarsAppeared: Bool = false
 
+    /// Day Story — long-press on a chart point to see that day's narrative.
+    @State private var dayStoryDate: Date?
+
     // MARK: - Period Math
 
     /// Returns the date range for the current period at the current offset.
@@ -292,7 +295,7 @@ struct StatsView: View {
                         emptyState
                     }
                 }
-                .padding(.horizontal, Spacing.md)
+                .adaptiveContentWidth(compactPadding: Spacing.md)
                 .padding(.top, Spacing.md)
                 .padding(.bottom, Spacing.lg)
             }
@@ -344,7 +347,113 @@ struct StatsView: View {
                     }
                 }
             }
+            .sheet(isPresented: Binding(
+                get: { dayStoryDate != nil },
+                set: { if !$0 { dayStoryDate = nil } }
+            )) {
+                if let date = dayStoryDate {
+                    dayStorySheet(for: date)
+                }
+            }
         }
+    }
+
+    // MARK: - Day Story
+
+    /// Long-press on a chart point to see that day's narrative — a
+    /// mini-summary of what happened that day.
+    private func dayStorySheet(for date: Date) -> some View {
+        let cal = Calendar.current
+        let isMonthly = period == .sixMonths
+        let start = isMonthly ? cal.dateInterval(of: .month, for: date)?.start ?? date : cal.startOfDay(for: date)
+        let end = isMonthly
+            ? (cal.date(byAdding: .month, value: 1, to: start) ?? start)
+            : (cal.date(byAdding: .day, value: 1, to: start) ?? start)
+        let dayExpenses = rangeExpenses
+            .filter { $0.date >= start && $0.date < end }
+            .sorted { $0.amount > $1.amount }
+        let total = dayExpenses.reduce(0) { $0 + $1.amount }
+        let biggest = dayExpenses.first
+
+        let dateLabel: String = isMonthly
+            ? date.formatted(.dateTime.month(.wide).year())
+            : date.formatted(.dateTime.weekday(.wide).day().month(.abbreviated))
+        let narrative: String = {
+            let count = dayExpenses.count
+            if count == 0 { return "No spending recorded." }
+            var text = "\(count) expense\(count == 1 ? "" : "s")"
+            if let big = biggest, count > 1 {
+                text += ", biggest was \(Currency.format(big.amount, code: currencyCode))"
+                if let merchant = big.merchant, !merchant.isEmpty {
+                    text += " at \(merchant)"
+                }
+            }
+            return text
+        }()
+
+        return NavigationStack {
+            List {
+                Section {
+                    VStack(alignment: .leading, spacing: Spacing.sm) {
+                        Text(narrative)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                        HStack {
+                            Text("Total")
+                                .font(.subheadline.weight(.medium))
+                            Spacer()
+                            Text(Currency.format(total, code: currencyCode))
+                                .font(.title3.weight(.bold))
+                                .monospacedDigit()
+                                .foregroundStyle(Color.tulaBrandFallback)
+                        }
+                    }
+                }
+                Section("Top Expenses") {
+                    ForEach(dayExpenses.prefix(5)) { expense in
+                        HStack(spacing: Spacing.md) {
+                            let catColor = Color(hex: expense.category?.colorHex ?? "#888888")
+                            ZStack {
+                                Circle()
+                                    .fill(catColor.opacity(0.18))
+                                    .frame(width: 32, height: 32)
+                                Image(systemName: expense.category?.iconKey ?? "questionmark.circle")
+                                    .font(.caption.weight(.medium))
+                                    .foregroundStyle(catColor)
+                            }
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(expense.merchant ?? expense.category?.name ?? "Expense")
+                                    .font(.subheadline.weight(.medium))
+                                    .lineLimit(1)
+                                if let cat = expense.category {
+                                    Text(cat.name)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            Spacer()
+                            Text(Currency.format(expense.amount, code: currencyCode))
+                                .font(.subheadline.weight(.semibold))
+                                .monospacedDigit()
+                        }
+                    }
+                    if dayExpenses.isEmpty {
+                        Text("No expenses")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .navigationTitle(dateLabel)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Done") { dayStoryDate = nil }
+                }
+            }
+        }
+        .presentationDetents([.medium])
+        .presentationDragIndicator(.visible)
     }
 
     // MARK: - Period Picker
@@ -792,6 +901,10 @@ struct StatsView: View {
                         }
                         .buttonStyle(.plain)
                         .transition(.move(edge: .top).combined(with: .opacity))
+                        .onLongPressGesture(minimumDuration: 0.5) {
+                            Haptics.impact()
+                            dayStoryDate = point.label
+                        }
                     }
                 }
             }
@@ -827,7 +940,7 @@ struct StatsView: View {
                 )
                 .foregroundStyle(
                     LinearGradient(
-                        colors: [Color.tulaBrandFallback.opacity(0.45),
+                        colors: [Color.tulaBrandFallback.opacity(0.55),
                                  Color.tulaBrandFallback.opacity(0.04)],
                         startPoint: .top,
                         endPoint: .bottom
@@ -840,7 +953,7 @@ struct StatsView: View {
                     y: .value("Spent", item.total)
                 )
                 .foregroundStyle(Color.tulaBrandFallback)
-                .lineStyle(StrokeStyle(lineWidth: 2.5, lineCap: .round))
+                .lineStyle(StrokeStyle(lineWidth: 3.0, lineCap: .round))
                 .interpolationMethod(.monotone)
 
                 // Zero-spend day marker — small dot on the axis so
@@ -908,6 +1021,8 @@ struct StatsView: View {
         // ₹5K) and we burn half the chart on empty space.
         .chartYScale(domain: 0...chartYMax)
         .frame(height: 220)
+        .shadow(color: Color.tulaBrandFallback.opacity(0.25), radius: 6, y: 3)
+        .animation(AppAnimation.gentle, value: periodOffset)
     }
 
     /// Y-axis upper bound. 15% headroom above the data peak so the line
@@ -968,15 +1083,39 @@ struct StatsView: View {
         return chartData.min(by: { abs($0.label.timeIntervalSince(date)) < abs($1.label.timeIntervalSince(date)) })
     }
 
+    /// Top-spending category color for each bar chart data point (6-month view).
+    /// Finds the category with the highest total in each month's date range.
+    private func barColorForDate(_ date: Date) -> Color {
+        let cal = Calendar.current
+        let next = cal.date(byAdding: .month, value: 1, to: date) ?? date
+        let monthExpenses = rangeExpenses.filter { $0.date >= date && $0.date < next }
+        var categoryTotals: [String: Double] = [:]
+        for expense in monthExpenses {
+            let hex = expense.category?.colorHex ?? "#888888"
+            categoryTotals[hex, default: 0] += expense.amount
+        }
+        guard let topHex = categoryTotals.max(by: { $0.value < $1.value })?.key else {
+            return Color.tulaBrandFallback
+        }
+        return Color(hex: topHex)
+    }
+
     private var barChart: some View {
         Chart {
             ForEach(chartData, id: \.label) { item in
+                let catColor = barColorForDate(item.label)
                 BarMark(
                     x: .value("Month", item.label, unit: .month),
                     y: .value("Spent", item.total),
                     width: .ratio(0.6)
                 )
-                .foregroundStyle(Color.tulaBrandFallback.gradient)
+                .foregroundStyle(
+                    LinearGradient(
+                        colors: [catColor, catColor.opacity(0.6)],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
                 .cornerRadius(6)
             }
 
@@ -1018,6 +1157,7 @@ struct StatsView: View {
         .chartXSelection(value: $chartSelectedDate)
         .chartYScale(domain: 0...chartYMax)
         .frame(height: 220)
+        .animation(AppAnimation.gentle, value: periodOffset)
     }
 
     // MARK: - Spending Calendar
@@ -1726,14 +1866,8 @@ struct StatsView: View {
 
     private var emptyState: some View {
         VStack(spacing: Spacing.md) {
-            ZStack {
-                Circle()
-                    .fill(Color.tulaBrandFallback.opacity(0.10))
-                    .frame(width: 64, height: 64)
-                Image(systemName: "chart.line.uptrend.xyaxis")
-                    .font(.title)
-                    .foregroundStyle(Color.tulaBrandFallback)
-            }
+            TulaBalanceView(tilt: 0, breathing: true, scale: 0.7)
+                .frame(height: 60)
             VStack(spacing: 4) {
                 Text("Nothing to show yet")
                     .font(.subheadline.weight(.semibold))

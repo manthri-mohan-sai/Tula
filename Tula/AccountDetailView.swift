@@ -14,23 +14,68 @@ struct AccountDetailView: View {
     @State private var showingTopUp = false
     @State private var showingEditAccount = false
     @State private var editingExpense: Expense?
+    @State private var timelineScope: TimelineScope = .thisMonth
+    @State private var timelineSort: TimelineSort = .dateNewest
+
+    enum TimelineScope: String, CaseIterable {
+        case thisMonth = "This Month"
+        case lastMonth = "Last Month"
+        case all = "All Time"
+    }
+
+    enum TimelineSort: String, CaseIterable {
+        case dateNewest = "Newest First"
+        case dateOldest = "Oldest First"
+        case amountHighest = "Highest Amount"
+        case amountLowest = "Lowest Amount"
+    }
 
     private var color: Color { Color(hex: account.colorHex) }
 
-    /// Combined timeline of activity on this account, expenses and transfers
-    /// merged and sorted by date.
+    /// Date window for the selected scope. nil = all time.
+    private var scopeWindow: DateInterval? {
+        let cal = Calendar.current
+        switch timelineScope {
+        case .thisMonth:
+            return cal.dateInterval(of: .month, for: .now)
+        case .lastMonth:
+            guard let lastMonth = cal.date(byAdding: .month, value: -1, to: .now) else { return nil }
+            return cal.dateInterval(of: .month, for: lastMonth)
+        case .all:
+            return nil
+        }
+    }
+
+    /// Combined timeline of activity on this account, filtered by scope.
     private var timeline: [TimelineItem] {
         var items: [TimelineItem] = []
+        let window = scopeWindow
         for expense in account.expenses {
+            if let w = window, expense.date < w.start || expense.date >= w.end { continue }
             items.append(.expense(expense))
         }
         for transfer in account.outgoingTransfers {
+            if let w = window, transfer.date < w.start || transfer.date >= w.end { continue }
             items.append(.transferOut(transfer))
         }
         for transfer in account.incomingTransfers {
+            if let w = window, transfer.date < w.start || transfer.date >= w.end { continue }
             items.append(.transferIn(transfer))
         }
-        return items.sorted { $0.date > $1.date }
+        switch timelineSort {
+        case .dateNewest:    return items.sorted { $0.date > $1.date }
+        case .dateOldest:    return items.sorted { $0.date < $1.date }
+        case .amountHighest: return items.sorted { $0.amount > $1.amount }
+        case .amountLowest:  return items.sorted { $0.amount < $1.amount }
+        }
+    }
+
+    /// Total spending for displayed expenses.
+    private var timelineSpent: Double {
+        timeline.compactMap {
+            if case .expense(let e) = $0 { return e.amount }
+            return nil
+        }.reduce(0, +)
     }
 
     private var balanceLabel: String { account.displayLabel }
@@ -245,8 +290,48 @@ struct AccountDetailView: View {
     // MARK: - Timeline
 
     private var timelineSection: some View {
-        VStack(alignment: .leading, spacing: Spacing.sm) {
-            SectionHeader(title: "Activity")
+        VStack(alignment: .leading, spacing: Spacing.md) {
+            // Segmented scope picker — native iOS pattern
+            Picker("Period", selection: $timelineScope.animation(AppAnimation.snappy)) {
+                ForEach(TimelineScope.allCases, id: \.self) { scope in
+                    Text(scope.rawValue).tag(scope)
+                }
+            }
+            .pickerStyle(.segmented)
+
+            // Summary + sort row
+            HStack {
+                if !timeline.isEmpty {
+                    Text("\(timeline.count) transaction\(timeline.count == 1 ? "" : "s") · \(Currency.format(timelineSpent, code: currencyCode))")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                } else {
+                    Spacer()
+                }
+
+                Spacer()
+
+                Menu {
+                    ForEach(TimelineSort.allCases, id: \.self) { sort in
+                        Button {
+                            withAnimation(AppAnimation.snappy) {
+                                timelineSort = sort
+                            }
+                        } label: {
+                            if sort == timelineSort {
+                                Label(sort.rawValue, systemImage: "checkmark")
+                            } else {
+                                Text(sort.rawValue)
+                            }
+                        }
+                    }
+                } label: {
+                    Label("Sort", systemImage: "arrow.up.arrow.down")
+                        .font(.footnote.weight(.medium))
+                        .foregroundStyle(.primary)
+                }
+            }
 
             if timeline.isEmpty {
                 emptyTimeline
@@ -293,7 +378,7 @@ struct AccountDetailView: View {
             Image(systemName: "tray")
                 .font(.title)
                 .foregroundStyle(.tertiary)
-            Text("No activity yet")
+            Text(timelineScope == .all ? "No activity yet" : "No activity \(timelineScope.rawValue.lowercased())")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
         }
@@ -326,6 +411,14 @@ enum TimelineItem: Identifiable {
         case .expense(let e): return e.date
         case .transferIn(let t): return t.date
         case .transferOut(let t): return t.date
+        }
+    }
+
+    var amount: Double {
+        switch self {
+        case .expense(let e): return e.amount
+        case .transferIn(let t): return t.amount
+        case .transferOut(let t): return t.amount
         }
     }
 }

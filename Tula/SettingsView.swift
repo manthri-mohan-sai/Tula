@@ -243,6 +243,7 @@ struct SettingsView: View {
             Toggle(isOn: $launchAnimationEnabled) {
                 settingsLabel("Launch Animation", icon: "sparkles", color: Color.tulaBrandFallback)
             }
+
         } header: {
             Text("General")
         }

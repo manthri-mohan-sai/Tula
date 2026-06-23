@@ -110,14 +110,21 @@ final class SpeechRecognizer: ObservableObject {
             return
         }
 
-        // Audio + haptic cue: must fire BEFORE the audio session moves
-        // to `.measurement` mode for recording. Once that mode is active,
-        // `AudioServicesPlaySystemSound` is suppressed (or attenuated to
-        // near-inaudible), so playing the start tone after `setCategory`
-        // would silently no-op. Order here is intentional.
-        SoundEffects.voiceStart()
+        // Play the start tone and wait for it to finish before touching
+        // the audio session. Switching to `.playAndRecord` / `.measurement`
+        // while the system sound is mid-play silences it — the completion
+        // handler ensures the full tone is audible.
         Haptics.tap()
+        SoundEffects.voiceStart { [weak self] in
+            self?.beginRecordingSession()
+        }
+    }
 
+    /// Configures the audio session, installs the mic tap, and starts
+    /// the recognition task. Called from the `voiceStart` completion
+    /// handler so the start tone has finished playing before we switch
+    /// the audio session to recording mode.
+    private func beginRecordingSession() {
         let audioSession = AVAudioSession.sharedInstance()
         do {
             try audioSession.setCategory(.playAndRecord, mode: .measurement, options: .duckOthers)
@@ -130,11 +137,6 @@ final class SpeechRecognizer: ObservableObject {
         let inputNode = audioEngine.inputNode
         let recordingFormat = inputNode.outputFormat(forBus: 0)
 
-        // Audio tap reads `recognitionRequest` lazily on each invocation —
-        // so when we swap to a new request mid-session (pause restart),
-        // the tap automatically routes buffers to the new request without
-        // needing to re-install. Keeps the audio engine running continuously
-        // across recognition-task restarts.
         inputNode.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { [weak self] buffer, _ in
             self?.recognitionRequest?.append(buffer)
         }

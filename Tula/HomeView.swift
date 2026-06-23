@@ -34,15 +34,17 @@ struct LogConfirmationItem: Identifiable {
     let accountName: String?
     let accountIcon: String?
     let accountColor: Color?
+    /// Predicted amount from SmartAmountPredictor (may differ from rule.amount).
+    let predictionHint: String
 
-    init(rule: RecurringRule, date: Date) {
+    init(rule: RecurringRule, date: Date, prediction: SmartAmountPredictor.Prediction? = nil) {
         self.rule = rule
         self.date = date
         self.ruleName = rule.name
         self.iconName = rule.category?.iconKey ?? "arrow.clockwise"
         self.iconColor = Color(hex: rule.category?.colorHex ?? "#D97706")
         self.cadenceLabel = rule.cadenceLabel
-        self.amount = rule.amount
+        self.amount = prediction?.amount ?? rule.amount
         self.isVariable = rule.isVariable
         self.categoryName = rule.category?.name
         self.categoryIcon = rule.category?.iconKey
@@ -50,6 +52,7 @@ struct LogConfirmationItem: Identifiable {
         self.accountName = rule.account?.name
         self.accountIcon = rule.account?.iconKey
         self.accountColor = rule.account.map { Color(hex: $0.colorHex) }
+        self.predictionHint = prediction?.hint(ruleAmount: rule.amount) ?? ""
     }
 }
 
@@ -104,6 +107,8 @@ struct HomeView: View {
     /// Brief brightness pulse during color transitions — glow "breathes"
     /// as it shifts, then settles.
     @State private var glowPulse: Bool = false
+    /// Time-of-day color temperature — warm mornings, cool evenings.
+    @State private var ambientTint: TimeAmbience.Tint = TimeAmbience.current()
 
     @State private var expandedStacks: Set<String> = []
     /// Caches for RecurringEngine results. `nextDueDate` and `overdueDates`
@@ -113,6 +118,7 @@ struct HomeView: View {
     /// (isPaused, isRuleFulfilled, dismissedKeys) still runs per-render.
     @State private var cachedNextDueDates: [UUID: Date] = [:]
     @State private var cachedOverdueDates: [UUID: [Date]] = [:]
+    @State private var cachedPredictions: [UUID: SmartAmountPredictor.Prediction] = [:]
     private var networkMonitor = NetworkMonitor.shared
 
     @AppStorage("lastUsedAccountID") private var lastUsedAccountID: String = ""
@@ -141,6 +147,14 @@ struct HomeView: View {
 
     private var totalToday: Double {
         todaysExpenses.reduce(0) { $0 + $1.amount }
+    }
+
+    /// Drift speed multiplier — heavy spending days feel energetic (faster
+    /// glow drift), quiet days feel calmer (slower drift).
+    private var driftSpeedMultiplier: Double {
+        let dayOfMonth = max(1, Double(Calendar.current.component(.day, from: .now)))
+        let avgPerDay = totalThisMonth / dayOfMonth
+        return SpendingVelocity.driftMultiplier(todayTotal: totalToday, monthAvgPerDay: avgPerDay)
     }
 
     /// Accent color for the page gradient — top-spending category this month,
@@ -430,7 +444,7 @@ struct HomeView: View {
                     .fill(glowColor)
                     .frame(width: w * 0.85, height: w * 0.85)
                     .blur(radius: w * 0.32)
-                    .opacity(glowPulse ? 0.42 : 0.28)
+                    .opacity((glowPulse ? 0.42 : 0.28) * ambientTint.opacityMultiplier)
                     .scaleEffect(drift3 ? 1.05 : 0.96)
                     .position(
                         x: w * 0.5 + (drift1 ? 16 : -16) + (drift2 ? -7 : 7),
@@ -443,7 +457,7 @@ struct HomeView: View {
                     .fill(glowColor)
                     .frame(width: w * 0.5, height: w * 0.5)
                     .blur(radius: w * 0.2)
-                    .opacity(glowPulse ? 0.22 : 0.14)
+                    .opacity((glowPulse ? 0.22 : 0.14) * ambientTint.opacityMultiplier)
                     .scaleEffect(drift1 ? 1.04 : 0.94)
                     .position(
                         x: w * 0.32 + (drift2 ? 10 : -10) + (drift3 ? -5 : 5),
@@ -455,14 +469,16 @@ struct HomeView: View {
         .accessibilityHidden(true)
         .onTapGesture { hideKeyboard() }
         .onAppear {
-            glowColor = pageAccentColor
-            withAnimation(.easeInOut(duration: 8).repeatForever(autoreverses: true)) {
+            ambientTint = TimeAmbience.current()
+            glowColor = TimeAmbience.apply(ambientTint, to: pageAccentColor)
+            let m = driftSpeedMultiplier
+            withAnimation(.easeInOut(duration: 8 * m).repeatForever(autoreverses: true)) {
                 drift1 = true
             }
-            withAnimation(.easeInOut(duration: 11).repeatForever(autoreverses: true)) {
+            withAnimation(.easeInOut(duration: 11 * m).repeatForever(autoreverses: true)) {
                 drift2 = true
             }
-            withAnimation(.easeInOut(duration: 14).repeatForever(autoreverses: true)) {
+            withAnimation(.easeInOut(duration: 14 * m).repeatForever(autoreverses: true)) {
                 drift3 = true
             }
         }
@@ -471,9 +487,9 @@ struct HomeView: View {
             withAnimation(.easeOut(duration: 0.4)) {
                 glowPulse = true
             }
-            // 2. Slowly shift to the new color
+            // 2. Slowly shift to the new color (with time-of-day tint)
             withAnimation(.spring(duration: 2.5, bounce: 0.05)) {
-                glowColor = pageAccentColor
+                glowColor = TimeAmbience.apply(ambientTint, to: pageAccentColor)
             }
             // 3. Settle brightness — glow exhales
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
@@ -492,6 +508,10 @@ struct HomeView: View {
 
     private var mainScrollView: some View {
         mainScrollViewCore
+            .onReceive(NotificationCenter.default.publisher(for: .tulaExpenseSaved)) { _ in
+                showToast("Expense saved")
+            }
+            .sensoryFeedback(.impact(flexibility: .solid, intensity: 0.6), trigger: editingExpense)
             .sheet(item: $editingExpense) { expense in
                 AddExpenseView(existingExpense: expense)
             }
@@ -575,6 +595,10 @@ struct HomeView: View {
         }
         .background { scrollBackground }
         .scrollDismissesKeyboard(.immediately)
+        .refreshable {
+            refreshRecurringCaches()
+            try? await Task.sleep(for: .seconds(0.6))
+        }
         .onAppear {
             guard !appeared else { return }
             refreshRecurringCaches()
@@ -592,6 +616,12 @@ struct HomeView: View {
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase == .active {
                 refreshRecurringCaches()
+                // Refresh ambient tint — warm mornings, cool evenings
+                let newTint = TimeAmbience.current()
+                withAnimation(.easeInOut(duration: 2.0)) {
+                    ambientTint = newTint
+                    glowColor = TimeAmbience.apply(newTint, to: pageAccentColor)
+                }
             }
         }
         .navigationTitle("Tula")
@@ -640,7 +670,7 @@ struct HomeView: View {
                 .opacity(appeared ? 1 : 0)
                 .animation(AppAnimation.gentle.delay(0.15), value: appeared)
         }
-        .padding(.horizontal, Spacing.xl)
+        .adaptiveContentWidth()
         .padding(.top, Spacing.xs)
         .padding(.bottom, Spacing.lg)
         .animation(AppAnimation.snappy, value: smartParseInFlight)
@@ -1391,7 +1421,27 @@ struct HomeView: View {
     /// clamped to a minimum of 60 so the card never shrinks below standard.
     private func measuredCardHeight(for context: HomeContext) -> CGFloat {
         let baseH: CGFloat = 64
-        guard case .insight(let insight) = context else { return baseH }
+
+        // Extract title + detail + max line counts depending on context type.
+        let titleText: String
+        let detailText: String
+        let maxTitleLines: CGFloat
+        let maxDetailLines: CGFloat
+
+        switch context {
+        case .insight(let insight):
+            titleText = insight.title
+            detailText = insight.detail
+            maxTitleLines = 2
+            maxDetailLines = 4
+        case .upcoming, .overdue:
+            titleText = contextTitle(for: context)
+            detailText = contextDetail(for: context)
+            maxTitleLines = 1
+            maxDetailLines = 2
+        default:
+            return baseH
+        }
 
         // Available width for text = screen - scroll padding - card padding - icon - spacings - dismiss button
         let screenW = UIScreen.main.bounds.width
@@ -1407,10 +1457,8 @@ struct HomeView: View {
         let baseTitleFont = UIFont.preferredFont(forTextStyle: .subheadline)
         let titleFont = UIFont.systemFont(ofSize: baseTitleFont.pointSize, weight: .semibold)
         let detailFont = UIFont.preferredFont(forTextStyle: .caption1)
-        let maxTitleLines: CGFloat = 2
-        let maxDetailLines: CGFloat = 4
 
-        let rawTitleH = ceil((insight.title as NSString).boundingRect(
+        let rawTitleH = ceil((titleText as NSString).boundingRect(
             with: CGSize(width: textWidth, height: .greatestFiniteMagnitude),
             options: .usesLineFragmentOrigin,
             attributes: [.font: titleFont],
@@ -1418,7 +1466,7 @@ struct HomeView: View {
         ).height)
         let titleH = min(rawTitleH, ceil(titleFont.lineHeight * maxTitleLines))
 
-        let rawDetailH = ceil((insight.detail as NSString).boundingRect(
+        let rawDetailH = ceil((detailText as NSString).boundingRect(
             with: CGSize(width: textWidth, height: .greatestFiniteMagnitude),
             options: .usesLineFragmentOrigin,
             attributes: [.font: detailFont],
@@ -1681,7 +1729,7 @@ struct HomeView: View {
                 trailingAction: { confirmSkip(rule: rule, date: date) },
                 onTap: {
                     Haptics.tap()
-                    handleContextTap(context)
+                    confirmLog(rule: rule, date: date)
                 }
             ) {
                 contextRowBody(
@@ -1709,7 +1757,7 @@ struct HomeView: View {
                 trailingAction: { confirmSkip(rule: rule, date: date) },
                 onTap: {
                     Haptics.tap()
-                    handleContextTap(context)
+                    confirmLog(rule: rule, date: date)
                 }
             ) {
                 contextRowBody(for: context, showHint: true, compactMode: compactMode)
@@ -1775,7 +1823,7 @@ struct HomeView: View {
                     Text(detail)
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                        .lineLimit(expandedInsight ? 4 : 1)
+                        .lineLimit(expandedInsight ? 4 : 2)
                 }
                 .fixedSize(horizontal: false, vertical: expandedInsight)
                 Spacer(minLength: 0)
@@ -1838,9 +1886,11 @@ struct HomeView: View {
     private func refreshRecurringCaches() {
         var nextDates: [UUID: Date] = [:]
         var overdueDates: [UUID: [Date]] = [:]
+        var predictions: [UUID: SmartAmountPredictor.Prediction] = [:]
         for rule in allRecurringRules where !rule.isPaused {
             if let next = RecurringEngine.nextDueDate(for: rule) {
                 nextDates[rule.id] = next
+                predictions[rule.id] = SmartAmountPredictor.predict(for: rule, on: next)
             }
             if rule.kind == .expense {
                 overdueDates[rule.id] = RecurringEngine.overdueDates(for: rule)
@@ -1848,12 +1898,22 @@ struct HomeView: View {
         }
         cachedNextDueDates = nextDates
         cachedOverdueDates = overdueDates
+        cachedPredictions = predictions
     }
 
     // Sheet extracted to LogAmountSheetView (standalone struct below)
 
     private func confirmLog(rule: RecurringRule, date: Date) {
-        logConfirmation = LogConfirmationItem(rule: rule, date: date)
+        let prediction = cachedPredictions[rule.id]
+        logConfirmation = LogConfirmationItem(rule: rule, date: date, prediction: prediction)
+    }
+
+    /// One-click log at the predicted amount. Used by the swipe-right action
+    /// so the user can log without opening the amount sheet.
+    private func quickLog(rule: RecurringRule, date: Date) {
+        let prediction = cachedPredictions[rule.id]
+            ?? SmartAmountPredictor.predict(for: rule, on: date)
+        logUpcoming(rule: rule, date: date, customAmount: prediction.amount)
     }
 
     private func confirmSkip(rule: RecurringRule, date: Date) {
@@ -1963,10 +2023,32 @@ struct HomeView: View {
         switch context {
         case .review:
             return "Tap to categorize"
-        case .upcoming(_, let date):
-            return upcomingRelativeLabel(for: date)
-        case .overdue(_, let date):
-            return overdueRelativeLabel(for: date)
+        case .upcoming(let rule, let date):
+            let dueLabel = upcomingRelativeLabel(for: date)
+            if let prediction = cachedPredictions[rule.id] {
+                let amountStr = Currency.format(prediction.amount, code: currencyCode)
+                let isApprox = prediction.basis != .ruleAmount && abs(prediction.amount - rule.amount) >= 0.01
+                let prefix = isApprox ? "~" : ""
+                let hint = prediction.hint(ruleAmount: rule.amount)
+                if hint.isEmpty {
+                    return "\(dueLabel) · \(prefix)\(amountStr)"
+                }
+                return "\(dueLabel) · \(prefix)\(amountStr) · \(hint)"
+            }
+            return dueLabel
+        case .overdue(let rule, let date):
+            let dueLabel = overdueRelativeLabel(for: date)
+            if let prediction = cachedPredictions[rule.id] {
+                let amountStr = Currency.format(prediction.amount, code: currencyCode)
+                let isApprox = prediction.basis != .ruleAmount && abs(prediction.amount - rule.amount) >= 0.01
+                let prefix = isApprox ? "~" : ""
+                let hint = prediction.hint(ruleAmount: rule.amount)
+                if hint.isEmpty {
+                    return "\(dueLabel) · \(prefix)\(amountStr)"
+                }
+                return "\(dueLabel) · \(prefix)\(amountStr) · \(hint)"
+            }
+            return dueLabel
         case .recurringOverflow:
             return "Tap to see all"
         case .overdueOverflow:
@@ -2229,6 +2311,7 @@ struct HomeView: View {
                     .labelStyle(.iconOnly)
 
                     Button {
+                        Haptics.impact()
                         editingExpense = expense
                     } label: {
                         Label("Edit", systemImage: "pencil")
@@ -2306,13 +2389,11 @@ struct HomeView: View {
     }
 
     private func delete(_ expense: Expense) {
-        withAnimation {
-            context.delete(expense)
-            try? context.save()
-        }
+        Haptics.warning()
+        context.delete(expense)
+        try? context.save()
         WidgetRefresh.refresh(using: context)
         NotificationManager.refreshDailyReminder(using: context)
-        Haptics.warning()
         showToast("Deleted")
     }
 
@@ -2469,38 +2550,36 @@ private struct SwipeableContextRow<Content: View>: View {
     private let resistanceStart: CGFloat = 130
 
     var body: some View {
-        ZStack {
-            // Background: action labels on each side. Only the side being
-            // swiped toward is visible (opacity gated by offset sign).
-            HStack(spacing: 0) {
-                actionBackground(
-                    label: leadingLabel,
-                    icon: leadingIcon,
-                    color: leadingColor,
-                    alignment: .leading
-                )
-                .opacity(offset > 1 ? 1 : 0)
+        content()
+            .offset(x: offset)
+            .background {
+                // Action labels on each side. Only the side being
+                // swiped toward is visible (opacity gated by offset sign).
+                HStack(spacing: 0) {
+                    actionBackground(
+                        label: leadingLabel,
+                        icon: leadingIcon,
+                        color: leadingColor,
+                        alignment: .leading
+                    )
+                    .opacity(offset > 1 ? 1 : 0)
 
-                Spacer(minLength: 0)
+                    Spacer(minLength: 0)
 
-                actionBackground(
-                    label: trailingLabel,
-                    icon: trailingIcon,
-                    color: trailingColor,
-                    alignment: .trailing
-                )
-                .opacity(offset < -1 ? 1 : 0)
-            }
-
-            // Foreground: the actual content, shifted by drag amount.
-            content()
-                .offset(x: offset)
-                .gesture(swipeGesture)
-                .onTapGesture {
-                    onTap()
+                    actionBackground(
+                        label: trailingLabel,
+                        icon: trailingIcon,
+                        color: trailingColor,
+                        alignment: .trailing
+                    )
+                    .opacity(offset < -1 ? 1 : 0)
                 }
-        }
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .gesture(swipeGesture)
+            .onTapGesture {
+                onTap()
+            }
     }
 
     private var swipeGesture: some Gesture {
@@ -2567,11 +2646,9 @@ private struct SwipeableContextRow<Content: View>: View {
         // threshold — the user sees the colored region before they've
         // dragged enough to fire the action, so the affordance is clear.
         .frame(width: 130)
-        .frame(maxHeight: .infinity)
-        .background(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(color)
-        )
+        .frame(maxHeight: .infinity, alignment: .center)
+        .background(color)
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 }
 
@@ -2653,7 +2730,11 @@ private struct LogAmountSheetView: View {
             .frame(maxWidth: .infinity)
             .foregroundStyle(amountValue > 0 ? .primary : .quaternary)
 
-            if item.amount > 0, item.isVariable {
+            if !item.predictionHint.isEmpty {
+                Text(item.predictionHint)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            } else if item.amount > 0, item.isVariable {
                 Text("Usually \(Currency.format(item.amount, code: currencyCode))")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
@@ -2935,6 +3016,7 @@ private struct QuickLogBar: View {
                 startVoice()
             }
         }
+
         .alert("Voice access needed", isPresented: $showingPermissionDenied) {
             Button("Open Settings") {
                 if let url = URL(string: UIApplication.openSettingsURLString) {

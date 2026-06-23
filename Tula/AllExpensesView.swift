@@ -18,11 +18,20 @@ struct AllExpensesView: View {
 
     @State private var searchText: String = ""
     @State private var editingExpense: Expense?
+    @State private var expenseToDelete: Expense?
     @State private var isSearchPresented: Bool = false
 
     // Filter state — kept on this view so it survives the sheet open/close.
     @State private var filter: ExpenseFilter = .empty
     @State private var showingFilterSheet = false
+    @State private var sortOrder: SortOrder = .dateNewest
+
+    enum SortOrder: String, CaseIterable {
+        case dateNewest = "Newest First"
+        case dateOldest = "Oldest First"
+        case amountHighest = "Highest Amount"
+        case amountLowest = "Lowest Amount"
+    }
 
     /// Optional preset filter passed in from another screen (e.g. Stats
     /// → tap "Top Category" deep-links here with that category preselected).
@@ -70,23 +79,37 @@ struct AllExpensesView: View {
 
     private var sections: [DaySection] {
         let cal = Calendar.current
-        let groupedByDay = Dictionary(grouping: filtered) { cal.startOfDay(for: $0.date) }
-        return groupedByDay.keys.sorted(by: >).map { day in
-            let dayExpenses = groupedByDay[day] ?? []
-            let label: String
-            if cal.isDateInToday(day) {
-                label = "Today"
-            } else if cal.isDateInYesterday(day) {
-                label = "Yesterday"
-            } else {
-                label = day.formatted(.dateTime.weekday(.wide).month(.abbreviated).day())
+
+        // For amount-based sorts, flatten into a single section
+        switch sortOrder {
+        case .amountHighest:
+            let sorted = filtered.sorted { $0.amount > $1.amount }
+            return sorted.isEmpty ? [] : [DaySection(id: .distantPast, label: "By Amount", expenses: sorted, total: grandTotal)]
+        case .amountLowest:
+            let sorted = filtered.sorted { $0.amount < $1.amount }
+            return sorted.isEmpty ? [] : [DaySection(id: .distantPast, label: "By Amount", expenses: sorted, total: grandTotal)]
+        case .dateNewest, .dateOldest:
+            let dateAscending = sortOrder == .dateOldest
+            let groupedByDay = Dictionary(grouping: filtered) { cal.startOfDay(for: $0.date) }
+            return groupedByDay.keys.sorted(by: dateAscending ? (<) : (>)).map { day in
+                let dayExpenses = (groupedByDay[day] ?? []).sorted {
+                    dateAscending ? $0.date < $1.date : $0.date > $1.date
+                }
+                let label: String
+                if cal.isDateInToday(day) {
+                    label = "Today"
+                } else if cal.isDateInYesterday(day) {
+                    label = "Yesterday"
+                } else {
+                    label = day.formatted(.dateTime.weekday(.wide).month(.abbreviated).day())
+                }
+                return DaySection(
+                    id: day,
+                    label: label,
+                    expenses: dayExpenses,
+                    total: dayExpenses.reduce(0) { $0 + $1.amount }
+                )
             }
-            return DaySection(
-                id: day,
-                label: label,
-                expenses: dayExpenses,
-                total: dayExpenses.reduce(0) { $0 + $1.amount }
-            )
         }
     }
 
@@ -177,6 +200,28 @@ struct AllExpensesView: View {
                 .accessibilityLabel("Filters")
                 .accessibilityHint("Opens filter options")
             }
+            ToolbarItem(placement: .topBarTrailing) {
+                Menu {
+                    ForEach(SortOrder.allCases, id: \.self) { order in
+                        Button {
+                            withAnimation(AppAnimation.snappy) {
+                                sortOrder = order
+                            }
+                        } label: {
+                            if order == sortOrder {
+                                Label(order.rawValue, systemImage: "checkmark")
+                            } else {
+                                Text(order.rawValue)
+                            }
+                        }
+                    }
+                } label: {
+                    Image(systemName: "arrow.up.arrow.down")
+                        .font(.footnote.weight(.semibold))
+                }
+                .tint(.primary)
+                .accessibilityLabel("Sort")
+            }
             // "Done" only when presented as a sheet (dismiss is meaningful);
             // when pushed, the default back chevron handles return.
             if showsDoneButton {
@@ -186,6 +231,7 @@ struct AllExpensesView: View {
                 }
             }
         }
+        .sensoryFeedback(.impact(flexibility: .solid, intensity: 0.6), trigger: editingExpense)
         .sheet(item: $editingExpense) { expense in
             AddExpenseView(existingExpense: expense)
         }
@@ -195,6 +241,26 @@ struct AllExpensesView: View {
                 categories: allCategories.filter { !$0.isArchived },
                 accounts: allAccounts.filter { !$0.isArchived }
             )
+        }
+        .confirmationDialog(
+            "Delete this expense?",
+            isPresented: Binding(
+                get: { expenseToDelete != nil },
+                set: { if !$0 { expenseToDelete = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Delete", role: .destructive) {
+                if let expense = expenseToDelete {
+                    delete(expense)
+                    expenseToDelete = nil
+                }
+            }
+            Button("Cancel", role: .cancel) {
+                expenseToDelete = nil
+            }
+        } message: {
+            Text("This action can't be undone.")
         }
     }
 
@@ -235,14 +301,15 @@ struct AllExpensesView: View {
                         // gives just enough air to feel like individual
                         // items without making the list feel sparse.
                         .listRowInsets(EdgeInsets(top: 2, leading: 16, bottom: 2, trailing: 16))
-                        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                             Button(role: .destructive) {
-                                delete(expense)
+                                expenseToDelete = expense
                             } label: {
                                 Label("Delete", systemImage: "trash")
                             }
 
                             Button {
+                                Haptics.tap()
                                 editingExpense = expense
                             } label: {
                                 Label("Edit", systemImage: "pencil")
@@ -250,14 +317,17 @@ struct AllExpensesView: View {
                             .tint(.blue)
                         }
                         .contextMenu {
-                            Button { editingExpense = expense } label: {
+                            Button {
+                                Haptics.tap()
+                                editingExpense = expense
+                            } label: {
                                 Label("Edit", systemImage: "pencil")
                             }
                             Button { duplicate(expense) } label: {
                                 Label("Duplicate", systemImage: "plus.square.on.square")
                             }
                             Divider()
-                            Button(role: .destructive) { delete(expense) } label: {
+                            Button(role: .destructive) { expenseToDelete = expense } label: {
                                 Label("Delete", systemImage: "trash")
                             }
                         } preview: {
@@ -305,26 +375,30 @@ struct AllExpensesView: View {
     }
 
     private func delete(_ expense: Expense) {
-        withAnimation {
-            context.delete(expense)
-            try? context.save()
-        }
+        Haptics.warning()
+        context.delete(expense)
+        try? context.save()
         WidgetRefresh.refresh(using: context)
         NotificationManager.refreshDailyReminder(using: context)
-        Haptics.warning()
     }
 
     // MARK: - Empty State
 
     private var emptyState: some View {
         VStack(spacing: Spacing.md) {
-            ZStack {
-                Circle()
-                    .fill(Color.tulaBrandFallback.opacity(0.10))
-                    .frame(width: 56, height: 56)
-                Image(systemName: searchText.isEmpty ? "tray" : "magnifyingglass")
-                    .font(.title2)
-                    .foregroundStyle(Color.tulaBrandFallback)
+            if searchText.isEmpty {
+                // Branded empty state — breathing balance animation
+                TulaBalanceView(tilt: 0, breathing: true, scale: 0.7, showLabel: true)
+                    .frame(height: 60)
+            } else {
+                ZStack {
+                    Circle()
+                        .fill(Color.tulaBrandFallback.opacity(0.10))
+                        .frame(width: 56, height: 56)
+                    Image(systemName: "magnifyingglass")
+                        .font(.title2)
+                        .foregroundStyle(Color.tulaBrandFallback)
+                }
             }
             VStack(spacing: 4) {
                 Text(searchText.isEmpty ? "Nothing here yet" : "No matches")

@@ -158,7 +158,7 @@ struct CardsView: View {
 
                     if let active = activeAccount {
                         activeCardSection(for: active)
-                            .padding(.horizontal, Spacing.xl)
+                            .adaptiveContentWidth()
                     }
                 }
             }

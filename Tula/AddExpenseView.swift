@@ -10,6 +10,7 @@ import SwiftData
 struct AddExpenseView: View {
     @Environment(\.modelContext) private var context
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.horizontalSizeClass) private var sizeClass
     @PrimaryCurrency private var currencyCode
 
     @Query(sort: \Category.sortOrder) private var allCategories: [Category]
@@ -39,6 +40,7 @@ struct AddExpenseView: View {
     @State private var categoryManuallySet: Bool
     @State private var showingDeleteConfirm = false
     @State private var categoriesExpanded = false
+    @State private var savingInProgress: Bool = false
 
     /// Drives the items-breakdown sheet that opens when the user taps
     /// the "View items" chip below the Item field. Sheet is read-only —
@@ -234,13 +236,16 @@ struct AddExpenseView: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button {
+                        guard !savingInProgress else { return }
+                        savingInProgress = true
+                        Haptics.success()
                         save()
                     } label: {
                         Text("Save")
                             .font(.subheadline.weight(.semibold))
                             .foregroundStyle(canSave ? Color.tulaBrandFallback : Color.secondary.opacity(0.5))
                     }
-                    .disabled(!canSave)
+                    .disabled(!canSave || savingInProgress)
                     .accessibilityHint("Saves this expense")
                 }
             }
@@ -598,6 +603,13 @@ struct AddExpenseView: View {
     // Cash and Calculator conventions — the value being entered earns the
     // visual real estate proportional to its importance.
 
+    /// Logarithmic weight scale — larger amounts feel visually "heavier."
+    /// Max 5% scale at ₹50,000+. Intentionally subtle.
+    private var amountWeightScale: CGFloat {
+        guard amount > 0 else { return 1.0 }
+        return 1.0 + min(log10(max(amount, 1)) / log10(50000) * 0.05, 0.05)
+    }
+
     private var amountHero: some View {
         VStack(spacing: Spacing.xs) {
             Text(Currency.symbol(for: currencyCode))
@@ -621,6 +633,8 @@ struct AddExpenseView: View {
             .contentTransition(.numericText())
             .animation(.snappy(duration: 0.2), value: amount)
         }
+        .scaleEffect(AppAnimation.reduceMotion ? 1.0 : amountWeightScale)
+        .animation(AppAnimation.snappy, value: amount)
     }
 
     // MARK: - Account Strip
@@ -1002,7 +1016,7 @@ struct AddExpenseView: View {
 
     private var categoryGrid: some View {
         LazyVGrid(
-            columns: Array(repeating: GridItem(.flexible(), spacing: Spacing.sm), count: 4),
+            columns: Array(repeating: GridItem(.flexible(), spacing: Spacing.sm), count: AdaptiveLayout.categoryGridColumns(isRegular: sizeClass == .regular)),
             spacing: Spacing.md
         ) {
             ForEach(visibleCategories) { category in
@@ -2072,16 +2086,13 @@ struct AddExpenseView: View {
             existingExpense.account = account
             existingExpense.tax = tax > 0 ? tax : nil
             existingExpense.discount = discount > 0 ? discount : nil
-            // Receipt: only update if the user actually attached a new
-            // photo this session. Removing a receipt is handled by the
-            // trash button which sets `receiptImage = nil`; in that case
-            // we explicitly clear the stored data.
+            // Receipt: update stored data to match current state.
+            // If the user attached a new photo, compress and store it.
+            // If the user deleted the receipt (trash button sets
+            // receiptImage = nil), clear the stored blob.
             if receiptImage != nil {
                 existingExpense.receiptImageData = receiptData
-            } else if existingExpense.receiptImageData != nil && !isEditing {
-                // Edit path: if image was cleared during this session,
-                // null out the stored blob. (isEditing always true here
-                // since we're in the `let existingExpense` branch.)
+            } else {
                 existingExpense.receiptImageData = nil
             }
         } else {
@@ -2110,6 +2121,7 @@ struct AddExpenseView: View {
         // notification if this expense pushed any active budget
         // past 75% or 100%. No-op when budget alerts are disabled.
         evaluateBudgetAlerts()
+        NotificationCenter.default.post(name: .tulaExpenseSaved, object: nil)
         dismiss()
     }
 

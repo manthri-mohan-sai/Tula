@@ -365,6 +365,7 @@ struct RootTabView: View {
         }
         .sheet(item: $addExpenseMode) { mode in
             AddExpenseView(openCameraOnAppear: mode == .scan)
+                .presentationSizing(.page)
         }
         // Handle deep links from widgets. `tula://add` opens the Add
         // Expense sheet directly. `tula://voice` keeps the user on Home
@@ -422,4 +423,5 @@ extension Notification.Name {
     static let tulaStartVoiceCapture = Notification.Name("tula.startVoiceCapture")
     static let tulaStartReceiptScan = Notification.Name("tula.startReceiptScan")
     static let tulaQuickAction = Notification.Name("tula.quickAction")
+    static let tulaExpenseSaved = Notification.Name("tula.expenseSaved")
 }

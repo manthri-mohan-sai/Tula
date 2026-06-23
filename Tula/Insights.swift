@@ -181,10 +181,11 @@ enum InsightEngine {
             }
         }
 
-        // MARK: Category spike (vs trailing-30-day baseline)
+        // MARK: Category spike (vs trailing-90-day baseline)
 
         if let monthStart = calendar.dateInterval(of: .month, for: now)?.start {
             let thisMonth = expenses.filter { $0.date >= monthStart }
+            let thisMonthTotal = thisMonth.reduce(0) { $0 + $1.amount }
             let categoryTotals = Dictionary(grouping: thisMonth) { $0.category?.id }
                 .compactMapValues { exps -> (Category, Double)? in
                     guard let cat = exps.first?.category else { return nil }
@@ -201,6 +202,10 @@ enum InsightEngine {
                 guard let catID else { continue }
                 let (cat, amount) = value
                 guard let catTrailing = trailingByCategory[catID], !catTrailing.isEmpty else { continue }
+
+                // Skip categories that are a tiny share of total spending —
+                // a large relative spike in a 1% category is noise, not signal.
+                guard thisMonthTotal > 0, amount / thisMonthTotal >= 0.05 else { continue }
 
                 let trailingTotal = catTrailing.reduce(0) { $0 + $1.amount }
                 guard trailingTotal > 0 else { continue }

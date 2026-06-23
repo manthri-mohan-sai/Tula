@@ -46,7 +46,6 @@ struct SwipeActionRow<Content: View>: View {
             Button {
                 Haptics.tap()
                 close()
-                // Defer the action slightly so the close animation feels intentional
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
                     onEdit()
                 }

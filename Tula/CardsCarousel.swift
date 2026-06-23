@@ -34,15 +34,14 @@ struct CardsCarousel: View {
     /// swipes; can also be set programmatically to scroll to a card.
     @Binding var activeID: UUID?
 
-    /// Card height. Width derived via aspect ratio so the card always
-    /// reads as card-like across phone sizes.
-    private let cardHeight: CGFloat = 200
-    /// Real-world card aspect (85.6mm × 54mm ≈ 1.586). Keeps the card
-    /// feeling physical even though it's far larger than a real card.
+    @Environment(\.horizontalSizeClass) private var sizeClass
+
+    /// Card height scales up on iPad for proportional fit.
+    private var cardHeight: CGFloat { sizeClass == .regular ? 260 : 200 }
+    /// Real-world card aspect (85.6mm × 54mm ≈ 1.586).
     private let cardAspect: CGFloat = 1.586
-    /// Horizontal margin on each side of the carousel — this is the peek
-    /// amount visible for neighboring cards.
-    private let edgeInset: CGFloat = 36
+    /// Horizontal margin on each side — scales for iPad's wider screen.
+    private var edgeInset: CGFloat { sizeClass == .regular ? 60 : 36 }
     /// Spacing between adjacent cards in the HStack.
     private let interCardSpacing: CGFloat = 14
 
