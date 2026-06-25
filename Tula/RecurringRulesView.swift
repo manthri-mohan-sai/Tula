@@ -323,7 +323,9 @@ struct RecurringRulesView: View {
         logDate = date
 
         if rule.isVariable {
-            variableAmount = rule.amount  // pre-fill with last known amount
+            // Pre-fill with prediction (uses history) or fall back to rule amount.
+            let prediction = SmartAmountPredictor.predict(for: rule, on: date)
+            variableAmount = prediction.amount
             showingVariableAmountSheet = true
         } else {
             showingLogConfirm = true
@@ -336,11 +338,9 @@ struct RecurringRulesView: View {
     private func logRule(_ rule: RecurringRule, date: Date, customAmount: Double? = nil) {
         Haptics.success()
         withAnimation(AppAnimation.snappy) {
-            // If the user entered a different amount, update the rule
-            // so next time it pre-fills with the latest value.
-            if let custom = customAmount, custom != rule.amount {
-                rule.amount = custom
-            }
+            // Never overwrite rule.amount from a log action. The user's
+            // configured amount is their baseline; SmartAmountPredictor
+            // handles pre-fill from history.
             RecurringEngine.createTransaction(rule: rule, date: date, in: context)
             if rule.lastGeneratedDate == nil || rule.lastGeneratedDate! < date {
                 rule.lastGeneratedDate = date

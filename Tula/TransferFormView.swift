@@ -13,14 +13,24 @@ struct TransferFormView: View {
     let presetToAccount: Account?
     let presetAmount: Double
 
+    /// When editing an existing transfer, this holds the original object.
+    /// Nil means "create new". Set means "update existing".
+    let existingTransfer: Transfer?
+
     @State private var amount: Double
     @State private var fromAccount: Account?
     @State private var toAccount: Account?
     @State private var note: String = ""
     @State private var date: Date = .now
     @State private var showingDate = false
+    @State private var showingDeleteConfirmation = false
+    @State private var reconcileAfterPayment = false
+    @State private var cardBalanceAfter: Double = 0
+    @State private var selectedReason: MoneyInReason?
 
     @FocusState private var amountFocused: Bool
+
+    private var isEditing: Bool { existingTransfer != nil }
 
     init(presetKind: TransferKind? = nil,
          presetFromAccount: Account? = nil,
@@ -30,9 +40,25 @@ struct TransferFormView: View {
         self.presetFromAccount = presetFromAccount
         self.presetToAccount = presetToAccount
         self.presetAmount = presetAmount
+        self.existingTransfer = nil
         _amount = State(initialValue: presetAmount)
         _fromAccount = State(initialValue: presetFromAccount)
         _toAccount = State(initialValue: presetToAccount)
+    }
+
+    /// Edit an existing transfer.
+    init(existingTransfer: Transfer) {
+        self.existingTransfer = existingTransfer
+        // Don't set presets — user should be able to change everything.
+        self.presetKind = nil
+        self.presetFromAccount = nil
+        self.presetToAccount = nil
+        self.presetAmount = existingTransfer.amount
+        _amount = State(initialValue: existingTransfer.amount)
+        _fromAccount = State(initialValue: existingTransfer.fromAccount)
+        _toAccount = State(initialValue: existingTransfer.toAccount)
+        _note = State(initialValue: existingTransfer.note ?? "")
+        _date = State(initialValue: existingTransfer.date)
     }
 
     private var activeAccounts: [Account] {
@@ -62,11 +88,13 @@ struct TransferFormView: View {
     }
 
     private var titleText: String {
+        if isEditing { return "Edit Transfer" }
         switch presetKind {
         case .cardBillPayment: return "Pay Card Bill"
         case .withdrawal:      return "Withdraw Cash"
         case .deposit:         return "Deposit Cash"
-        case .topUp:           return "Top Up"
+        case .topUp:
+            return presetToAccount?.kind == .bank ? "Money In" : "Top Up"
         default:               return "Transfer"
         }
     }
@@ -82,9 +110,11 @@ struct TransferFormView: View {
                     amountSection
                     routingSection
                     optionalSection
+                    cardReconcileSection
                 }
                 .padding()
             }
+            .scrollDismissesKeyboard(.interactively)
             .background(Color(uiColor: .systemGroupedBackground))
             .navigationTitle(titleText)
             .navigationBarTitleDisplayMode(.inline)
@@ -92,10 +122,30 @@ struct TransferFormView: View {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
                 }
+                if isEditing {
+                    ToolbarItem(placement: .bottomBar) {
+                        Button(role: .destructive) {
+                            showingDeleteConfirmation = true
+                        } label: {
+                            Label("Delete Transfer", systemImage: "trash")
+                                .foregroundStyle(.red)
+                        }
+                    }
+                }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Save", action: save)
+                    Button(isEditing ? "Update" : "Save", action: save)
                         .disabled(!canSave)
                         .fontWeight(.semibold)
+                }
+            }
+            .confirmationDialog("Delete this transfer?", isPresented: $showingDeleteConfirmation, titleVisibility: .visible) {
+                Button("Delete", role: .destructive) {
+                    if let transfer = existingTransfer {
+                        context.delete(transfer)
+                        try? context.save(); WidgetRefresh.refresh(using: context)
+                        Haptics.warning()
+                    }
+                    dismiss()
                 }
             }
             .onAppear {
@@ -264,17 +314,63 @@ struct TransferFormView: View {
         }
     }
 
-    // MARK: - Optional (Note / Date)
+    // MARK: - Optional (Reason / Note / Date)
 
     private var optionalSection: some View {
         Card(padding: Spacing.lg, cornerRadius: CornerRadius.medium) {
             VStack(spacing: Spacing.md) {
+                if presetKind == .topUp {
+                    HStack {
+                        Text("Reason")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .frame(width: 80, alignment: .leading)
+                        Spacer()
+                        Menu {
+                            Button {
+                                if let old = selectedReason, note == old.notePrefix { note = "" }
+                                selectedReason = nil
+                            } label: {
+                                if selectedReason == nil {
+                                    Label("None", systemImage: "checkmark")
+                                } else {
+                                    Text("None")
+                                }
+                            }
+                            ForEach(MoneyInReason.allCases) { reason in
+                                Button {
+                                    let oldPrefix = selectedReason?.notePrefix
+                                    selectedReason = reason
+                                    if note.isEmpty || note == oldPrefix {
+                                        note = reason.notePrefix
+                                    }
+                                } label: {
+                                    if selectedReason == reason {
+                                        Label(reason.label, systemImage: "checkmark")
+                                    } else {
+                                        Label(reason.label, systemImage: reason.icon)
+                                    }
+                                }
+                            }
+                        } label: {
+                            HStack(spacing: 4) {
+                                Text(selectedReason?.label ?? "Optional")
+                                Image(systemName: "chevron.up.chevron.down")
+                                    .font(.caption2.weight(.medium))
+                            }
+                            .font(.subheadline)
+                            .foregroundStyle(selectedReason != nil ? Color.primary : Color.primary.opacity(0.55))
+                        }
+                    }
+                    Divider()
+                }
                 HStack {
                     Text("Note")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                         .frame(width: 80, alignment: .leading)
                     TextField("Optional", text: $note)
+                        .multilineTextAlignment(.trailing)
                         .frame(maxWidth: .infinity, alignment: .trailing)
                 }
                 Divider()
@@ -293,6 +389,49 @@ struct TransferFormView: View {
 
     // MARK: - Save
 
+    // MARK: - Optional post-payment reconcile (pay-bill mode only)
+
+    @ViewBuilder
+    private var cardReconcileSection: some View {
+        // Only when paying a card bill for a brand-new transfer — lets the
+        // user snap the card's outstanding to whatever their bank app shows
+        // after the payment, instead of trusting Tula's derived figure.
+        if presetKind == .cardBillPayment, !isEditing {
+            VStack(alignment: .leading, spacing: Spacing.md) {
+                Toggle(isOn: $reconcileAfterPayment.animation(AppAnimation.snappy)) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Update card balance")
+                            .font(.subheadline.weight(.semibold))
+                        Text("Match what your card shows after this payment")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .tint(Color.tulaBrandFallback)
+
+                if reconcileAfterPayment {
+                    HStack {
+                        SectionHeader(title: "Card now shows")
+                        Spacer()
+                        FormattedAmountField(
+                            value: $cardBalanceAfter,
+                            currencyCode: currencyCode,
+                            placeholder: "0",
+                            font: .title3.weight(.semibold),
+                            alignment: .trailing
+                        )
+                        .frame(maxWidth: 160)
+                    }
+                }
+            }
+            .padding(Spacing.md)
+            .background(
+                RoundedRectangle(cornerRadius: CornerRadius.medium, style: .continuous)
+                    .fill(Color.tulaCardSurface)
+            )
+        }
+    }
+
     private func save() {
         guard let to = toAccount, amount > 0 else { return }
 
@@ -305,15 +444,39 @@ struct TransferFormView: View {
             resolvedKind = .generic
         }
 
-        let transfer = Transfer(
-            amount: amount,
-            fromAccount: fromAccount,
-            toAccount: to,
-            date: date,
-            kind: resolvedKind,
-            note: note.isEmpty ? nil : note
-        )
-        context.insert(transfer)
+        if let existing = existingTransfer {
+            // Update existing transfer
+            existing.amount = amount
+            existing.fromAccount = fromAccount
+            existing.toAccount = to
+            existing.date = date
+            existing.kind = resolvedKind
+            existing.note = note.isEmpty ? nil : note
+        } else {
+            // Create new transfer
+            let transfer = Transfer(
+                amount: amount,
+                fromAccount: fromAccount,
+                toAccount: to,
+                date: date,
+                kind: resolvedKind,
+                note: note.isEmpty ? nil : note
+            )
+            context.insert(transfer)
+
+            // Optional re-anchor: if the user told us what the card shows
+            // after this payment, record an adjustment on the destination
+            // card so its outstanding matches reality. Runs after insert so
+            // `derivedBalance` already reflects this payment.
+            if presetKind == .cardBillPayment, reconcileAfterPayment {
+                BalanceReconciler.reconcile(
+                    account: to,
+                    to: cardBalanceAfter,
+                    source: .billPayment,
+                    in: context
+                )
+            }
+        }
         try? context.save(); WidgetRefresh.refresh(using: context)
         Haptics.success()
         dismiss()
@@ -325,6 +488,51 @@ struct TransferFormView: View {
         case (.bank, .cash):                                return .withdrawal
         case (.cash, .bank):                                return .deposit
         default:                                            return .generic
+        }
+    }
+}
+
+// MARK: - Money-In Reason
+
+/// Quick-pick reasons for topUp / Money In flows. Stored in the Transfer's
+/// `note` field — no new models, just convenience for the user.
+enum MoneyInReason: String, CaseIterable, Identifiable {
+    case salary
+    case loan
+    case refund
+    case cashback
+    case freelance
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .salary:    return "Salary"
+        case .loan:      return "Loan"
+        case .refund:    return "Refund"
+        case .cashback:  return "Cashback"
+        case .freelance: return "Freelance"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .salary:    return "briefcase"
+        case .loan:      return "person.2"
+        case .refund:    return "arrow.uturn.backward"
+        case .cashback:  return "gift"
+        case .freelance: return "laptopcomputer"
+        }
+    }
+
+    /// Pre-filled note prefix for the Transfer's note field.
+    var notePrefix: String {
+        switch self {
+        case .salary:    return "Salary"
+        case .loan:      return "Loan from "
+        case .refund:    return "Refund"
+        case .cashback:  return "Cashback"
+        case .freelance: return "Freelance"
         }
     }
 }

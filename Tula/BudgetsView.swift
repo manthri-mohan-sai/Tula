@@ -583,41 +583,22 @@ struct OverallBudgetCard: View {
                     .fill(Color(uiColor: .tertiarySystemFill))
             )
             .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-
-            let columns = [GridItem(.flexible(), alignment: .leading),
-                           GridItem(.flexible(), alignment: .leading)]
-            LazyVGrid(columns: columns, alignment: .leading, spacing: 4) {
-                ForEach(spentSortedBudgets) { budget in
-                    let spent = budget.spent(in: expenses)
-                    let pct = totalMonthlySpent > 0 ? Int(spent / totalMonthlySpent * 100) : 0
-                    let catColor = Color(hex: budget.category?.colorHex ?? "#D97706")
-
-                    HStack(spacing: 5) {
-                        Circle()
-                            .fill(catColor)
-                            .frame(width: 8, height: 8)
-                        Text("\(budget.displayName) \(pct)%")
-                            .font(.caption)
-                            .foregroundStyle(.primary)
-                            .lineLimit(1)
-                    }
-                }
-            }
-
+            // The per-category legend grid that used to sit here was dropped:
+            // the cards below already name every category and its progress, so
+            // repeating the split as text just added clutter. The colored bar
+            // keeps the at-a-glance visual; the cards carry the detail.
         }
     }
 }
 
 // MARK: - Budget Card
 
-/// Unified budget card — every budget on the screen renders this. Combines
-/// the at-a-glance progress info (icon, name, spent/cap, pace, progress bar,
-/// days left) with the "where it went" breakdown that used to be reserved
-/// for a single featured budget.
-///
-/// For Overall budgets the breakdown shows top categories; for category-
-/// scoped budgets it shows top merchants. Capped at 3 entries so cards
-/// stay compact and stack-friendly when the user has many budgets.
+/// Compact, glanceable budget row — every category budget on the screen
+/// renders this. Shows only what's needed to triage at a glance: icon, name,
+/// percent used, spent/cap, a progress ring, and a single status line. Over-
+/// and near-limit budgets carry a soft status-colored outline so problems
+/// pop visually. The full breakdown ("where it went") lives one tap deeper on
+/// the detail screen — keeping the list scannable even with many budgets.
 struct BudgetCard: View {
     let budget: Budget
     let expenses: [Expense]
@@ -648,75 +629,6 @@ struct BudgetCard: View {
         case .overBudget:           return .red
         }
     }
-
-    private var projectedOvershoot: Double? {
-        guard pace == .overPace else { return nil }
-        let elapsed = budget.elapsedFraction()
-        guard elapsed > 0.05 else { return nil }
-        // Lump-sum guard: if budget is nearly used but only 1-2 transactions,
-        // the linear projection is meaningless (e.g. a single monthly transfer).
-        // Many transactions (shopping, food) = real pattern, keep projecting.
-        if progressValue >= 0.9 && periodExpenses.count <= 2 { return nil }
-        let projected = spent / elapsed
-        let overshoot = projected - budget.amount
-        return overshoot > 0 ? overshoot : nil
-    }
-
-    /// Expenses inside the current period, filtered to this budget's scope.
-    private var periodExpenses: [Expense] {
-        let window = budget.currentPeriodWindow()
-        return expenses
-            .filter { $0.date >= window.start && $0.date < window.end }
-            .filter { exp in
-                guard let cat = budget.category else { return true }
-                return exp.category?.id == cat.id
-            }
-    }
-
-    /// Top 3 buckets where the money went. Categories for Overall budgets,
-    /// merchants for category-scoped ones.
-    private var breakdown: [BreakdownBucket] {
-        let isOverall = (budget.category == nil)
-        let grouped: [String: (amount: Double, color: Color, icon: String)] = Dictionary(
-            grouping: periodExpenses,
-            by: { exp -> String in
-                if isOverall {
-                    return exp.category?.name ?? "Uncategorized"
-                } else {
-                    return exp.merchant?.trimmingCharacters(in: .whitespaces).nilIfEmpty
-                        ?? "No merchant"
-                }
-            }
-        ).mapValues { exps -> (Double, Color, String) in
-            let sum = exps.reduce(0) { $0 + $1.amount }
-            let color: Color = {
-                if isOverall, let hex = exps.first?.category?.colorHex {
-                    return Color(hex: hex)
-                }
-                return Color.tulaBrandFallback
-            }()
-            let icon: String = {
-                if isOverall {
-                    return exps.first?.category?.iconKey ?? "questionmark.circle"
-                }
-                return "storefront"
-            }()
-            return (sum, color, icon)
-        }
-
-        return grouped
-            .map { BreakdownBucket(name: $0.key, amount: $0.value.amount,
-                                   color: $0.value.color, icon: $0.value.icon) }
-            .sorted { $0.amount > $1.amount }
-            .prefix(3)
-            .map { $0 }
-    }
-
-    private var breakdownMax: Double {
-        breakdown.first?.amount ?? 1
-    }
-
-
 
     private var percentText: String {
         if progressValue >= 2.0 {
@@ -769,16 +681,18 @@ struct BudgetCard: View {
             }
 
             footerRow
-
-            if !breakdown.isEmpty {
-                Divider().padding(.vertical, 2)
-                breakdownSection
-            }
         }
         .padding(14)
         .background(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .fill(Color.tulaCardSurface)
+        )
+        // Problem budgets carry a soft status-colored outline so the eye can
+        // triage by color alone — no need to read every card. Healthy budgets
+        // stay clean (no stroke).
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(statusStrokeColor, lineWidth: status == .healthy ? 0 : 1)
         )
         .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
@@ -796,83 +710,61 @@ struct BudgetCard: View {
 
     // MARK: - Footer
 
+    /// One concise line per card. We only show the pace chip when it carries
+    /// real signal (spending fast / over) — an "On track" chip on every card
+    /// is just noise. The status line states the single most useful fact:
+    /// how far over, or how much is left and for how long.
     private var footerRow: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 6) {
+        HStack(spacing: 6) {
+            if pace == .overPace || pace == .overBudget {
                 Text(pace.label)
                     .font(.caption2.weight(.semibold))
                     .padding(.horizontal, 7)
                     .padding(.vertical, 3)
                     .background(paceColor.opacity(0.12), in: Capsule())
                     .foregroundStyle(paceColor)
-
-                if pace == .overBudget {
-                    Text("Over by \(Currency.format(abs(remaining), code: currencyCode))")
-                        .font(.caption2.weight(.medium))
-                        .foregroundStyle(.red)
-                        .monospacedDigit()
-                } else if remaining <= 0 {
-                    Text("· Budget fully used")
-                        .font(.caption2.weight(.medium))
-                        .foregroundStyle(.orange)
-                } else if let allowance = dailyAllowance {
-                    Text("· \(Currency.format(allowance, code: currencyCode))/day")
-                        .font(.caption2.weight(.medium))
-                        .foregroundStyle(.secondary)
-                        .monospacedDigit()
-                }
-
-                Text("· \(daysLeftLabel)")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-
-                Spacer()
             }
 
-            if let overshoot = projectedOvershoot {
-                Text("Projected \(Currency.format(overshoot, code: currencyCode)) over budget")
-                    .font(.caption2.weight(.medium))
-                    .foregroundStyle(Color.tulaBrandFallback)
-                    .monospacedDigit()
-            }
+            Text(statusLine)
+                .font(.caption.weight(.medium))
+                .foregroundStyle(statusLineColor)
+                .monospacedDigit()
+                .lineLimit(1)
+
+            Spacer(minLength: 0)
         }
     }
 
-    private var dailyAllowance: Double? {
-        guard daysLeft > 0, remaining > 0 else { return nil }
-        return remaining / Double(daysLeft)
+    private var statusLine: String {
+        if status == .overBudget {
+            return "Over by \(Currency.format(abs(remaining), code: currencyCode)) · \(daysLeftLabel)"
+        }
+        if remaining <= 0 {
+            return "Fully used · \(daysLeftLabel)"
+        }
+        return "\(Currency.format(remaining, code: currencyCode)) left · \(daysLeftLabel)"
+    }
+
+    private var statusLineColor: Color {
+        switch status {
+        case .overBudget: return .red
+        case .warning:    return .orange
+        case .healthy:    return .secondary
+        }
+    }
+
+    private var statusStrokeColor: Color {
+        switch status {
+        case .overBudget: return Color.red.opacity(0.45)
+        case .warning:    return Color.orange.opacity(0.40)
+        case .healthy:    return .clear
+        }
     }
 
     private var daysLeftLabel: String {
-        if daysLeft == 0 { return "Period ending" }
+        if daysLeft == 0 { return "period ending" }
         if daysLeft == 1 { return "1 day left" }
         return "\(daysLeft) days left"
-    }
-
-    // MARK: - Breakdown
-
-    private var breakdownTitle: String {
-        budget.category == nil ? "Where it went" : "Top merchants"
-    }
-
-    private var breakdownSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(breakdownTitle)
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .textCase(.uppercase)
-                .kerning(0.5)
-
-            VStack(spacing: 8) {
-                ForEach(breakdown) { bucket in
-                    BreakdownRow(
-                        bucket: bucket,
-                        maxAmount: breakdownMax,
-                        currencyCode: currencyCode
-                    )
-                }
-            }
-        }
     }
 }
 
@@ -961,44 +853,6 @@ final class BudgetProgressUIView: UIView {
     }
 }
 
-
-// MARK: - Breakdown Bucket & Row
-
-struct BreakdownBucket: Identifiable {
-    let id = UUID()
-    let name: String
-    let amount: Double
-    let color: Color
-    let icon: String
-}
-
-private struct BreakdownRow: View {
-    let bucket: BreakdownBucket
-    let maxAmount: Double
-    let currencyCode: String
-
-    var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: bucket.icon)
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(bucket.color)
-                .frame(width: 24, height: 24)
-                .background(bucket.color.opacity(0.15), in: Circle())
-
-            Text(bucket.name)
-                .font(.subheadline.weight(.medium))
-                .foregroundStyle(.primary)
-                .lineLimit(1)
-
-            Spacer(minLength: 4)
-
-            Text(Currency.format(bucket.amount, code: currencyCode))
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.primary)
-                .monospacedDigit()
-        }
-    }
-}
 
 // MARK: - Budget Transactions View
 
@@ -1296,13 +1150,4 @@ struct BudgetTransactionsView: View {
     }
 }
 
-// MARK: - String helper
-
-private extension String {
-    /// Returns nil if the string is empty after trimming whitespace.
-    /// Used to fall back from "" merchant strings to a real "No merchant" label.
-    var nilIfEmpty: String? {
-        isEmpty ? nil : self
-    }
-}
 

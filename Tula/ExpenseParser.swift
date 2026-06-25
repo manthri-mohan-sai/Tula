@@ -13,6 +13,10 @@ struct ParsedExpense: Identifiable {
     var account: Account?
     var category: Category?
     var rawInput: String = ""
+    /// Resolved date from relative expressions in the input ("yesterday",
+    /// "last Friday", "kal"). Defaults to .now when no date reference is
+    /// found. The save paths use this instead of always stamping .now.
+    var date: Date = .now
 
     /// A short summary string for the live preview UI.
     func summary(currencyCode: String) -> String {
@@ -56,7 +60,7 @@ enum ExpenseParser {
     /// "i spent 350 for food" would parse merchant as "I Spent For".
     private static let fillerWords: Set<String> = [
         "i", "spent", "paid", "bought", "got",
-        "for", "on", "at", "in", "the", "a", "an",
+        "for", "on", "at", "in", "the", "a", "an", "and",
         "with", "to", "from", "by", "using", "via", "of",
         "today", "yesterday", "tonight", "now",
         "this", "that"
@@ -216,6 +220,15 @@ enum ExpenseParser {
             with: "$1$2",
             options: .regularExpression
         )
+
+        // 1e. Extract and resolve relative date references ("yesterday",
+        // "last Friday", "kal"). Strips matched tokens from the text so
+        // they don't pollute merchant extraction downstream. Sets the
+        // expense date to the resolved value; defaults to .now when no
+        // date reference is found.
+        let dateResult = Self.extractRelativeDate(from: remaining)
+        remaining = dateResult.remaining
+        result.date = dateResult.date
 
         // 2. Extract the first numeric token as amount.
         // No number = no expense — skip this segment.
@@ -393,6 +406,31 @@ enum ExpenseParser {
             }
         }
 
+        // 7. Keyword-based category matching via CategoryHint. When
+        // neither direct name match (step 4) nor MerchantRule/FuzzyMatcher
+        // (step 6) found a category, check if the merchant or item text
+        // contains words that semantically belong to a category.
+        // "fruits" → Groceries, "fuel" → Transport, "lunch" → Food, etc.
+        // Uses the same keyword descriptions that power FM prompts, so
+        // both the rule parser and the AI model share one vocabulary.
+        if result.category == nil {
+            var searchText = result.merchant?.lowercased() ?? ""
+            if !itemContext.isEmpty {
+                searchText = searchText.isEmpty
+                    ? itemContext.lowercased()
+                    : searchText + " " + itemContext.lowercased()
+            }
+            if !searchText.isEmpty {
+                let entries = activeCategories.map { ($0, $0.iconKey) }
+                if let match = CategoryHint.matchCategory(
+                    text: searchText,
+                    categories: entries
+                ) {
+                    result.category = match
+                }
+            }
+        }
+
         // Note: default account fallback is intentionally NOT applied here.
         // That happens in applySharedAccountContext so we can distinguish
         // "user explicitly typed default account name" from "no account given".
@@ -533,8 +571,48 @@ enum ExpenseParser {
         SmartExpenseParser.normalizeIndianNumbers(in: text)
     }
 
+    /// Folds Indian-English number compounds ("two fifty" → "250") into a
+    /// single digit token. A *ones* word (one–nine) immediately followed by
+    /// a *tens or teen* word (ten–ninety) becomes ones×100 + tens.
+    ///
+    /// Only word-form numbers are merged here — split numeric digits like
+    /// "2 50" are intentionally left for the regex pass in `parseSingle`
+    /// (step 1d) and for the FM path's `normalizeIndianNumbers`, so this
+    /// helper stays narrow and predictable. Multipliers (hundred, thousand,
+    /// lakh) are also left alone; the accumulator in `normalizeNumberWords`
+    /// already handles "two hundred fifty", "five lakh", etc.
+    private static func mergeIndianCompounds(_ tokens: [String]) -> [String] {
+        var result: [String] = []
+        var i = 0
+        while i < tokens.count {
+            let current = tokens[i].trimmingCharacters(in: .punctuationCharacters).lowercased()
+            if i + 1 < tokens.count {
+                let next = tokens[i + 1].trimmingCharacters(in: .punctuationCharacters).lowercased()
+                if let ones = numberWords[current], ones >= 1, ones <= 9,
+                   let tens = numberWords[next], tens >= 10, tens <= 90 {
+                    result.append(String(ones * 100 + tens))
+                    i += 2
+                    continue
+                }
+            }
+            result.append(tokens[i])
+            i += 1
+        }
+        return result
+    }
+
     static func normalizeNumberWords(in text: String) -> String {
-        let tokens = text.components(separatedBy: .whitespaces)
+        // Indian-English compound pre-pass — MUST run before the general
+        // accumulator below. A ones word (one–nine) immediately followed by
+        // a tens/teen word means ones×100 + tens, NOT ones + tens:
+        //   "two fifty"   → 250   (the accumulator alone would give 52)
+        //   "one twenty"  → 120
+        //   "five fifteen"→ 515
+        // Standard tens-first phrasing ("twenty five" → 25) is left untouched
+        // here and handled correctly by the accumulator. This is the same
+        // semantics `SmartExpenseParser.normalizeIndianNumbers` applies on the
+        // FM path, so the rule path and FM path now agree on compounds.
+        let tokens = mergeIndianCompounds(text.components(separatedBy: .whitespaces))
         var output: [String] = []
 
         // Tokens we're collecting in the current run. Holding them until
@@ -600,5 +678,87 @@ enum ExpenseParser {
         flush()
 
         return output.joined(separator: " ")
+    }
+
+    // MARK: - Relative Date Extraction
+
+    /// Detects and strips relative date references from input text,
+    /// returning the resolved date and cleaned text. Handles common
+    /// English and Hindi patterns:
+    ///   - "yesterday" / "kal" → previous day
+    ///   - "day before yesterday" / "parso" → 2 days ago
+    ///   - "last Monday" (any weekday) → most recent past occurrence
+    ///   - "today" / "aaj" → today (strip token, keep .now)
+    ///   - "this morning" / "today morning" → today (strip token)
+    ///
+    /// When no date reference is found, returns .now and the text unchanged.
+    static func extractRelativeDate(
+        from text: String
+    ) -> (date: Date, remaining: String) {
+        let calendar = Calendar.current
+        let now = Date.now
+        var cleaned = text
+
+        // "day before yesterday" / "parso" — must check before "yesterday"
+        // to avoid partial matches.
+        let dbYesterdayPatterns = [
+            "day before yesterday", "parso", "parson"
+        ]
+        for pattern in dbYesterdayPatterns {
+            if let range = cleaned.range(of: pattern, options: .caseInsensitive) {
+                cleaned.replaceSubrange(range, with: " ")
+                let date = calendar.date(byAdding: .day, value: -2, to: now) ?? now
+                return (date, cleaned.trimmingCharacters(in: .whitespaces))
+            }
+        }
+
+        // "yesterday" / "kal"
+        let yesterdayPatterns = ["yesterday", "\\bkal\\b"]
+        for pattern in yesterdayPatterns {
+            if let range = cleaned.range(of: pattern,
+                                         options: [.caseInsensitive, .regularExpression]) {
+                cleaned.replaceSubrange(range, with: " ")
+                let date = calendar.date(byAdding: .day, value: -1, to: now) ?? now
+                return (date, cleaned.trimmingCharacters(in: .whitespaces))
+            }
+        }
+
+        // "last <weekday>" / "pichle <weekday>"
+        let weekdayNames = [
+            "sunday": 1, "monday": 2, "tuesday": 3, "wednesday": 4,
+            "thursday": 5, "friday": 6, "saturday": 7
+        ]
+        let lastDayPattern = #"(?:last|pichle|pichli)\s+(sunday|monday|tuesday|wednesday|thursday|friday|saturday)"#
+        if let match = cleaned.range(of: lastDayPattern,
+                                     options: [.caseInsensitive, .regularExpression]) {
+            let matchedText = String(cleaned[match]).lowercased()
+            // Extract the weekday name from the matched text
+            for (name, targetWeekday) in weekdayNames {
+                if matchedText.contains(name) {
+                    let currentWeekday = calendar.component(.weekday, from: now)
+                    var daysBack = currentWeekday - targetWeekday
+                    if daysBack <= 0 { daysBack += 7 }
+                    cleaned.replaceSubrange(match, with: " ")
+                    let date = calendar.date(byAdding: .day, value: -daysBack, to: now) ?? now
+                    return (date, cleaned.trimmingCharacters(in: .whitespaces))
+                }
+            }
+        }
+
+        // "today" / "aaj" / "this morning" / "today morning" — strip token,
+        // keep .now (the expense happened today, just clean the text).
+        let todayPatterns = [
+            "today morning", "this morning", "today evening",
+            "this evening", "today", "\\baaj\\b"
+        ]
+        for pattern in todayPatterns {
+            if let range = cleaned.range(of: pattern,
+                                         options: [.caseInsensitive, .regularExpression]) {
+                cleaned.replaceSubrange(range, with: " ")
+                return (now, cleaned.trimmingCharacters(in: .whitespaces))
+            }
+        }
+
+        return (now, text)
     }
 }

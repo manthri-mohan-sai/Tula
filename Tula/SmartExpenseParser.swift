@@ -50,10 +50,15 @@ enum SmartExpenseParser {
         #endif
     }
 
-    /// Best provider — prefers Gemini when configured.
+    /// Best provider — prefers Gemini when configured, falls through to
+    /// on-device FM when no cloud key is present. Without this fallback,
+    /// the default `AIProviderStorage.selected` (.gemini) would silently
+    /// fail on devices that have FM but no API key, causing the caller
+    /// to fall back to rules and skip FM entirely.
     private static var bestProvider: AIProvider {
         if !CloudAIConfig.loadGemini().apiKey.isEmpty { return .gemini }
         if !CloudAIConfig.load().apiKey.isEmpty { return .openAI }
+        if isFMAvailable { return .appleFM }
         return AIProviderStorage.selected
     }
 
@@ -158,6 +163,37 @@ enum SmartExpenseParser {
         case .appleFM:
             return await parse(input, categories: categories,
                         accountNames: accountNames, contextBlock: contextBlock, isVoice: true)
+        }
+    }
+
+    /// Multi-expense voice parse. Extracts TWO or more expenses from a
+    /// single voice transcript that contains conjunctions ("350 food and
+    /// 400 groceries"). Uses a single FM call so the model can apply
+    /// cross-expense context (e.g. "from cash" at the end applies to all).
+    ///
+    /// Falls back to nil on older devices or when FM is unavailable.
+    /// Callers should fall back to rule-parsed results on nil.
+    static func parseVoiceMulti(
+        _ input: String,
+        categories: [CategoryEntry],
+        accountNames: [String],
+        contextBlock: String = ""
+    ) async -> [SmartParseResult]? {
+        switch bestProvider {
+        case .gemini:
+            return await CloudAIParser.parseVoiceMulti(
+                input, categories: categories, accountNames: accountNames,
+                contextBlock: contextBlock, config: .loadGemini()
+            )
+        case .openAI:
+            return await CloudAIParser.parseVoiceMulti(
+                input, categories: categories, accountNames: accountNames,
+                contextBlock: contextBlock
+            )
+        case .appleFM:
+            return await parseMulti(input, categories: categories,
+                                    accountNames: accountNames,
+                                    contextBlock: contextBlock)
         }
     }
 
@@ -727,6 +763,15 @@ enum SmartExpenseParser {
             "hotel", "cafe", "bhavan", "ratna", "darbar", "house", \
             "kitchen", "biryani house", "tiffin centre".
 
+            **DATE RULES.** Resolve relative time references using \
+            the SITUATIONAL CONTEXT above (which tells you today's date \
+            and day of week). Return date in YYYY-MM-DD format.
+            - "yesterday" / "kal" → yesterday's date
+            - "day before yesterday" / "parso" → 2 days ago
+            - "last Friday" / "pichle Friday" → most recent past Friday
+            - "morning coffee" / "today morning" → today's date
+            - No date/time mentioned → nil (means right now)
+
             More examples:
             - "spent 280 for masala dosa at ramachandra restaurant" → \
               merchant "Ramachandra Restaurant", item "Masala Dosa"
@@ -736,6 +781,8 @@ enum SmartExpenseParser {
             - "100 for vada pav at the corner stall" → merchant "Corner Stall", \
               item "Vada Pav"
             - "150 chai at chai point" → merchant "Chai Point", item "Chai"
+            - "yesterday 500 at swiggy" → date "2026-06-22", amount 500, \
+              merchant "Swiggy"
             """
         } else {
             instructions = """
@@ -783,8 +830,109 @@ enum SmartExpenseParser {
                 merchant: fm.merchant,
                 item: fm.item,
                 category: fm.category,
-                account: fm.account
+                account: fm.account,
+                date: fm.date
             )
+        } catch {
+            return nil
+        }
+        #else
+        return nil
+        #endif
+    }
+
+    // MARK: - Multi-Expense Voice Parse (FM)
+
+    /// On-device FM implementation for multi-expense voice transcripts.
+    /// Reuses the same voice-specific prompt (homophones, split digits,
+    /// Indian English numbers) but with added multi-expense splitting
+    /// guidance. Returns an array of SmartParseResult — one per expense.
+    private static func parseMulti(
+        _ input: String,
+        categories: [CategoryEntry],
+        accountNames: [String],
+        contextBlock: String = ""
+    ) async -> [SmartParseResult]? {
+        #if canImport(FoundationModels)
+        guard #available(iOS 26.0, *), isAvailable else { return nil }
+        let normalizedInput = Self.normalizeIndianNumbers(in: input)
+        guard !normalizedInput.trimmingCharacters(in: .whitespaces).isEmpty else { return nil }
+        guard !categories.isEmpty else { return nil }
+
+        let categoryList = CategoryHint.formatList(
+            categories.map { (name: $0.name, iconKey: $0.iconKey) }
+        )
+        let accountList = accountNames.isEmpty
+            ? "(no account list provided)"
+            : accountNames.joined(separator: ", ")
+
+        let contextSection = contextBlock.isEmpty ? "" : "\n\n\(contextBlock)\n"
+
+        let instructions = """
+        You are TULA's senior expense parser. You have ONE job: extract \
+        precise, structured expense data from the user's voice transcript. \
+        The input contains MULTIPLE expenses separated by conjunctions \
+        (and, then, also, plus), commas, or semicolons.
+        \(contextSection)
+        You parse expense entries from VOICE transcripts spoken by \
+        Indian users. The transcript may contain speech-recognition \
+        errors. Use the category and account lists as anchors.
+
+        For EACH expense in the input, extract:
+        - amount: total spent in rupees (see AMOUNT RULES below)
+        - merchant: place or vendor name
+        - item: what was bought (if separate from merchant)
+        - category: pick ONE from the list below
+        - account: from the account list, or empty
+
+        **SPLITTING RULES:**
+        - Split on "and", "then", "also", "plus", commas, semicolons
+        - Each expense must have its own amount
+        - If an account is mentioned once at the end (e.g. "from cash"), \
+          it applies to ALL expenses
+        - If a category applies globally, repeat it in each entry
+
+        **AMOUNT RULES — Indian English shorthand:**
+        ONES × 100 + TENS: "two fifty" = 250, "three fifty" = 350, \
+        "four eighty" = 480, "one twenty" = 120.
+        Split digits: "1 20" = 120, "3 50" = 350.
+        "X hundred Y": "two hundred fifty" = 250.
+        Indian magnitudes: "lakh" = 100000, "crore" = 10000000.
+
+        Available categories:
+        \(categoryList)
+
+        Accounts: \(accountList)
+
+        Examples:
+        - "350 food and 400 groceries" → [{350, nil, nil, "Food"}, \
+          {400, nil, nil, "Groceries"}]
+        - "ola 480 and swiggy 350 and chai 80 from cash" → \
+          [{480, "Ola", nil, "Transport", "Cash"}, \
+          {350, "Swiggy", nil, "Food", "Cash"}, \
+          {80, "Chai", nil, "Food", "Cash"}]
+        - "spent 250 on lunch at sagar ratna and 150 for chai at \
+          chai point" → [{250, "Sagar Ratna", "Lunch", "Food"}, \
+          {150, "Chai Point", "Chai", "Food"}]
+        """
+
+        do {
+            let session = LanguageModelSession(instructions: instructions)
+            let response = try await session.respond(
+                to: normalizedInput,
+                generating: _FMMultiExpenseResult.self
+            )
+            let results = response.content.expenses.map { fm in
+                SmartParseResult(
+                    amount: fm.amount,
+                    merchant: fm.merchant,
+                    item: fm.item,
+                    category: fm.category,
+                    account: fm.account,
+                    date: fm.date
+                )
+            }
+            return results.isEmpty ? nil : results
         } catch {
             return nil
         }
@@ -920,6 +1068,21 @@ struct _FMSmartParseResult: Codable, Sendable {
 
     @Guide(description: "Account or payment method, matching the user's account list. Empty when the input doesn't mention which account was used.")
     let account: String?
+
+    @Guide(description: "Date of the expense in YYYY-MM-DD format if mentioned in the input. Resolve relative references using SITUATIONAL CONTEXT: 'yesterday'/'kal' = yesterday's date, 'last Friday' = most recent past Friday, 'day before yesterday'/'parso' = 2 days ago. Nil when the expense happened now/today or no date is mentioned.")
+    let date: String?
+}
+
+/// FM-facing multi-expense result for voice inputs that contain two or
+/// more expenses separated by conjunctions ("and", "then", commas).
+/// A single FM call extracts all expenses, letting the model use cross-
+/// expense context (e.g. "from cash" applies to both expenses in
+/// "350 food and 400 groceries from cash").
+@available(iOS 26.0, *)
+@Generable
+struct _FMMultiExpenseResult: Codable, Sendable {
+    @Guide(description: "Array of expenses extracted from the input. Split on conjunctions like 'and', 'then', 'also', 'plus', commas, and semicolons. Each entry has its own amount, merchant, item, category, and account. If an account or category is mentioned once and applies to all expenses, repeat it in each entry.")
+    let expenses: [_FMSmartParseResult]
 }
 
 /// Lightweight schema for the parallel transcript-cleanup pass. A single
@@ -1011,6 +1174,9 @@ struct SmartParseResult: Codable, Sendable {
     let item: String?
     let category: String?
     let account: String?
+    /// Resolved date in YYYY-MM-DD format from relative expressions
+    /// ("yesterday", "last Friday"). Nil when the expense is for today.
+    let date: String?
 }
 
 /// Public receipt parse result returned by `SmartExpenseParser.parseReceipt`.

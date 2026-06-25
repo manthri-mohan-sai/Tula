@@ -2113,6 +2113,7 @@ struct AddExpenseView: View {
         // "office mess" auto-picks the right category. Silent — the user
         // doesn't see anything happen, but the app gets smarter with use.
         learnMerchantCategory()
+        learnMerchantCorrection()
         try? context.save(); WidgetRefresh.refresh(using: context)
         NotificationManager.refreshDailyReminder(using: context)
         lastUsedAccountID = account.id.uuidString
@@ -2169,6 +2170,35 @@ struct AddExpenseView: View {
                                     isUserDefined: true)
             context.insert(rule)
         }
+    }
+
+    /// Voice-correction learning hook: when the user edits the merchant
+    /// name of a voice-sourced expense (source == .nlp or .smartParsed),
+    /// store the original→corrected mapping in UserDefaults. These
+    /// corrections feed back into:
+    /// - `contextualStrings` on SFSpeechRecognitionRequest (Phase 1)
+    /// - FM correction hints via FMContextBuilder (Phase 3)
+    /// creating a virtuous cycle: correct once → never wrong again.
+    private func learnMerchantCorrection() {
+        guard let existing = existingExpense,
+              existing.source == .nlp || existing.source == .smartParsed
+        else { return }
+
+        let originalMerchant = (existing.merchant ?? "").trimmingCharacters(in: .whitespaces)
+        let newMerchant = merchant.trimmingCharacters(in: .whitespaces)
+
+        // Only learn when the merchant actually changed and both values
+        // are meaningful (non-empty, not purely numeric).
+        guard !originalMerchant.isEmpty,
+              !newMerchant.isEmpty,
+              originalMerchant.lowercased() != newMerchant.lowercased(),
+              !originalMerchant.allSatisfy({ $0.isNumber || $0.isWhitespace }),
+              !newMerchant.allSatisfy({ $0.isNumber || $0.isWhitespace })
+        else { return }
+
+        var map = UserDefaults.standard.dictionary(forKey: "merchantCorrectionMap") as? [String: String] ?? [:]
+        map[originalMerchant.lowercased()] = newMerchant
+        UserDefaults.standard.set(map, forKey: "merchantCorrectionMap")
     }
 
     /// Walks active budgets and posts threshold notifications for any

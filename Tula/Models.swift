@@ -43,6 +43,9 @@ final class Account {
     @Relationship(deleteRule: .cascade, inverse: \Transfer.toAccount)
     var incomingTransfers: [Transfer] = []
 
+    @Relationship(deleteRule: .cascade, inverse: \BalanceAdjustment.account)
+    var adjustments: [BalanceAdjustment] = []
+
     init(name: String, kind: AccountKind, currencyCode: String = "INR",
          iconKey: String = "building.columns", colorHex: String = "#4A90E2",
          openingBalance: Double = 0, creditLimit: Double? = nil, sortOrder: Int = 0) {
@@ -67,36 +70,31 @@ final class Account {
         let expenseTotal = expenses.reduce(0) { $0 + $1.amount }
         let outgoing = outgoingTransfers.reduce(0) { $0 + $1.amount }
         let incoming = incomingTransfers.reduce(0) { $0 + $1.amount }
+        let adjustmentTotal = adjustments.reduce(0) { $0 + $1.delta }
 
         switch kind {
         case .creditCard:
-            return expenseTotal - incoming
+            return expenseTotal - incoming + adjustmentTotal
         case .bank, .cash, .wallet:
-            return openingBalance + incoming - outgoing - expenseTotal
+            return openingBalance + incoming - outgoing - expenseTotal + adjustmentTotal
         }
     }
 
-    /// User-facing amount — avoids showing confusing negative "Net flow" on
-    /// wallets/cash that the user isn't actively maintaining. When the derived
-    /// balance is negative (more expenses than top-ups), we show the total
-    /// spent instead — always positive, always useful.
+    /// User-facing amount — always the magnitude of `derivedBalance`.
+    /// Never negative; the accompanying `displayLabel` provides context
+    /// (Balance / Spent / Outstanding / Credit balance). Using
+    /// `abs(derivedBalance)` ensures that incoming transfers (Money In)
+    /// are always reflected in the displayed number.
     var displayAmount: Double {
-        switch kind {
-        case .wallet, .cash:
-            if derivedBalance < 0 {
-                return expenses.reduce(0) { $0 + $1.amount }
-            }
-            return derivedBalance
-        case .creditCard, .bank:
-            return derivedBalance
-        }
+        abs(derivedBalance)
     }
 
     /// Label that matches `displayAmount` semantics.
     var displayLabel: String {
         switch kind {
-        case .creditCard: return "Outstanding"
-        case .bank:       return "Net flow"
+        case .creditCard: return derivedBalance < 0 ? "Credit balance" : "Outstanding"
+        case .bank:
+            return derivedBalance < 0 ? "Spent" : "Balance"
         case .cash:
             return derivedBalance < 0 ? "Spent" : "On hand"
         case .wallet:
@@ -260,6 +258,48 @@ enum TransferKind: String, Codable {
     case withdrawal        // Bank → Cash (ATM, etc.)
     case deposit           // Cash → Bank
     case topUp             // External → Wallet/Cash (cashback, rewards, refund)
+}
+
+// MARK: - Balance Adjustment
+
+/// A manual correction that re-anchors an account's balance to the real
+/// value the user's bank/card shows. It is NOT spending — never counted in
+/// "Spent this month", budgets, or the expense list. Auditable: each
+/// reconcile is its own record, shown in the account's history and
+/// individually deletable.
+@Model
+final class BalanceAdjustment {
+    var id: UUID = UUID()
+
+    /// Signed correction applied to the account balance: target − previous.
+    /// Positive raised the balance, negative lowered it.
+    var delta: Double = 0
+
+    /// The balance the user reconciled TO, snapshotted so history rows can
+    /// show "Balance updated to ₹X" without recomputing historical state.
+    var resultingBalance: Double = 0
+
+    var date: Date = Date()
+    var createdAt: Date = Date()
+    var note: String? = nil
+    var source: AdjustmentSource = AdjustmentSource.manual
+
+    var account: Account?
+
+    init(delta: Double, resultingBalance: Double, account: Account?,
+         date: Date = .now, source: AdjustmentSource = .manual, note: String? = nil) {
+        self.delta = delta
+        self.resultingBalance = resultingBalance
+        self.account = account
+        self.date = date
+        self.source = source
+        self.note = note
+    }
+}
+
+enum AdjustmentSource: String, Codable, CaseIterable {
+    case manual        // standalone "Update balance"
+    case billPayment   // captured during the pay-bill flow
 }
 
 // MARK: - Recurring Rule

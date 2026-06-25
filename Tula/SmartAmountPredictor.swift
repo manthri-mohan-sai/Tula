@@ -5,9 +5,11 @@ import Foundation
 ///
 /// Three-tier fallback:
 /// 1. **Day-of-week** — if 3+ expenses on the same weekday exist,
-///    use their weighted average (captures "Sundays cost more" patterns).
+///    use their median (outlier-resistant, always a real amount).
+///    Bails to rule amount when variance is high (noisy data).
 /// 2. **Weighted trend** — last 10 expenses, recent ones weighted heavier
 ///    (captures gradual price changes like subscription increases).
+///    Also bails to rule amount when variance is high.
 /// 3. **Rule amount** — fallback to the stored `rule.amount`.
 enum SmartAmountPredictor {
 
@@ -75,22 +77,44 @@ enum SmartAmountPredictor {
         }
 
         if sameDayExpenses.count >= 3 {
-            let avg = weightedAverage(of: sameDayExpenses.map(\.amount))
-            let confidence = sameDayExpenses.count >= 5 && coefficientOfVariation(sameDayExpenses.map(\.amount)) < 0.20
-                ? Confidence.high : .medium
+            let amounts = sameDayExpenses.map(\.amount)
+            let cv = coefficientOfVariation(amounts)
+
+            // High variance (CV > 25%) → data is too noisy, fall back to
+            // rule amount. The user's own judgment beats a shaky prediction.
+            if cv > 0.25 {
+                return Prediction(amount: rule.amount, confidence: .low, basis: .ruleAmount)
+            }
+
+            // Use median: always produces a number the user actually spent,
+            // not a phantom weighted average they've never seen.
+            let med = median(of: amounts)
+            let confidence: Confidence = sameDayExpenses.count >= 5 && cv < 0.10
+                ? .high : .medium
             return Prediction(
-                amount: rounded(avg),
+                amount: rounded(med),
                 confidence: confidence,
                 basis: .dayOfWeek(weekday: targetWeekday)
             )
         }
 
-        // Tier 2: Weighted trend (last 10 expenses)
+        // Tier 2: Recent trend (last 10 expenses)
+        // Uses median (outlier-resistant) — always produces a number the
+        // user actually spent, not a phantom weighted average they've
+        // never seen. Bails to rule amount when variance is too high.
         if history.count >= 2 {
             let recent = Array(history.suffix(10))
-            let avg = weightedAverage(of: recent.map(\.amount))
+            let amounts = recent.map(\.amount)
+            let cv = coefficientOfVariation(amounts)
+
+            // High variance → noisy data, rule amount is safer.
+            if cv > 0.25 {
+                return Prediction(amount: rule.amount, confidence: .low, basis: .ruleAmount)
+            }
+
+            let med = median(of: amounts)
             let confidence: Confidence
-            if recent.count >= 5 && coefficientOfVariation(recent.map(\.amount)) < 0.20 {
+            if recent.count >= 5 && cv < 0.10 {
                 confidence = .high
             } else if recent.count >= 3 {
                 confidence = .medium
@@ -98,7 +122,7 @@ enum SmartAmountPredictor {
                 confidence = .low
             }
             return Prediction(
-                amount: rounded(avg),
+                amount: rounded(med),
                 confidence: confidence,
                 basis: .weightedAverage
             )
@@ -122,6 +146,19 @@ enum SmartAmountPredictor {
             totalWeight += weight
         }
         return weightedSum / totalWeight
+    }
+
+    /// Median — returns the middle value (or average of two middle values).
+    /// Outlier-resistant: always produces a number the user actually spent
+    /// (or very close to one), never a phantom "weighted" amount.
+    private static func median(of values: [Double]) -> Double {
+        guard !values.isEmpty else { return 0 }
+        let sorted = values.sorted()
+        let mid = sorted.count / 2
+        if sorted.count.isMultiple(of: 2) {
+            return (sorted[mid - 1] + sorted[mid]) / 2.0
+        }
+        return sorted[mid]
     }
 
     /// Coefficient of variation (std-dev / mean). Returns 0 for constant data.

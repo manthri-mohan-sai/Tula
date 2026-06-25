@@ -33,6 +33,11 @@ struct Insight: Identifiable {
     let priority: Int   // higher = more important; engine sorts by this
     var suggestion: RecurringSuggestion? = nil
     var categoryID: UUID? = nil
+    var accountID: UUID? = nil
+    /// Original merchant display name — used by merchantAutoRule so the
+    /// confirmation sheet can reference the exact merchant string without
+    /// fragile title-parsing.
+    var merchantName: String? = nil
 }
 
 enum InsightKind {
@@ -339,11 +344,13 @@ enum InsightEngine {
                     id: "merchantRule-\(merchant)",
                     kind: .merchantAutoRule,
                     title: "Auto-categorize \(displayName)?",
-                    detail: "Always \(topCat!.name) · \(topAcc!.name) — \(exps.count) expenses logged.",
+                    detail: "Tap to always assign \(topCat!.name) · \(topAcc!.name) for future \(displayName) expenses.",
                     icon: "wand.and.stars",
                     color: Color(hex: topCat!.colorHex),
                     priority: 3,
-                    categoryID: topCat!.id
+                    categoryID: topCat!.id,
+                    accountID: topAcc!.id,
+                    merchantName: displayName
                 ))
                 break // Only show one auto-rule suggestion
             }

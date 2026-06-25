@@ -352,6 +352,7 @@ private func sharedModelContext() throws -> ModelContext {
         RecurringRule.self,
         MerchantRule.self,
         Budget.self,
+        BalanceAdjustment.self,
     ])
     if let storeURL = SharedStorage.sharedStoreURL {
         let config = ModelConfiguration("Tula", schema: schema, url: storeURL)

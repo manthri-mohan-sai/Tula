@@ -259,14 +259,127 @@ enum CloudAIParser {
         let item = json["item"] as? String
         let category = json["category"] as? String
         let account = json["account"] as? String
+        let date = json["date"] as? String
 
         return SmartParseResult(
             amount: amount,
             merchant: merchant,
             item: item,
             category: category,
-            account: account
+            account: account,
+            date: date
         )
+    }
+
+    // MARK: - Multi-Expense Voice Parse
+
+    /// Parse a voice transcript that contains multiple expenses into an
+    /// array of structured results. Uses the same voice prompt conventions
+    /// but instructs the model to return `{"expenses": [...]}`.
+    static func parseVoiceMulti(
+        _ input: String,
+        categories: [CategoryEntry],
+        accountNames: [String] = [],
+        contextBlock: String = "",
+        config: CloudAIConfig? = nil
+    ) async -> [SmartParseResult]? {
+        let cfg = config ?? CloudAIConfig.load()
+        guard !cfg.apiKey.isEmpty else { return nil }
+        aiLog.info("parseVoiceMulti: starting, model=\(cfg.model), input=\(input.prefix(80))")
+
+        let categoryList = CategoryHint.formatList(
+            categories.map { (name: $0.name, iconKey: $0.iconKey) }
+        )
+        let accountList = accountNames.isEmpty
+            ? "(no account list provided)"
+            : accountNames.joined(separator: ", ")
+        let contextSection = contextBlock.isEmpty ? "" : "\n\n\(contextBlock)\n"
+
+        let systemPrompt = """
+        You are a JSON-only expense parser for MULTIPLE expenses in one voice transcript. \
+        You MUST respond with ONLY a valid JSON object. No explanations, no markdown, no code fences.
+
+        Schema: {"expenses":[{"amount":number,"merchant":string|null,"item":string|null,"category":string|null,"account":string|null}]}
+
+        The user dictated MULTIPLE expenses in a single voice message. Extract EACH \
+        expense separately. Common patterns:
+        - "350 swiggy and 200 groceries" → 2 expenses
+        - "coffee 80 lunch 250 auto 150" → 3 expenses
+        - "spent 500 on dinner and 300 on fuel" → 2 expenses
+        \(contextSection)
+        Parse voice transcripts from Indian users. Speech recognition may have errors.
+
+        Amount rules:
+        - Indian shorthand: "two fifty" = 250, "three twenty" = 320, "four eighty" = 480
+        - "to 80" / "too fifty" → "two eighty" = 280 / "two fifty" = 250
+        - Plain numbers like "280", "350" → use AS IS
+        - "lakh" = 100000, "crore" = 10000000
+
+        Categories (pick ONE per expense from this list):
+        \(categoryList)
+
+        Accounts: \(accountList)
+        If "from cash" / "using X" appears at the end, apply that account to ALL expenses.
+
+        Merchant = place/vendor/app. Item = what was bought. Indian dishes are items, \
+        not merchants (biryani, dosa, chai = items; Swiggy, Zomato, DMart = merchants).
+
+        RESPOND WITH ONLY THE JSON OBJECT. NOTHING ELSE.
+        """
+
+        let normalizedInput = SmartExpenseParser.normalizeIndianNumbers(in: input)
+
+        // Route: Gemini native API (with structured schema) or OpenAI-compat.
+        let json: [String: Any]?
+        if isGeminiConfig(cfg) {
+            json = await callGeminiNativeText(
+                config: cfg,
+                systemPrompt: systemPrompt,
+                userMessage: normalizedInput,
+                schema: multiExpenseSchema
+            )
+        } else {
+            // OpenAI-compatible endpoint — relies on prompt instructions for JSON.
+            guard let url = URL(string: cfg.endpoint) else { return nil }
+            let body: [String: Any] = [
+                "model": cfg.model,
+                "messages": [
+                    ["role": "system", "content": systemPrompt],
+                    ["role": "user", "content": normalizedInput]
+                ],
+                "temperature": 0.1,
+                "max_tokens": 1000
+            ]
+            guard let jsonData = try? JSONSerialization.data(withJSONObject: body) else { return nil }
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.setValue("Bearer \(cfg.apiKey)", forHTTPHeaderField: "Authorization")
+            request.timeoutInterval = 15
+            request.httpBody = jsonData
+            guard let (data, response) = try? await URLSession.shared.data(for: request),
+                  let http = response as? HTTPURLResponse, http.statusCode == 200 else { return nil }
+            json = parseOpenAIResponse(data)
+        }
+
+        guard let json,
+              let expenses = json["expenses"] as? [[String: Any]],
+              !expenses.isEmpty else { return nil }
+
+        return expenses.compactMap { dict in
+            let amount = (dict["amount"] as? Double)
+                ?? (dict["amount"] as? Int).map(Double.init)
+                ?? 0
+            guard amount > 0 else { return nil as SmartParseResult? }
+            return SmartParseResult(
+                amount: amount,
+                merchant: dict["merchant"] as? String,
+                item: dict["item"] as? String,
+                category: dict["category"] as? String,
+                account: dict["account"] as? String,
+                date: dict["date"] as? String
+            )
+        }
     }
 
     // MARK: - Receipt Text Parse
@@ -813,6 +926,18 @@ enum CloudAIParser {
             "account": ["type": "STRING", "description": "Payment account", "nullable": true]
         ],
         "required": ["amount"]
+    ]
+
+    private static let multiExpenseSchema: [String: Any] = [
+        "type": "OBJECT",
+        "properties": [
+            "expenses": [
+                "type": "ARRAY",
+                "description": "Array of individual expenses extracted from the transcript",
+                "items": expenseSchema
+            ]
+        ],
+        "required": ["expenses"]
     ]
 
     private static let receiptSchema: [String: Any] = [

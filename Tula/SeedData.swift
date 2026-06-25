@@ -76,6 +76,7 @@ enum SeedData {
             ("Education",        "book.fill",             "#20C997"),
             ("Travel",           "airplane",              "#22B8CF"),
             ("Personal Care",    "drop.fill",             "#CC5DE8"),
+            ("Repayment",        "arrow.uturn.left",      "#4DABF7"),
             ("Other",            "ellipsis.circle.fill",  "#868E96"),
         ]
 
@@ -629,6 +630,12 @@ enum SeedData {
         ("ayurveda", "Personal Care"), ("manicure", "Personal Care"),
         ("pedicure", "Personal Care"), ("facial", "Personal Care"),
         ("waxing", "Personal Care"),
+
+        // ── REPAYMENT ───────────────────────────────────────────────
+        ("repayment", "Repayment"), ("payback", "Repayment"),
+        ("paid back", "Repayment"), ("loan repay", "Repayment"),
+        ("emi", "Repayment"), ("installment", "Repayment"),
+        ("settled", "Repayment"), ("returned money", "Repayment"),
 
         // ── OTHER: Coworking ─────────────────────────────────────────
         ("wework", "Other"), ("awfis", "Other"), ("91springboard", "Other"),

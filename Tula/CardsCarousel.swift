@@ -134,6 +134,30 @@ struct AccountCardView: View {
 
     private var balanceLabel: String { account.displayLabel }
 
+    /// For bank accounts the card surfaces this month's spend instead of the
+    /// all-time net flow — that's the number users actually care about when
+    /// glancing at a bank card. Other account types keep their existing
+    /// display semantics (outstanding, on hand, balance, etc.).
+    private var monthSpend: Double {
+        let cal = Calendar.current
+        guard let monthStart = cal.dateInterval(of: .month, for: .now)?.start else { return 0 }
+        let expenseTotal = account.expenses
+            .filter { $0.date >= monthStart }
+            .reduce(0) { $0 + $1.amount }
+        let outgoing = account.outgoingTransfers
+            .filter { $0.date >= monthStart }
+            .reduce(0) { $0 + $1.amount }
+        return expenseTotal + outgoing
+    }
+
+    private var cardAmount: Double {
+        account.kind == .bank ? monthSpend : account.displayAmount
+    }
+
+    private var cardLabel: String {
+        account.kind == .bank ? "Spent this month" : balanceLabel
+    }
+
     private var hasChip: Bool { account.kind == .creditCard }
 
     /// Utilization % for credit cards (used / limit). Returns nil when not
@@ -152,7 +176,7 @@ struct AccountCardView: View {
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(account.name), \(accountTypeLabel)")
-        .accessibilityValue("Balance: \(Currency.format(account.derivedBalance, code: currencyCode))")
+        .accessibilityValue("\(cardLabel): \(Currency.format(cardAmount, code: currencyCode))")
         .accessibilityAddTraits(.isButton)
         .accessibilityHint("Double tap to view account details")
         .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
@@ -288,16 +312,16 @@ struct AccountCardView: View {
     /// a duplicate brand mark in shadow.
     private var bottomRow: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(Currency.format(account.displayAmount, code: currencyCode))
+            Text(Currency.format(cardAmount, code: currencyCode))
                 .font(.system(size: 30, weight: .bold, design: .rounded))
                 .foregroundStyle(.white)
                 .lineLimit(1)
                 .minimumScaleFactor(0.5)
                 .shadow(color: .black.opacity(0.20), radius: 1, y: 0.5)
-                .contentTransition(.numericText(value: account.displayAmount))
-                .animation(.snappy(duration: 0.35), value: account.displayAmount)
+                .contentTransition(.numericText(value: cardAmount))
+                .animation(.snappy(duration: 0.35), value: cardAmount)
 
-            Text(balanceLabel.uppercased())
+            Text(cardLabel.uppercased())
                 .font(.caption2.weight(.bold))
                 .tracking(1.5)
                 .foregroundStyle(.white.opacity(0.65))

@@ -44,6 +44,12 @@ enum FMContextBuilder {
         if let recent = recentActivity(in: modelContext, now: now, calendar: calendar) {
             sections.append(recent)
         }
+        if let amountRanges = merchantAmountRanges(in: modelContext) {
+            sections.append(amountRanges)
+        }
+        if let corrections = correctionHints() {
+            sections.append(corrections)
+        }
 
         return sections.joined(separator: "\n\n")
     }
@@ -262,6 +268,77 @@ enum FMContextBuilder {
         If the current input appears to refer to one of these (e.g. \
         "actually that was 500 not 450"), note that — but the user is \
         usually logging a NEW expense, not editing.
+        """
+    }
+
+    // MARK: - DB context: merchant amount ranges
+
+    /// Computes typical spend ranges per merchant so the FM can flag
+    /// implausible values. "Chai Point" is typically ₹80-200, not ₹5000.
+    /// When the transcribed amount is wildly outside a merchant's range,
+    /// the FM can prefer the interpretation that falls within it.
+    ///
+    /// Uses p10-p90 percentile range across all historical expenses per
+    /// merchant. Only includes merchants with 3+ data points (enough for
+    /// a meaningful range). Returns nil when not enough data exists.
+    private static func merchantAmountRanges(in context: ModelContext) -> String? {
+        let descriptor = FetchDescriptor<Expense>()
+        guard let expenses = try? context.fetch(descriptor),
+              expenses.count >= 10 else { return nil }
+
+        var merchantAmounts: [String: [Double]] = [:]
+        for expense in expenses {
+            guard let merchant = expense.merchant?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+                  !merchant.isEmpty else { continue }
+            merchantAmounts[merchant, default: []].append(expense.amount)
+        }
+
+        let ranges = merchantAmounts
+            .filter { $0.value.count >= 3 }
+            .sorted { $0.value.count > $1.value.count }
+            .prefix(15)
+            .map { merchant, amounts -> String in
+                let sorted = amounts.sorted()
+                let p10 = sorted[max(0, sorted.count / 10)]
+                let p90 = sorted[min(sorted.count - 1, sorted.count * 9 / 10)]
+                return "\"\(merchant)\": ₹\(Int(p10))-\(Int(p90))"
+            }
+
+        guard !ranges.isEmpty else { return nil }
+
+        return """
+        MERCHANT AMOUNT RANGES (typical spend at each place):
+        \(ranges.joined(separator: ", "))
+        If the parsed amount is wildly outside a merchant's range \
+        (e.g. ₹5000 for chai), the amount likely has a transcription \
+        error. Prefer the interpretation that falls within the typical \
+        range when two readings are plausible.
+        """
+    }
+
+    // MARK: - Correction history
+
+    /// Reads the user's merchant correction map — a dictionary of
+    /// "original transcription" → "corrected name" pairs that the user
+    /// built by editing voice-parsed expenses. Injected into the FM
+    /// prompt so the model applies the same correction next time the
+    /// same transcription error recurs.
+    ///
+    /// No DB access — reads from UserDefaults directly. Safe to call
+    /// from any actor.
+    nonisolated private static func correctionHints() -> String? {
+        guard let dict = UserDefaults.standard.dictionary(
+            forKey: "merchantCorrectionMap") as? [String: String],
+              !dict.isEmpty else { return nil }
+
+        let entries = dict.prefix(20)
+            .map { "\"\($0.key)\" → \"\($0.value)\"" }
+
+        return """
+        LEARNED CORRECTIONS (user has previously corrected these \
+        transcriptions — apply the same fix when you see the left side):
+        \(entries.joined(separator: ", "))
         """
     }
 }

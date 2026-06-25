@@ -91,6 +91,7 @@ struct HomeView: View {
     @AppStorage("dismissedInsightIDs") private var dismissedInsightIDsRaw: String = ""
     @State private var dismissedUpcomingKeys: Set<String> = []
     @State private var recurringSuggestionToCreate: RecurringSuggestion?
+    @State private var merchantRuleConfirmInsight: Insight?
     @State private var appeared = false
     @State private var showingAPIKeyPrompt = false
     @State private var showingTransfer = false
@@ -427,6 +428,23 @@ struct HomeView: View {
         return allAccounts.first(where: { !$0.isArchived })
     }
 
+    /// Top merchant names by frequency, passed to QuickLogBar for speech
+    /// recognition vocabulary hints. Computing here avoids giving the bar
+    /// a ModelContext dependency. Capped at 50 to leave room in the 100-
+    /// phrase contextualStrings budget for accounts, categories, etc.
+    private var frequentMerchantNames: [String] {
+        var counts: [String: Int] = [:]
+        for expense in allExpenses {
+            guard let merchant = expense.merchant?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+                  !merchant.isEmpty else { continue }
+            counts[merchant, default: 0] += 1
+        }
+        return counts.sorted { $0.value > $1.value }
+            .prefix(50)
+            .map(\.key)
+    }
+
     // MARK: - Body
 
     private var scrollBackground: some View {
@@ -574,6 +592,17 @@ struct HomeView: View {
                 Button("Later", role: .cancel) { }
             } message: {
                 Text("Add your free Google Gemini API key in Settings to enable smart receipt scanning and expense parsing.")
+            }
+            .sheet(item: $merchantRuleConfirmInsight) { insight in
+                MerchantRuleConfirmSheet(
+                    insight: insight,
+                    categories: allCategories,
+                    accounts: allAccounts,
+                    onConfirm: { applyMerchantAutoRule(insight) },
+                    onDismiss: { merchantRuleConfirmInsight = nil }
+                )
+                .presentationDetents([.medium])
+                .presentationDragIndicator(.visible)
             }
             .overlay(alignment: .top) {
                 if let toast = toastMessage {
@@ -992,32 +1021,39 @@ struct HomeView: View {
             defaultAccount: defaultAccount,
             currencyCode: currencyCode,
             onSubmit: handleQuickLog,
-            isSmartParsing: smartParseInFlight > 0
+            onError: { showToast($0) },
+            isSmartParsing: smartParseInFlight > 0,
+            topMerchants: frequentMerchantNames
         )
     }
 
     /// Routes the submission. Typed input takes the fast rule-based path;
-    /// single-expense voice input gets re-parsed by Foundation Models so
-    /// transcription noise (homophones like "waffle" → "rahul", split
-    /// digits "1 20") gets corrected with full context.
+    /// voice input gets re-parsed by Foundation Models so transcription
+    /// noise (homophones like "waffle" → "rahul", split digits "1 20")
+    /// gets corrected with full context.
     ///
-    /// **Multi-expense input bypasses FM.** Foundation Models returns a
-    /// single structured result — it has no concept of "this string
-    /// represents two expenses". Routing "350 food and 400 groceries"
-    /// through FM would silently lose one of them. The rule parser is
-    /// purpose-built for splitting on conjunctions and commas, so when
-    /// rules already detected 2+ expenses, we trust that decomposition
-    /// and skip FM entirely.
+    /// Both single and multi-expense voice go through FM when available.
+    /// Multi-expense uses `parseVoiceMulti()` which extracts all expenses
+    /// in a single FM call, letting the model use cross-expense context
+    /// (e.g. "from cash" at the end applies to all). Falls back to
+    /// rule-parsed results if FM is unavailable or returns nil.
     private func handleQuickLog(_ parsedExpenses: [ParsedExpense],
                                 rawInput: String,
                                 isVoice: Bool) {
         let isMultiExpense = parsedExpenses.count >= 2
 
-        if isVoice, !isMultiExpense, SmartExpenseParser.isAvailable {
-            handleVoiceQuickLog(rawInput: rawInput, ruleFallback: parsedExpenses)
+        if isVoice, SmartExpenseParser.isAvailable {
+            if isMultiExpense {
+                handleVoiceMultiQuickLog(rawInput: rawInput, ruleFallback: parsedExpenses)
+            } else {
+                handleVoiceQuickLog(rawInput: rawInput, ruleFallback: parsedExpenses)
+            }
             return
         }
-        // Typed input, multi-expense voice, or no-FM device: rule path.
+        // Typed input or no-FM/Cloud device: rule path.
+        if isVoice {
+            print("🎤 [Voice] No AI available (FM=\(SmartExpenseParser.isFMAvailable), Cloud=\(SmartExpenseParser.hasCloudVision)), using rules")
+        }
         saveParsedExpenses(parsedExpenses)
     }
 
@@ -1034,10 +1070,13 @@ struct HomeView: View {
             CategoryEntry(name: $0.name, iconKey: $0.iconKey)
         }
         let accountNames = usableAccounts.map { $0.name }
-        let categoryByName = Dictionary(uniqueKeysWithValues:
-            usableCategories.map { ($0.name.lowercased(), $0) })
-        let accountByName = Dictionary(uniqueKeysWithValues:
-            usableAccounts.map { ($0.name.lowercased(), $0) })
+        // Collision-safe: two accounts can share a name case-insensitively
+        // ("Cash" / "cash"). `uniqueKeysWithValues` would trap; keep the
+        // first (lowest sortOrder, since usableAccounts is already ordered).
+        let accountByName = Dictionary(
+            usableAccounts.map { ($0.name.lowercased(), $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
 
         // Show the AI pill for the duration of the FM call. Floor ensures
         // it stays visible long enough to register (FM can be fast on
@@ -1051,6 +1090,9 @@ struct HomeView: View {
         // task so MainActor access to ModelContext works. The string is
         // Sendable and crosses the actor boundary safely.
         let contextBlock = FMContextBuilder.build(modelContext: context)
+
+        let provider = SmartExpenseParser.hasCloudVision ? "Cloud AI" : (SmartExpenseParser.isFMAvailable ? "FM" : "Rules")
+        print("🎤 [Voice] Parsing via \(provider): \"\(rawInput.prefix(80))\"")
 
         Task.detached(priority: .userInitiated) {
             // Race the FM call against a timeout so a hung model doesn't
@@ -1085,34 +1127,40 @@ struct HomeView: View {
                 // Build and save from FM result if it produced a usable
                 // amount + account; otherwise fall back to rule output.
                 if let result, result.amount > 0 {
+                    print("🎤 [Voice] AI result: ₹\(result.amount) \(result.merchant ?? "-") | cat=\(result.category ?? "-") | item=\(result.item ?? "-")")
+
                     // Amount sanity check: if FM's amount is significantly
                     // smaller than what the rule parser extracted from the
                     // same raw input, FM probably dropped a digit during
                     // its interpretation. Fall back to rules in that case.
-                    //
-                    // The rule parser handles number-word normalization
-                    // (e.g. "three fifty" → 350) and split-digit collapse
-                    // ("3 50" → 350) before extracting the amount. So if
-                    // rule says 350 and FM says 50, FM is wrong.
                     let ruleAmount = ruleFallback.first?.amount ?? 0
                     if ruleAmount > 0, result.amount < ruleAmount / 2 {
+                        print("🎤 [Voice] Amount sanity fail: AI=\(result.amount) vs Rule=\(ruleAmount), using rules")
                         saveParsedExpenses(ruleFallback)
                         return
                     }
 
-                    let category = result.category
-                        .flatMap { categoryByName[$0.lowercased()] }
+                    // Category resolution — same order as receipt path:
+                    // 1. MerchantRuleResolver (deterministic, user-learned)
+                    // 2. FM suggestion with fuzzy name match
+                    let category = MerchantRuleResolver.category(
+                        for: result.merchant, in: context
+                    ) ?? resolveCategory(named: result.category)
                     let account = result.account
                         .flatMap { accountByName[$0.lowercased()] }
                         ?? defaultAccount
                     guard let account else {
-                        // No account possible — couldn't save. Fall back.
                         saveParsedExpenses(ruleFallback)
                         return
                     }
 
+                    print("🎤 [Voice] Resolved: cat=\(category?.name ?? "nil") acct=\(account.name)")
+
+                    let expenseDate = Self.parseYMD(result.date) ?? .now
+
                     let expense = Expense(
                         amount: result.amount,
+                        date: expenseDate,
                         merchant: result.merchant,
                         note: result.item,
                         source: .smartParsed,
@@ -1126,10 +1174,111 @@ struct HomeView: View {
                     lastUsedAccountID = account.id.uuidString
                     Haptics.success()
                     triggerSavePulse()
-                    showToast("Expense saved")
+                    showToast("Expense saved · AI")
                     evaluateBudgetAlerts()
                 } else {
                     // FM unavailable / failed / no usable result. Use rule output.
+                    print("🎤 [Voice] AI returned nil/zero, falling to rules")
+                    saveParsedExpenses(ruleFallback)
+                }
+            }
+        }
+    }
+
+    /// FM-first voice path for MULTI-expense input. Sends the raw
+    /// transcript to `parseVoiceMulti()` which extracts all expenses in
+    /// one FM call. Falls back to rule-parsed results if FM fails or is
+    /// unavailable. Same timeout/safety pattern as `handleVoiceQuickLog`.
+    private func handleVoiceMultiQuickLog(rawInput: String,
+                                          ruleFallback: [ParsedExpense]) {
+        let usableCategories = allCategories.filter { !$0.isArchived }
+        let usableAccounts = allAccounts.filter { !$0.isArchived }
+        let categoryEntries = usableCategories.map {
+            CategoryEntry(name: $0.name, iconKey: $0.iconKey)
+        }
+        let accountNames = usableAccounts.map { $0.name }
+        // Collision-safe: two accounts can share a name case-insensitively
+        // ("Cash" / "cash"). `uniqueKeysWithValues` would trap; keep the
+        // first (lowest sortOrder, since usableAccounts is already ordered).
+        let accountByName = Dictionary(
+            usableAccounts.map { ($0.name.lowercased(), $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+
+        smartParseInFlight += 1
+        let startedAt = Date()
+        let minPillVisible: TimeInterval = 0.8
+        let timeout: TimeInterval = 8.0  // slightly longer for multi
+
+        let contextBlock = FMContextBuilder.build(modelContext: context)
+
+        Task.detached(priority: .userInitiated) {
+            let results = await withTaskGroup(of: [SmartParseResult]?.self) { group in
+                group.addTask {
+                    await SmartExpenseParser.parseVoiceMulti(
+                        rawInput,
+                        categories: categoryEntries,
+                        accountNames: accountNames,
+                        contextBlock: contextBlock
+                    )
+                }
+                group.addTask {
+                    try? await Task.sleep(for: .seconds(timeout))
+                    return nil
+                }
+                let first = await group.next() ?? nil
+                group.cancelAll()
+                return first
+            }
+
+            let elapsed = Date().timeIntervalSince(startedAt)
+            if elapsed < minPillVisible {
+                try? await Task.sleep(for: .seconds(minPillVisible - elapsed))
+            }
+
+            await MainActor.run {
+                smartParseInFlight = max(0, smartParseInFlight - 1)
+
+                // Validate FM results: all expenses need usable amounts.
+                if let results, !results.isEmpty,
+                   results.allSatisfy({ $0.amount > 0 }) {
+                    var saved = 0
+                    for result in results {
+                        let category = MerchantRuleResolver.category(
+                            for: result.merchant, in: context
+                        ) ?? resolveCategory(named: result.category)
+                        let account = result.account
+                            .flatMap { accountByName[$0.lowercased()] }
+                            ?? defaultAccount
+                        guard let account else { continue }
+
+                        let expenseDate = Self.parseYMD(result.date) ?? .now
+                        let expense = Expense(
+                            amount: result.amount,
+                            date: expenseDate,
+                            merchant: result.merchant,
+                            note: result.item,
+                            source: .smartParsed,
+                            category: category,
+                            account: account
+                        )
+                        expense.rawInput = rawInput
+                        context.insert(expense)
+                        lastUsedAccountID = account.id.uuidString
+                        saved += 1
+                    }
+                    if saved > 0 {
+                        try? context.save(); WidgetRefresh.refresh(using: context)
+                        NotificationManager.refreshDailyReminder(using: context)
+                        Haptics.success()
+                        triggerSavePulse()
+                        showToast("\(saved) expenses saved")
+                        evaluateBudgetAlerts()
+                    } else {
+                        saveParsedExpenses(ruleFallback)
+                    }
+                } else {
+                    // FM unavailable / failed / timeout. Use rule output.
                     saveParsedExpenses(ruleFallback)
                 }
             }
@@ -1149,6 +1298,7 @@ struct HomeView: View {
             guard let account = parsed.account else { continue }
             let expense = Expense(
                 amount: parsed.amount,
+                date: parsed.date,
                 merchant: parsed.merchant,
                 note: parsed.note,
                 source: .nlp,
@@ -1213,8 +1363,6 @@ struct HomeView: View {
             let categoryEntries = usableCategories.map {
                 CategoryEntry(name: $0.name, iconKey: $0.iconKey)
             }
-            let categoryMap = Dictionary(uniqueKeysWithValues:
-                usableCategories.map { ($0.name.lowercased(), $0) })
 
             // Capture the data we need from the SwiftData models on the
             // main actor BEFORE spawning the detached task. Reading model
@@ -1249,10 +1397,14 @@ struct HomeView: View {
                     )
 
                     if let result {
-                        // Re-find the category by name (FM returns a string).
-                        if let catName = result.category?.lowercased(),
-                           let category = categoryMap[catName] {
-                            item.expense.category = category
+                        // Category: MerchantRuleResolver first (deterministic),
+                        // then FM suggestion with fuzzy name resolution.
+                        let enrichedCategory = MerchantRuleResolver.category(
+                            for: result.merchant ?? item.expense.merchant,
+                            in: context
+                        ) ?? resolveCategory(named: result.category)
+                        if let enrichedCategory {
+                            item.expense.category = enrichedCategory
                         }
                         // Improve merchant if rules left it nil and FM
                         // identified one (don't overwrite — rules might
@@ -1300,6 +1452,40 @@ struct HomeView: View {
 
     /// Evaluates whether any budget crossed a notification threshold after
     /// the most recent save. Cheap — just walks budgets + summed expenses
+    /// Parses a YYYY-MM-DD date string returned by the FM. Returns nil
+    /// for nil input, empty strings, or unparseable formats.
+    private static func parseYMD(_ string: String?) -> Date? {
+        guard let string, !string.isEmpty else { return nil }
+        let fmt = DateFormatter()
+        fmt.dateFormat = "yyyy-MM-dd"
+        fmt.locale = Locale(identifier: "en_US_POSIX")
+        return fmt.date(from: string)
+    }
+
+    /// Resolve a category name (e.g. from FM output) to one of the user's
+    /// active categories. Two-pass: exact case-insensitive match first,
+    /// then substring overlap so "Food" matches "Food & Drinks" and
+    /// "Transport" matches "Travel & Transport". Mirrors the same logic
+    /// in AddExpenseView.resolveCategory(named:).
+    private func resolveCategory(named name: String?) -> Category? {
+        guard let name, !name.isEmpty else { return nil }
+        let target = name.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        let active = allCategories.filter { !$0.isArchived }
+
+        // Pass 1: exact case-insensitive match
+        if let exact = active.first(where: { $0.name.lowercased() == target }) {
+            return exact
+        }
+        // Pass 2: substring overlap — "Food" ↔ "Food & Drinks"
+        let overlaps = active
+            .filter { cat in
+                let catLower = cat.name.lowercased()
+                return target.contains(catLower) || catLower.contains(target)
+            }
+            .sorted { $0.name.count < $1.name.count }
+        return overlaps.first
+    }
+
     /// and posts a notification per crossing. No-op when the user has
     /// disabled budget alerts.
     private func evaluateBudgetAlerts() {
@@ -1779,7 +1965,7 @@ struct HomeView: View {
                     }
                 )
             }
-            .buttonStyle(.plain)
+            .buttonStyle(PressableScaleStyle(scale: 0.98))
         case .review, .recurringOverflow, .overdueOverflow:
             Button {
                 Haptics.tap()
@@ -1830,10 +2016,30 @@ struct HomeView: View {
             }
             .contentShape(Rectangle())
             .onTapGesture {
-                onTap?()
+                guard let onTap else { return }
+                onTap()
             }
+            .allowsHitTesting(onTap != nil)
 
-            if let onDismiss {
+            if isInsight {
+                // Insights: show chevron (tap affordance) + dismiss button
+                // so the card clearly looks interactive, not just dismissable.
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+                if let onDismiss {
+                    Button {
+                        onDismiss()
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.tertiary)
+                            .frame(width: 28, height: 28)
+                            .background(Circle().fill(Color.secondary.opacity(0.1)))
+                    }
+                    .buttonStyle(.plain)
+                }
+            } else if let onDismiss {
                 Button {
                     onDismiss()
                 } label: {
@@ -1904,7 +2110,9 @@ struct HomeView: View {
     // Sheet extracted to LogAmountSheetView (standalone struct below)
 
     private func confirmLog(rule: RecurringRule, date: Date) {
-        let prediction = cachedPredictions[rule.id]
+        // Compute prediction for the given date (not the cached next-due
+        // prediction) so overdue items get the correct day-of-week amount.
+        let prediction = SmartAmountPredictor.predict(for: rule, on: date)
         logConfirmation = LogConfirmationItem(rule: rule, date: date, prediction: prediction)
     }
 
@@ -1959,10 +2167,11 @@ struct HomeView: View {
     private func logUpcoming(rule: RecurringRule, date: Date, customAmount: Double? = nil) {
         Haptics.success()
         withAnimation(AppAnimation.snappy) {
-            // Update the rule's stored amount if the user entered a different one
-            if let custom = customAmount, custom != rule.amount {
-                rule.amount = custom
-            }
+            // Never overwrite rule.amount from a log action. The user's
+            // configured amount is their baseline; SmartAmountPredictor
+            // handles pre-fill from history. Silently rewriting the rule
+            // is confusing — the user goes to edit and sees a number they
+            // didn't set.
             RecurringEngine.createTransaction(rule: rule, date: date, in: context)
             // Advance the boundary so the engine treats this occurrence
             // as handled — prevents the overdue card from persisting.
@@ -2038,17 +2247,21 @@ struct HomeView: View {
             return dueLabel
         case .overdue(let rule, let date):
             let dueLabel = overdueRelativeLabel(for: date)
-            if let prediction = cachedPredictions[rule.id] {
-                let amountStr = Currency.format(prediction.amount, code: currencyCode)
-                let isApprox = prediction.basis != .ruleAmount && abs(prediction.amount - rule.amount) >= 0.01
-                let prefix = isApprox ? "~" : ""
-                let hint = prediction.hint(ruleAmount: rule.amount)
-                if hint.isEmpty {
-                    return "\(dueLabel) · \(prefix)\(amountStr)"
-                }
-                return "\(dueLabel) · \(prefix)\(amountStr) · \(hint)"
+            // Compute prediction for the ACTUAL overdue date, not the
+            // cached next-due-date prediction. The cache stores predictions
+            // for the next occurrence (e.g. Wednesday), but the overdue
+            // card needs the prediction for the missed date (e.g. Tuesday).
+            // Day-of-week patterns differ — "Based on your Tuesdays" vs
+            // "Based on your Wednesdays".
+            let prediction = SmartAmountPredictor.predict(for: rule, on: date)
+            let amountStr = Currency.format(prediction.amount, code: currencyCode)
+            let isApprox = prediction.basis != .ruleAmount && abs(prediction.amount - rule.amount) >= 0.01
+            let prefix = isApprox ? "~" : ""
+            let hint = prediction.hint(ruleAmount: rule.amount)
+            if hint.isEmpty {
+                return "\(dueLabel) · \(prefix)\(amountStr)"
             }
-            return dueLabel
+            return "\(dueLabel) · \(prefix)\(amountStr) · \(hint)"
         case .recurringOverflow:
             return "Tap to see all"
         case .overdueOverflow:
@@ -2123,27 +2336,33 @@ struct HomeView: View {
                 let filter = ExpenseFilter(dateRange: .custom(start: start, end: end))
                 navPath.append(HomeDestination.allExpenses(filter: filter, searchFocused: false))
             case .merchantAutoRule:
-                // Auto-create a merchant rule from this insight
-                let modelCtx = self.context
-                if let catID = insight.categoryID,
-                   let title = insight.title.components(separatedBy: "Auto-categorize ").last?.replacingOccurrences(of: "?", with: ""),
-                   let category = allCategories.first(where: { $0.id == catID }) {
-                    let rule = MerchantRule(pattern: title, category: category, isUserDefined: true)
-                    modelCtx.insert(rule)
-                    try? modelCtx.save()
-                    withAnimation(AppAnimation.snappy) {
-                        dismissInsight(insight.id)
-                    }
-                    Haptics.success()
-                    showToast("Rule created for \(title)") {
-                        modelCtx.delete(rule)
-                        try? modelCtx.save()
-                        Haptics.warning()
-                    }
-                }
+                merchantRuleConfirmInsight = insight
             default:
                 break
             }
+        }
+    }
+
+    /// Applies the merchant auto-rule after user confirms in the sheet.
+    private func applyMerchantAutoRule(_ insight: Insight) {
+        let modelCtx = self.context
+        guard let catID = insight.categoryID,
+              let merchant = insight.merchantName,
+              let category = allCategories.first(where: { $0.id == catID }) else { return }
+        let account = insight.accountID.flatMap { accID in
+            allAccounts.first { $0.id == accID }
+        }
+        let rule = MerchantRule(pattern: merchant, category: category, account: account, isUserDefined: true)
+        modelCtx.insert(rule)
+        try? modelCtx.save()
+        withAnimation(AppAnimation.snappy) {
+            dismissInsight(insight.id)
+        }
+        Haptics.success()
+        showToast("Rule created for \(merchant)") {
+            modelCtx.delete(rule)
+            try? modelCtx.save()
+            Haptics.warning()
         }
     }
 
@@ -2930,11 +3149,21 @@ private struct QuickLogBar: View {
     /// raw transcript through Foundation Models for re-parse (voice
     /// input, where rules can't reliably handle transcription noise).
     let onSubmit: ([ParsedExpense], String, Bool) -> Void
+    /// Surfaces a transient failure from the speech recognizer (mic
+    /// unavailable, recording interrupted, nothing heard) to the host so it
+    /// can show a toast. Without this, capture failures are silent — the
+    /// single worst outcome for a feature whose whole job is to feel reliable.
+    let onError: (String) -> Void
     /// True when Apple Foundation Models is currently enriching a
     /// recent submission. Drives the radiant amber glow around the
     /// input capsule so the user sees that on-device AI is engaged.
     /// Parent passes `smartParseInFlight > 0`.
     let isSmartParsing: Bool
+    /// Top merchant names by frequency — injected into the speech
+    /// recognizer's `contextualStrings` so iOS biases transcription
+    /// toward the user's actual vocabulary. Computed by HomeView from
+    /// allExpenses to avoid giving QuickLogBar a ModelContext dependency.
+    let topMerchants: [String]
 
     @State private var input: String = ""
     @FocusState private var focused: Bool
@@ -3016,6 +3245,14 @@ private struct QuickLogBar: View {
                 startVoice()
             }
         }
+        // Surface capture failures (interruption, no mic, nothing heard) as a
+        // toast. The recognizer resets errorMessage to nil on each start(), so
+        // the same failure can re-toast across sessions.
+        .onChange(of: speech.errorMessage) { _, message in
+            if let message, !message.isEmpty {
+                onError(message)
+            }
+        }
 
         .alert("Voice access needed", isPresented: $showingPermissionDenied) {
             Button("Open Settings") {
@@ -3042,6 +3279,8 @@ private struct QuickLogBar: View {
         HStack(spacing: Spacing.md) {
             if speech.isRecording {
                 recordingMode
+            } else if justFinishedVoice && showPreview {
+                voiceFinishedMode
             } else {
                 idleMode
             }
@@ -3184,6 +3423,33 @@ private struct QuickLogBar: View {
         }
     }
 
+    /// After voice stops, the preview card carries all the parsed detail.
+    /// The capsule shows a compact, non-editable hint — NOT the raw
+    /// transcript, which would clutter the bar and look like it needs
+    /// editing. Tapping the text area switches to edit mode if the user
+    /// wants to correct the transcript manually.
+    private var voiceFinishedMode: some View {
+        HStack(spacing: Spacing.md) {
+            HStack(spacing: Spacing.xs) {
+                Image(systemName: "mic.badge.checkmark")
+                    .font(.subheadline)
+                    .foregroundStyle(Color.tulaBrandFallback)
+                Text("Tap Save below")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                // Let the user edit the transcript if they want.
+                justFinishedVoice = false
+                focused = true
+            }
+
+            trailingActionButton
+        }
+    }
+
     // MARK: - Trailing action button
 
     /// 44pt circular button that morphs between mic / stop / send.
@@ -3251,6 +3517,11 @@ private struct QuickLogBar: View {
     /// Compact summary of what will be saved. After voice ends, this card
     /// becomes the primary "save here" target — bigger, with a clear CTA
     /// button at the right. Tapping anywhere on the card submits.
+    /// During recording this card is a live, non-interactive preview — fields
+    /// animate in as speech recognition populates them, giving real-time
+    /// feedback that the app is "hearing" the user. Once recording stops,
+    /// the card transforms: amber highlight appears, "Save →" badge slides
+    /// in, and the entire card becomes tappable to save.
     private var previewCard: some View {
         Button(action: submit) {
             HStack(spacing: Spacing.sm) {
@@ -3260,7 +3531,13 @@ private struct QuickLogBar: View {
                     multiplePreviewRow
                 }
                 Spacer(minLength: 0)
-                saveBadge
+                // Hide save badge while recording — the card is non-interactive
+                // until the mic stops. Badge slides in with a bouncy transition
+                // when recording ends.
+                if !speech.isRecording {
+                    saveBadge
+                        .transition(.scale.combined(with: .opacity))
+                }
             }
             .padding(.horizontal, Spacing.md)
             .padding(.vertical, Spacing.sm + 4)
@@ -3281,6 +3558,13 @@ private struct QuickLogBar: View {
             )
         }
         .buttonStyle(PressableScaleStyle(scale: 0.98))
+        // Dim the card while recording to signal "still listening, not
+        // fully parsed yet." Button stays tappable — submit() already
+        // handles the recording-active case by calling speech.stop()
+        // before saving. No .disabled() — that grays out the button
+        // content and makes it look like the save button disappeared.
+        .opacity(speech.isRecording ? 0.65 : 1.0)
+        .animation(AppAnimation.snappy, value: speech.isRecording)
     }
 
     private var saveBadge: some View {
@@ -3355,6 +3639,29 @@ private struct QuickLogBar: View {
         Task {
             let ok = await speech.requestAuthorization()
             if ok {
+                // Build vocabulary hints from the user's data so the speech
+                // recognizer biases toward known merchants, categories, and
+                // accounts. This fixes transcription at source — the single
+                // highest-impact improvement to voice parsing quality.
+                var phrases: [String] = []
+                phrases.append(contentsOf: accounts.filter { !$0.isArchived }.map(\.name))
+                phrases.append(contentsOf: categories.filter { !$0.isArchived }.map(\.name))
+                phrases.append(contentsOf: topMerchants)
+                // Learned merchant corrections — corrected spellings from
+                // previous user edits feed back into recognition so the
+                // same transcription error doesn't recur.
+                if let corrections = UserDefaults.standard.dictionary(
+                    forKey: "merchantCorrectionMap") as? [String: String] {
+                    phrases.append(contentsOf: corrections.values)
+                }
+                // Clear trigger phrases — telling the recognizer about these
+                // improves detection of correction intents mid-dictation.
+                phrases.append(contentsOf: [
+                    "scratch that", "never mind", "start over", "clear that"
+                ])
+                // Deduplicate and cap at Apple's 100-phrase limit.
+                speech.contextualPhrases = Array(Set(phrases)).prefix(100).map { $0 }
+
                 Haptics.impact()
                 speech.start()
                 justFinishedVoice = false
@@ -3490,5 +3797,164 @@ private struct SpendingCardView: View {
     }
 }
 
+// MARK: - Merchant Rule Confirmation Sheet
 
+/// Confirmation sheet shown when tapping a "Auto-categorize {merchant}?"
+/// insight card. Explains clearly what the rule will do and lets the user
+/// confirm or cancel.
+private struct MerchantRuleConfirmSheet: View {
+    let insight: Insight
+    let categories: [Category]
+    let accounts: [Account]
+    let onConfirm: () -> Void
+    let onDismiss: () -> Void
 
+    @Environment(\.dismiss) private var dismiss
+
+    private var merchantName: String {
+        insight.merchantName ?? "this merchant"
+    }
+
+    private var categoryName: String {
+        guard let catID = insight.categoryID else { return "—" }
+        return categories.first { $0.id == catID }?.name ?? "—"
+    }
+
+    private var categoryIcon: String {
+        guard let catID = insight.categoryID else { return "folder" }
+        return categories.first { $0.id == catID }?.iconKey ?? "folder"
+    }
+
+    private var categoryColor: Color {
+        guard let catID = insight.categoryID else { return .secondary }
+        if let hex = categories.first(where: { $0.id == catID })?.colorHex {
+            return Color(hex: hex)
+        }
+        return .secondary
+    }
+
+    private var accountName: String? {
+        guard let accID = insight.accountID else { return nil }
+        return accounts.first { $0.id == accID }?.name
+    }
+
+    private var accountIcon: String? {
+        guard let accID = insight.accountID else { return nil }
+        return accounts.first { $0.id == accID }?.iconKey
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // Header
+            VStack(spacing: Spacing.sm) {
+                ZStack {
+                    Circle()
+                        .fill(categoryColor.opacity(0.15))
+                        .frame(width: 56, height: 56)
+                    Image(systemName: "wand.and.stars")
+                        .font(.title2.weight(.medium))
+                        .foregroundStyle(categoryColor)
+                }
+                .padding(.top, Spacing.xl)
+
+                Text("Auto-categorize \(merchantName)?")
+                    .font(.headline)
+                    .multilineTextAlignment(.center)
+
+                Text("Create a rule so future expenses from **\(merchantName)** are automatically categorized.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, Spacing.xl)
+            }
+
+            // Rule details
+            VStack(spacing: 0) {
+                // Category row
+                HStack(spacing: Spacing.md) {
+                    ZStack {
+                        Circle()
+                            .fill(categoryColor.opacity(0.12))
+                            .frame(width: 36, height: 36)
+                        Image(systemName: categoryIcon)
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(categoryColor)
+                    }
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Category")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text(categoryName)
+                            .font(.subheadline.weight(.semibold))
+                    }
+                    Spacer()
+                }
+                .padding(.horizontal, Spacing.lg)
+                .padding(.vertical, Spacing.md)
+
+                if let accName = accountName {
+                    Divider()
+                        .padding(.leading, Spacing.lg + 36 + Spacing.md)
+
+                    // Account row
+                    HStack(spacing: Spacing.md) {
+                        ZStack {
+                            Circle()
+                                .fill(Color.secondary.opacity(0.12))
+                                .frame(width: 36, height: 36)
+                            Image(systemName: accountIcon ?? "creditcard")
+                                .font(.subheadline.weight(.medium))
+                                .foregroundStyle(.secondary)
+                        }
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("Account")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Text(accName)
+                                .font(.subheadline.weight(.semibold))
+                        }
+                        Spacer()
+                    }
+                    .padding(.horizontal, Spacing.lg)
+                    .padding(.vertical, Spacing.md)
+                }
+            }
+            .background(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(Color.tulaCardSurface)
+            )
+            .padding(.horizontal, Spacing.xl)
+            .padding(.top, Spacing.xl)
+
+            Spacer()
+
+            // Action buttons
+            VStack(spacing: Spacing.sm) {
+                Button {
+                    dismiss()
+                    onConfirm()
+                } label: {
+                    Text("Create Rule")
+                        .font(.body.weight(.semibold))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                        .background(categoryColor, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        .foregroundStyle(.white)
+                }
+
+                Button {
+                    dismiss()
+                    onDismiss()
+                } label: {
+                    Text("Not Now")
+                        .font(.body.weight(.medium))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(.horizontal, Spacing.xl)
+            .padding(.bottom, Spacing.xl)
+        }
+    }
+}

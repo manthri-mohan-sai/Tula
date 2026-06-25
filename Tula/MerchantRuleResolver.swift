@@ -69,6 +69,33 @@ enum MerchantRuleResolver {
                 return rule.category
             }
         }
+
+        // Phase 2: shipped brand knowledge base (250+ Indian merchants in
+        // ReceiptMeta.knownMerchantCategories). Maps brand names to
+        // category NAME strings — we resolve the name to a Category object
+        // via a lightweight fetch. Only reached when no MerchantRule
+        // matched, so the extra work is rare and acceptable.
+        for (brand, categoryName) in ReceiptMeta.knownMerchantCategories {
+            if lowered.contains(brand) || brand.contains(lowered) {
+                let catNameLower = categoryName.lowercased()
+                let categoryFetch = FetchDescriptor<Category>()
+                if let allCats = try? context.fetch(categoryFetch) {
+                    // Exact match first
+                    if let exact = allCats.first(where: {
+                        !$0.isArchived && $0.name.lowercased() == catNameLower
+                    }) {
+                        return exact
+                    }
+                    // Substring overlap — "Food" matches "Food & Drinks"
+                    if let overlap = allCats.first(where: {
+                        !$0.isArchived && $0.name.lowercased().contains(catNameLower)
+                    }) {
+                        return overlap
+                    }
+                }
+                break
+            }
+        }
         return nil
     }
 
