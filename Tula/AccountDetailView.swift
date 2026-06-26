@@ -439,7 +439,7 @@ struct AccountDetailView: View {
                 Haptics.tap()
                 editingExpense = expense
             } label: {
-                ExpenseRow(expense: expense)
+                ExpenseRow(expense: expense, showTimeOnly: true)
                     .padding(.horizontal, Spacing.md)
             }
             .buttonStyle(PlainRowButtonStyle())

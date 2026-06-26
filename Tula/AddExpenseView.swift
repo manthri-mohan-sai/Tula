@@ -1115,7 +1115,7 @@ struct AddExpenseView: View {
                 }
                 Divider().padding(.leading, 48)
                 detailRow(label: "Date", icon: "calendar") {
-                    DatePicker("", selection: $date, displayedComponents: .date)
+                    DatePicker("", selection: $date, displayedComponents: [.date, .hourAndMinute])
                         .labelsHidden()
                 }
             }

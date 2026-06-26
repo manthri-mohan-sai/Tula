@@ -292,7 +292,7 @@ struct AllExpensesView: View {
                             Haptics.tap()
                             editingExpense = expense
                         } label: {
-                            ExpenseRow(expense: expense)
+                            ExpenseRow(expense: expense, showTimeOnly: true)
                         }
                         .buttonStyle(.plain)
                         // Let the row control its own height. We add 2pt

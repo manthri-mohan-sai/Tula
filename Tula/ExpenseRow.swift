@@ -5,6 +5,7 @@ import SwiftData
 /// activity, account/category detail screens, etc.
 struct ExpenseRow: View {
     let expense: Expense
+    var showTimeOnly: Bool = false
     @PrimaryCurrency private var currencyCode
 
     /// True when the backing model has been deleted from SwiftData but
@@ -226,12 +227,16 @@ struct ExpenseRow: View {
         }
     }
 
-    /// Compact relative date: "Today", "Yesterday", "3 May" otherwise.
+    /// Context-aware date/time label.
+    /// - `showTimeOnly`: just the clock time (for views already grouped by day).
+    /// - Default: time for today, "Yest, time" for yesterday, "date, time" for older.
     private func relativeDateString(for date: Date) -> String {
+        let time = date.formatted(.dateTime.hour().minute())
+        if showTimeOnly { return time }
         let cal = Calendar.current
-        if cal.isDateInToday(date) { return "Today" }
-        if cal.isDateInYesterday(date) { return "Yesterday" }
-        return date.formatted(.dateTime.day().month(.abbreviated))
+        if cal.isDateInToday(date) { return time }
+        if cal.isDateInYesterday(date) { return "Yest, \(time)" }
+        return date.formatted(.dateTime.day().month(.abbreviated)) + ", \(time)"
     }
 }
 
