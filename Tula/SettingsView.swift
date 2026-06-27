@@ -362,14 +362,12 @@ struct SettingsView: View {
     // MARK: - Provider Picker
 
     private var selectedProvider: AIProvider {
-        get { AIProvider(rawValue: selectedProviderRaw) ?? .appleFM }
+        get { AIProvider(rawValue: selectedProviderRaw) ?? .gemini }
         nonmutating set { selectedProviderRaw = newValue.rawValue }
     }
 
     private var providerPickerSection: some View {
         Group {
-            // Only Gemini is shown — Apple FM and OpenAI are still in
-            // the codebase but hidden from the user for now.
             let visibleProviders: [AIProvider] = [.gemini]
             ForEach(visibleProviders) { provider in
                 Button {
@@ -414,7 +412,6 @@ struct SettingsView: View {
             if selectedProvider == .gemini {
                 geminiConfigRow
             }
-
         }
     }
 

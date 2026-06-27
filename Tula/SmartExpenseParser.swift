@@ -56,15 +56,19 @@ enum SmartExpenseParser {
     /// fail on devices that have FM but no API key, causing the caller
     /// to fall back to rules and skip FM entirely.
     private static var bestProvider: AIProvider {
+        let selected = AIProviderStorage.selected
+        if selected.isReady { return selected }
+        // Fallback chain
         if !CloudAIConfig.loadGemini().apiKey.isEmpty { return .gemini }
         if !CloudAIConfig.load().apiKey.isEmpty { return .openAI }
         if isFMAvailable { return .appleFM }
-        return AIProviderStorage.selected
+        return selected
     }
 
     /// Whether any cloud vision-capable provider is configured.
     static var hasCloudVision: Bool {
-        !CloudAIConfig.loadGemini().apiKey.isEmpty || !CloudAIConfig.load().apiKey.isEmpty
+        !CloudAIConfig.loadGemini().apiKey.isEmpty
+        || !CloudAIConfig.load().apiKey.isEmpty
     }
 
     /// Whether Foundation Models specifically is available on-device.

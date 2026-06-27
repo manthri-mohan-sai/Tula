@@ -23,7 +23,7 @@ enum AIProvider: String, CaseIterable, Identifiable {
 
     var displayName: String {
         switch self {
-        case .appleFM: return "Apple FM (On Device)"
+        case .appleFM: return "Apple Intelligence (On Device)"
         case .openAI: return "ChatGPT (Cloud)"
         case .gemini: return "Google Gemini (Cloud)"
         }
@@ -150,6 +150,7 @@ struct CloudAIConfig: Codable {
               let data = try? JSONEncoder().encode(self) else { return }
         defaults.set(data, forKey: CloudAIConfig.geminiStorageKey)
     }
+
 }
 
 // MARK: - Receipt Parsing Mode
