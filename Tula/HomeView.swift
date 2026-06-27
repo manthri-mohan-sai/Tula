@@ -2167,12 +2167,7 @@ struct HomeView: View {
     private func logUpcoming(rule: RecurringRule, date: Date, customAmount: Double? = nil) {
         Haptics.success()
         withAnimation(AppAnimation.snappy) {
-            // Never overwrite rule.amount from a log action. The user's
-            // configured amount is their baseline; SmartAmountPredictor
-            // handles pre-fill from history. Silently rewriting the rule
-            // is confusing — the user goes to edit and sees a number they
-            // didn't set.
-            RecurringEngine.createTransaction(rule: rule, date: date, in: context)
+            RecurringEngine.createTransaction(rule: rule, date: date, in: context, customAmount: customAmount)
             // Advance the boundary so the engine treats this occurrence
             // as handled — prevents the overdue card from persisting.
             if rule.lastGeneratedDate == nil || rule.lastGeneratedDate! < date {

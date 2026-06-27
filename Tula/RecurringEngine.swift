@@ -393,7 +393,8 @@ enum RecurringEngine {
     /// into the given context. Marked `internal` (no access level) so the
     /// notification-response handler can call it when the user taps
     /// "Log it" on a confirmation notification.
-    static func createTransaction(rule: RecurringRule, date: Date, in context: ModelContext, fallbackName: String? = nil) {
+    static func createTransaction(rule: RecurringRule, date: Date, in context: ModelContext, fallbackName: String? = nil, customAmount: Double? = nil) {
+        let effectiveAmount = customAmount ?? rule.amount
         switch rule.kind {
         case .expense:
             var merchantName = (rule.merchant?.trimmingCharacters(in: .whitespaces).isEmpty == false)
@@ -404,7 +405,7 @@ enum RecurringEngine {
             let itemName = (rule.note?.trimmingCharacters(in: .whitespaces).isEmpty == false)
                 ? rule.note : rule.name
             let expense = Expense(
-                amount: rule.amount,
+                amount: effectiveAmount,
                 date: date,
                 merchant: merchantName,
                 note: itemName,
@@ -418,7 +419,7 @@ enum RecurringEngine {
         case .transfer, .cardPayment:
             let transferKind: TransferKind = (rule.kind == .cardPayment) ? .cardBillPayment : .generic
             let transfer = Transfer(
-                amount: rule.amount,
+                amount: effectiveAmount,
                 fromAccount: rule.fromAccount,
                 toAccount: rule.toAccount,
                 date: date,
