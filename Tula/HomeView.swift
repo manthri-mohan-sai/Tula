@@ -2561,6 +2561,24 @@ struct HomeView: View {
                 } preview: {
                     ExpenseContextPreview(expense: expense)
                 }
+                .confirmationDialog(
+                    "Delete this expense?",
+                    isPresented: Binding(
+                        get: { expenseToDelete?.id == expense.id },
+                        set: { if !$0 { expenseToDelete = nil } }
+                    ),
+                    titleVisibility: .visible
+                ) {
+                    Button("Delete", role: .destructive) {
+                        delete(expense)
+                        expenseToDelete = nil
+                    }
+                    Button("Cancel", role: .cancel) {
+                        expenseToDelete = nil
+                    }
+                } message: {
+                    Text("This action can't be undone.")
+                }
             }
         }
         .listStyle(.plain)
@@ -2569,26 +2587,6 @@ struct HomeView: View {
         .frame(height: CGFloat(recentExpenses.count) * rowHeight)  // now exact, no scale math
         .background(Color.tulaCardSurface)
         .clipShape(RoundedRectangle(cornerRadius: CornerRadius.medium, style: .continuous))
-        .confirmationDialog(
-            "Delete this expense?",
-            isPresented: Binding(
-                get: { expenseToDelete != nil },
-                set: { if !$0 { expenseToDelete = nil } }
-            ),
-            titleVisibility: .visible
-        ) {
-            Button("Delete", role: .destructive) {
-                if let expense = expenseToDelete {
-                    delete(expense)
-                }
-                expenseToDelete = nil
-            }
-            Button("Cancel", role: .cancel) {
-                expenseToDelete = nil
-            }
-        } message: {
-            Text("This action can't be undone.")
-        }
     }
 
     @State private var shareableImage: UIImage?

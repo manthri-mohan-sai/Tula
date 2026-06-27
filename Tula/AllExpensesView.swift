@@ -314,6 +314,24 @@ struct AllExpensesView: View {
                         } preview: {
                             ExpenseContextPreview(expense: expense)
                         }
+                        .confirmationDialog(
+                            "Delete this expense?",
+                            isPresented: Binding(
+                                get: { expenseToDelete?.id == expense.id },
+                                set: { if !$0 { expenseToDelete = nil } }
+                            ),
+                            titleVisibility: .visible
+                        ) {
+                            Button("Delete", role: .destructive) {
+                                delete(expense)
+                                expenseToDelete = nil
+                            }
+                            Button("Cancel", role: .cancel) {
+                                expenseToDelete = nil
+                            }
+                        } message: {
+                            Text("This action can't be undone.")
+                        }
                     }
                 } header: {
                     HStack {
@@ -335,26 +353,6 @@ struct AllExpensesView: View {
         .listSectionSpacing(.compact)
         .scrollContentBackground(.hidden)
         .scrollDismissesKeyboard(.immediately)
-        .confirmationDialog(
-            "Delete this expense?",
-            isPresented: Binding(
-                get: { expenseToDelete != nil },
-                set: { if !$0 { expenseToDelete = nil } }
-            ),
-            titleVisibility: .visible
-        ) {
-            Button("Delete", role: .destructive) {
-                if let expense = expenseToDelete {
-                    delete(expense)
-                }
-                expenseToDelete = nil
-            }
-            Button("Cancel", role: .cancel) {
-                expenseToDelete = nil
-            }
-        } message: {
-            Text("This action can't be undone.")
-        }
     }
 
     // MARK: - Actions
