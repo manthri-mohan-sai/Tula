@@ -338,6 +338,14 @@ struct AccountFormView: View {
                                 showingDeleteConfirm = true
                             }
                             .foregroundStyle(.red)
+                            .confirmationDialog(
+                                "Delete \(name)?",
+                                isPresented: $showingDeleteConfirm,
+                                titleVisibility: .visible
+                            ) {
+                                Button("Delete", role: .destructive) { delete() }
+                                Button("Cancel", role: .cancel) { }
+                            }
                         }
                     } footer: {
                         if canDelete {
@@ -359,14 +367,6 @@ struct AccountFormView: View {
                         .disabled(!canSave)
                         .fontWeight(.semibold)
                 }
-            }
-            .confirmationDialog(
-                "Delete \(name)?",
-                isPresented: $showingDeleteConfirm,
-                titleVisibility: .visible
-            ) {
-                Button("Delete", role: .destructive) { delete() }
-                Button("Cancel", role: .cancel) { }
             }
         }
     }

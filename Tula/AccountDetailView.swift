@@ -201,26 +201,6 @@ struct AccountDetailView: View {
         .sheet(isPresented: $showingUpdateBalance) {
             UpdateBalanceView(account: account)
         }
-        .confirmationDialog(
-            "Delete this balance adjustment?",
-            isPresented: Binding(
-                get: { deletingAdjustment != nil },
-                set: { if !$0 { deletingAdjustment = nil } }
-            ),
-            titleVisibility: .visible
-        ) {
-            Button("Delete", role: .destructive) {
-                if let adjustment = deletingAdjustment {
-                    context.delete(adjustment)
-                    try? context.save(); WidgetRefresh.refresh(using: context)
-                    Haptics.warning()
-                }
-                deletingAdjustment = nil
-            }
-            Button("Cancel", role: .cancel) { deletingAdjustment = nil }
-        } message: {
-            Text("The account balance will recalculate without this adjustment.")
-        }
     }
 
     // MARK: - Hero
@@ -473,6 +453,24 @@ struct AccountDetailView: View {
                     .padding(.horizontal, Spacing.md)
             }
             .buttonStyle(PlainRowButtonStyle())
+            .confirmationDialog(
+                "Delete this balance adjustment?",
+                isPresented: Binding(
+                    get: { deletingAdjustment?.id == adjustment.id },
+                    set: { if !$0 { deletingAdjustment = nil } }
+                ),
+                titleVisibility: .visible
+            ) {
+                Button("Delete", role: .destructive) {
+                    context.delete(adjustment)
+                    try? context.save(); WidgetRefresh.refresh(using: context)
+                    Haptics.warning()
+                    deletingAdjustment = nil
+                }
+                Button("Cancel", role: .cancel) { deletingAdjustment = nil }
+            } message: {
+                Text("The account balance will recalculate without this adjustment.")
+            }
         }
     }
 

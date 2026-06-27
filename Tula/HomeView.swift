@@ -70,6 +70,7 @@ struct HomeView: View {
     @AppStorage("launchAnimationEnabled") private var launchAnimationEnabled: Bool = true
 
     @State private var editingExpense: Expense?
+    @State private var expenseToDelete: Expense?
     @State private var showingSettings = false
     @State private var showingRecurring = false
     @State private var showingOverdueOnly = false
@@ -570,28 +571,14 @@ struct HomeView: View {
                     }
                 )
             }
-            .confirmationDialog(
-                "Skip \(confirmSkipRule?.name ?? "expense")?",
-                isPresented: $showingSkipConfirm,
-                titleVisibility: .visible
-            ) {
-                Button("Skip", role: .destructive) {
-                    if let rule = confirmSkipRule, let date = confirmSkipDate {
-                        skipUpcoming(rule: rule, date: date)
-                    }
-                }
-                Button("Cancel", role: .cancel) { }
-            } message: {
-                Text("This occurrence will be marked as skipped.")
-            }
-            .alert("Configure AI for Receipts",
+            .alert("Enhance with AI",
                    isPresented: $showingAPIKeyPrompt) {
                 Button("Set Up Now") {
                     showingSettings = true
                 }
-                Button("Later", role: .cancel) { }
+                Button("Not Now", role: .cancel) { }
             } message: {
-                Text("Add your free Google Gemini API key in Settings to enable smart receipt scanning and expense parsing.")
+                Text("Tula works great without AI. For smarter category suggestions and receipt parsing, add a free Google Gemini API key in Settings.")
             }
             .sheet(item: $merchantRuleConfirmInsight) { insight in
                 MerchantRuleConfirmSheet(
@@ -749,7 +736,7 @@ struct HomeView: View {
             )
 
             if showOfflineInfo {
-                Text("Receipt scanning and smart parsing require an internet connection.")
+                Text("Smart parsing uses a cloud connection. Basic receipt scanning and expense entry work offline.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -1502,8 +1489,13 @@ struct HomeView: View {
 
     /// Shows a once-per-day prompt when Gemini is selected but API key
     /// isn't configured. Skipped if Apple FM is available (the user has
-    /// a working on-device alternative).
+    /// a working on-device alternative) or if the user has explicitly
+    /// disabled smart parsing (they don't want AI — respect that).
     private func checkAPIKeyPrompt() {
+        // Skip if the user explicitly turned off smart parsing — they
+        // don't want AI features, so nagging about an API key is wrong.
+        guard smartParsingEnabled else { return }
+
         // Skip if Apple FM is available — user has on-device AI.
         if AIProvider.appleFM.isReady { return }
 
@@ -1931,6 +1923,21 @@ struct HomeView: View {
                     }
                 )
             }
+            .confirmationDialog(
+                "Skip \(rule.name)?",
+                isPresented: Binding(
+                    get: { confirmSkipRule?.id == rule.id && showingSkipConfirm },
+                    set: { if !$0 { confirmSkipRule = nil; showingSkipConfirm = false } }
+                ),
+                titleVisibility: .visible
+            ) {
+                Button("Skip", role: .destructive) {
+                    skipUpcoming(rule: rule, date: date)
+                }
+                Button("Cancel", role: .cancel) { }
+            } message: {
+                Text("This occurrence will be marked as skipped.")
+            }
         case .overdue(let rule, let date):
             SwipeableContextRow(
                 leadingLabel: "Log",
@@ -1947,6 +1954,21 @@ struct HomeView: View {
                 }
             ) {
                 contextRowBody(for: context, showHint: true, compactMode: compactMode)
+            }
+            .confirmationDialog(
+                "Skip \(rule.name)?",
+                isPresented: Binding(
+                    get: { confirmSkipRule?.id == rule.id && showingSkipConfirm },
+                    set: { if !$0 { confirmSkipRule = nil; showingSkipConfirm = false } }
+                ),
+                titleVisibility: .visible
+            ) {
+                Button("Skip", role: .destructive) {
+                    skipUpcoming(rule: rule, date: date)
+                }
+                Button("Cancel", role: .cancel) { }
+            } message: {
+                Text("This occurrence will be marked as skipped.")
             }
         case .insight(let insight):
             Button {
@@ -2516,12 +2538,13 @@ struct HomeView: View {
                 // erasing the line between them.
                 .listRowSeparator(index == recentExpenses.count - 1 ? .hidden : .visible, edges: .bottom)
                 .alignmentGuide(.listRowSeparatorLeading) { _ in 64 }
-                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                    Button(role: .destructive) {
-                        delete(expense)
+                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                    Button {
+                        expenseToDelete = expense
                     } label: {
                         Label("Delete", systemImage: "trash")
                     }
+                    .tint(.red)
                     .labelStyle(.iconOnly)
 
                     Button {
@@ -2546,6 +2569,26 @@ struct HomeView: View {
         .frame(height: CGFloat(recentExpenses.count) * rowHeight)  // now exact, no scale math
         .background(Color.tulaCardSurface)
         .clipShape(RoundedRectangle(cornerRadius: CornerRadius.medium, style: .continuous))
+        .confirmationDialog(
+            "Delete this expense?",
+            isPresented: Binding(
+                get: { expenseToDelete != nil },
+                set: { if !$0 { expenseToDelete = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Delete", role: .destructive) {
+                if let expense = expenseToDelete {
+                    delete(expense)
+                }
+                expenseToDelete = nil
+            }
+            Button("Cancel", role: .cancel) {
+                expenseToDelete = nil
+            }
+        } message: {
+            Text("This action can't be undone.")
+        }
     }
 
     @State private var shareableImage: UIImage?
@@ -2564,7 +2607,7 @@ struct HomeView: View {
             Label("Share", systemImage: "square.and.arrow.up")
         }
         Divider()
-        Button(role: .destructive) { delete(expense) } label: {
+        Button(role: .destructive) { expenseToDelete = expense } label: {
             Label("Delete", systemImage: "trash")
         }
     }

@@ -242,26 +242,6 @@ struct AllExpensesView: View {
                 accounts: allAccounts.filter { !$0.isArchived }
             )
         }
-        .confirmationDialog(
-            "Delete this expense?",
-            isPresented: Binding(
-                get: { expenseToDelete != nil },
-                set: { if !$0 { expenseToDelete = nil } }
-            ),
-            titleVisibility: .visible
-        ) {
-            Button("Delete", role: .destructive) {
-                if let expense = expenseToDelete {
-                    delete(expense)
-                    expenseToDelete = nil
-                }
-            }
-            Button("Cancel", role: .cancel) {
-                expenseToDelete = nil
-            }
-        } message: {
-            Text("This action can't be undone.")
-        }
     }
 
     /// Whether to render the "Done" toolbar button. Always false — all
@@ -302,11 +282,12 @@ struct AllExpensesView: View {
                         // items without making the list feel sparse.
                         .listRowInsets(EdgeInsets(top: 2, leading: 16, bottom: 2, trailing: 16))
                         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                            Button(role: .destructive) {
+                            Button {
                                 expenseToDelete = expense
                             } label: {
                                 Label("Delete", systemImage: "trash")
                             }
+                            .tint(.red)
 
                             Button {
                                 Haptics.tap()
@@ -354,6 +335,26 @@ struct AllExpensesView: View {
         .listSectionSpacing(.compact)
         .scrollContentBackground(.hidden)
         .scrollDismissesKeyboard(.immediately)
+        .confirmationDialog(
+            "Delete this expense?",
+            isPresented: Binding(
+                get: { expenseToDelete != nil },
+                set: { if !$0 { expenseToDelete = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Delete", role: .destructive) {
+                if let expense = expenseToDelete {
+                    delete(expense)
+                }
+                expenseToDelete = nil
+            }
+            Button("Cancel", role: .cancel) {
+                expenseToDelete = nil
+            }
+        } message: {
+            Text("This action can't be undone.")
+        }
     }
 
     // MARK: - Actions

@@ -86,36 +86,6 @@ struct RecurringRulesView: View {
             .sheet(item: $editingRule) { rule in
                 RecurringRuleFormView(rule: rule)
             }
-            .confirmationDialog(
-                "Delete \(ruleToDelete?.name ?? "rule")?",
-                isPresented: $showingDeleteConfirm,
-                titleVisibility: .visible
-            ) {
-                Button("Delete", role: .destructive) {
-                    if let rule = ruleToDelete {
-                        deleteRule(rule)
-                    }
-                }
-                Button("Cancel", role: .cancel) { }
-            } message: {
-                Text("This recurring rule will be permanently removed.")
-            }
-            .confirmationDialog(
-                "Log \(ruleToLog?.name ?? "expense")?",
-                isPresented: $showingLogConfirm,
-                titleVisibility: .visible
-            ) {
-                Button("Log") {
-                    if let rule = ruleToLog, let date = logDate {
-                        logRule(rule, date: date)
-                    }
-                }
-                Button("Cancel", role: .cancel) { }
-            } message: {
-                if let rule = ruleToLog {
-                    Text("This will record \(Currency.format(rule.amount, code: currencyCode)) as an expense.")
-                }
-            }
             .sheet(isPresented: $showingVariableAmountSheet) {
                 variableAmountSheet
             }
@@ -149,13 +119,14 @@ struct RecurringRulesView: View {
                                 .tint(.green)
                             }
                         }
-                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                             Button(role: .destructive) {
                                 ruleToDelete = rule
                                 showingDeleteConfirm = true
                             } label: {
                                 Label("Delete", systemImage: "trash")
                             }
+                            .tint(.red)
 
                             if !rule.isPaused {
                                 Button {
@@ -195,6 +166,38 @@ struct RecurringRulesView: View {
                             } label: {
                                 Label("Delete", systemImage: "trash")
                             }
+                        }
+                        .confirmationDialog(
+                            "Delete \(rule.name)?",
+                            isPresented: Binding(
+                                get: { ruleToDelete?.id == rule.id && showingDeleteConfirm },
+                                set: { if !$0 { ruleToDelete = nil; showingDeleteConfirm = false } }
+                            ),
+                            titleVisibility: .visible
+                        ) {
+                            Button("Delete", role: .destructive) {
+                                deleteRule(rule)
+                            }
+                            Button("Cancel", role: .cancel) { }
+                        } message: {
+                            Text("This recurring rule will be permanently removed.")
+                        }
+                        .confirmationDialog(
+                            "Log \(rule.name)?",
+                            isPresented: Binding(
+                                get: { ruleToLog?.id == rule.id && showingLogConfirm },
+                                set: { if !$0 { ruleToLog = nil; showingLogConfirm = false } }
+                            ),
+                            titleVisibility: .visible
+                        ) {
+                            Button("Log") {
+                                if let date = logDate {
+                                    logRule(rule, date: date)
+                                }
+                            }
+                            Button("Cancel", role: .cancel) { }
+                        } message: {
+                            Text("This will record \(Currency.format(rule.amount, code: currencyCode)) as an expense.")
                         }
                     }
                 } header: {
@@ -706,14 +709,6 @@ struct RecurringRuleFormView: View {
                         .fontWeight(.semibold)
                 }
             }
-            .confirmationDialog(
-                "Delete this rule?",
-                isPresented: $showingDeleteConfirm,
-                titleVisibility: .visible
-            ) {
-                Button("Delete", role: .destructive) { delete() }
-                Button("Cancel", role: .cancel) { }
-            }
         }
     }
 
@@ -930,6 +925,14 @@ struct RecurringRuleFormView: View {
         Section {
             Button("Delete Rule", role: .destructive) {
                 showingDeleteConfirm = true
+            }
+            .confirmationDialog(
+                "Delete this rule?",
+                isPresented: $showingDeleteConfirm,
+                titleVisibility: .visible
+            ) {
+                Button("Delete", role: .destructive) { delete() }
+                Button("Cancel", role: .cancel) { }
             }
         }
     }

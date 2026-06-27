@@ -96,14 +96,6 @@ struct BudgetFormView: View {
                     if amount == 0 { amountFocused = true }
                 }
             }
-            .confirmationDialog("Delete this budget?",
-                                isPresented: $showDeleteConfirm,
-                                titleVisibility: .visible) {
-                Button("Delete", role: .destructive, action: deleteBudget)
-                Button("Cancel", role: .cancel) { }
-            } message: {
-                Text("This won't delete any expenses — only the cap itself.")
-            }
         }
     }
 
@@ -279,6 +271,14 @@ struct BudgetFormView: View {
         }
         .buttonStyle(.plain)
         .padding(.top, Spacing.md)
+        .confirmationDialog("Delete this budget?",
+                            isPresented: $showDeleteConfirm,
+                            titleVisibility: .visible) {
+            Button("Delete", role: .destructive, action: deleteBudget)
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("This won't delete any expenses — only the cap itself.")
+        }
     }
 
     // MARK: - Hydrate (edit mode)

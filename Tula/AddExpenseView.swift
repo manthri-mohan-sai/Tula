@@ -273,14 +273,6 @@ struct AddExpenseView: View {
                 guard splitModeActive, !splitRows.isEmpty else { return }
                 splitRows[0].amount = max(0, splitRows[0].amount + (new - old))
             }
-            .confirmationDialog("Delete this expense?",
-                                isPresented: $showingDeleteConfirm,
-                                titleVisibility: .visible) {
-                Button("Delete", role: .destructive) { delete() }
-                Button("Cancel", role: .cancel) { }
-            } message: {
-                Text("This action can't be undone.")
-            }
             .onReceive(NotificationCenter.default.publisher(for: .tulaStartReceiptScan)) { _ in
                 amountFocused = false
                 showingCamera = true
@@ -1277,6 +1269,14 @@ struct AddExpenseView: View {
             )
         }
         .buttonStyle(PressableScaleStyle(scale: 0.98))
+        .confirmationDialog("Delete this expense?",
+                            isPresented: $showingDeleteConfirm,
+                            titleVisibility: .visible) {
+            Button("Delete", role: .destructive) { delete() }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("This action can't be undone.")
+        }
     }
 
     @State private var showingFullReceipt = false
@@ -1382,13 +1382,13 @@ struct AddExpenseView: View {
             .padding(.horizontal, Spacing.md)
             .padding(.vertical, Spacing.sm)
 
-            // AI not configured warning
-            if !SmartExpenseParser.isAvailable && scanErrorMessage == nil && !receiptOCRInFlight {
+            // AI not configured hint — basic OCR still works, AI just enhances it
+            if !SmartExpenseParser.isAvailable && scanErrorMessage == nil && !receiptOCRInFlight && ocrExtractedFields.isEmpty {
                 HStack(spacing: Spacing.sm) {
-                    Image(systemName: "exclamationmark.triangle.fill")
+                    Image(systemName: "info.circle.fill")
                         .font(.caption)
-                        .foregroundStyle(.orange)
-                    Text("AI not configured — receipt won't be auto-read. Set up in Settings > AI Provider.")
+                        .foregroundStyle(.secondary)
+                    Text("Basic receipt reading active. Enable AI in Settings for enhanced accuracy.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

@@ -61,28 +61,6 @@ struct ReviewQueueView: View {
                 }
             )
         }
-        .confirmationDialog(
-            ruleSuggestion?.title ?? "",
-            isPresented: Binding(
-                get: { ruleSuggestion != nil },
-                set: { if !$0 { ruleSuggestion = nil } }
-            ),
-            titleVisibility: .visible
-        ) {
-            if let s = ruleSuggestion {
-                Button("Yes, always") {
-                    createMerchantRule(merchant: s.merchant, category: s.category)
-                    ruleSuggestion = nil
-                }
-                Button("Just this one", role: .cancel) {
-                    ruleSuggestion = nil
-                }
-            }
-        } message: {
-            if let s = ruleSuggestion {
-                Text("Should future \(s.merchant) expenses always be \(s.category.name)?")
-            }
-        }
     }
 
     private var subtitleText: String {
@@ -114,6 +92,28 @@ struct ReviewQueueView: View {
             .padding(.horizontal, 16)
             .padding(.top, 8)
             .padding(.bottom, 24)
+        }
+        .confirmationDialog(
+            ruleSuggestion?.title ?? "",
+            isPresented: Binding(
+                get: { ruleSuggestion != nil },
+                set: { if !$0 { ruleSuggestion = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            if let s = ruleSuggestion {
+                Button("Yes, always") {
+                    createMerchantRule(merchant: s.merchant, category: s.category)
+                    ruleSuggestion = nil
+                }
+                Button("Just this one", role: .cancel) {
+                    ruleSuggestion = nil
+                }
+            }
+        } message: {
+            if let s = ruleSuggestion {
+                Text("Should future \(s.merchant) expenses always be \(s.category.name)?")
+            }
         }
     }
 

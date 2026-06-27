@@ -416,10 +416,13 @@ final class ShareSession: ObservableObject {
                !forceCloudAI {
                 return "\(gateResult.reason) Tap Try Again if this is a receipt."
             }
-            if smartResult == nil {
+            if smartResult == nil, SmartExpenseParser.isAvailable {
+                // AI was available but failed — show the error.
                 return await MainActor.run { CloudAIParser.lastParseError }
                     ?? "Could not read receipt. Check your connection or try again."
             }
+            // When no AI is configured, don't show a warning — OCR/regex
+            // extraction is the expected path, not a failure mode.
             if isDirectImageMode { return nil }
             let fmHelped = smartResult?.amount != nil && smartResult?.merchant != nil
             if fmHelped { return nil }

@@ -253,6 +253,14 @@ struct CategoryFormView: View {
                                 showingDeleteConfirm = true
                             }
                             .foregroundStyle(.red)
+                            .confirmationDialog(
+                                "Delete \(name)?",
+                                isPresented: $showingDeleteConfirm,
+                                titleVisibility: .visible
+                            ) {
+                                Button("Delete", role: .destructive) { delete() }
+                                Button("Cancel", role: .cancel) { }
+                            }
                         }
                     } footer: {
                         Text(canDelete
@@ -272,14 +280,6 @@ struct CategoryFormView: View {
                         .disabled(!canSave)
                         .fontWeight(.semibold)
                 }
-            }
-            .confirmationDialog(
-                "Delete \(name)?",
-                isPresented: $showingDeleteConfirm,
-                titleVisibility: .visible
-            ) {
-                Button("Delete", role: .destructive) { delete() }
-                Button("Cancel", role: .cancel) { }
             }
         }
     }

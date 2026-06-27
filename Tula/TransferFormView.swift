@@ -130,22 +130,22 @@ struct TransferFormView: View {
                             Label("Delete Transfer", systemImage: "trash")
                                 .foregroundStyle(.red)
                         }
+                        .confirmationDialog("Delete this transfer?", isPresented: $showingDeleteConfirmation, titleVisibility: .visible) {
+                            Button("Delete", role: .destructive) {
+                                if let transfer = existingTransfer {
+                                    context.delete(transfer)
+                                    try? context.save(); WidgetRefresh.refresh(using: context)
+                                    Haptics.warning()
+                                }
+                                dismiss()
+                            }
+                        }
                     }
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button(isEditing ? "Update" : "Save", action: save)
                         .disabled(!canSave)
                         .fontWeight(.semibold)
-                }
-            }
-            .confirmationDialog("Delete this transfer?", isPresented: $showingDeleteConfirmation, titleVisibility: .visible) {
-                Button("Delete", role: .destructive) {
-                    if let transfer = existingTransfer {
-                        context.delete(transfer)
-                        try? context.save(); WidgetRefresh.refresh(using: context)
-                        Haptics.warning()
-                    }
-                    dismiss()
                 }
             }
             .onAppear {

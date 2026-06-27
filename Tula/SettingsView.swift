@@ -770,7 +770,7 @@ struct SettingsView: View {
                 }
             }
         } else {
-            Text("Tula will use only its built-in rule-based parser. No AI is invoked.")
+            Text("Tula works fully without AI - expense entry, voice input, receipt scanning (via OCR), budgets, and insights all work. Enable this for smarter category suggestions and receipt parsing.")
         }
     }
 
