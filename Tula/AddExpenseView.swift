@@ -2056,6 +2056,12 @@ struct AddExpenseView: View {
                 // Attach receipt to first split only — avoids N copies of same blob.
                 if i == 0 { expense.receiptImageData = receiptData }
                 context.insert(expense)
+                UserLearningEngine.learn(
+                    merchant: expense.merchant,
+                    category: expense.category?.name,
+                    amount: expense.amount,
+                    hour: Calendar.current.component(.hour, from: expense.date)
+                )
             }
 
             try? context.save()
@@ -2107,6 +2113,12 @@ struct AddExpenseView: View {
             expense.discount = discount > 0 ? discount : nil
             expense.receiptImageData = receiptData
             context.insert(expense)
+            UserLearningEngine.learn(
+                merchant: expense.merchant,
+                category: expense.category?.name,
+                amount: expense.amount,
+                hour: Calendar.current.component(.hour, from: expense.date)
+            )
         }
         // Learn from the user's choice: if they typed a merchant AND picked
         // a category, remember that mapping so the next "icecream" or
@@ -2196,9 +2208,9 @@ struct AddExpenseView: View {
               !newMerchant.allSatisfy({ $0.isNumber || $0.isWhitespace })
         else { return }
 
-        var map = UserDefaults.standard.dictionary(forKey: "merchantCorrectionMap") as? [String: String] ?? [:]
-        map[originalMerchant.lowercased()] = newMerchant
-        UserDefaults.standard.set(map, forKey: "merchantCorrectionMap")
+        UserLearningEngine.learnMerchantCorrection(
+            raw: originalMerchant, corrected: newMerchant
+        )
     }
 
     /// Walks active budgets and posts threshold notifications for any

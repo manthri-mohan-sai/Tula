@@ -211,6 +211,14 @@ enum ReceiptParsingModeStorage {
 enum AIProviderStorage {
     private static let key = "selectedAIProvider"
 
+    /// Whether the user has explicitly chosen a provider in Settings.
+    /// When false, `selected` returns a default — callers should use
+    /// their own auto-detection logic rather than trusting the default.
+    static var hasExplicitSelection: Bool {
+        UserDefaults(suiteName: "group.com.app.Tula")?
+            .string(forKey: key) != nil
+    }
+
     static var selected: AIProvider {
         get {
             guard let defaults = UserDefaults(suiteName: "group.com.app.Tula"),

@@ -230,10 +230,14 @@ struct ExpenseItemsSheet: View {
                         .font(.subheadline)
                         .lineLimit(2)
                     Spacer()
-                    Text(Currency.format(item.price, code: currencyCode))
-                        .font(.subheadline.weight(.medium))
-                        .monospacedDigit()
-                        .foregroundStyle(.secondary)
+                    // Voice / quick-log items have no per-item price — show the
+                    // amount only when it's known (receipts).
+                    if item.price > 0 {
+                        Text(Currency.format(item.price, code: currencyCode))
+                            .font(.subheadline.weight(.medium))
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                    }
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 12)

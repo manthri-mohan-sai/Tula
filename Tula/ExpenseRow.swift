@@ -39,8 +39,14 @@ struct ExpenseRow: View {
     private var primaryLabel: String {
         if let merchant = expense.merchant, !merchant.isEmpty { return merchant }
         if let note = expense.note, !note.isEmpty { return note }
+        if !expense.items.isEmpty { return itemsSummary }
         if let category = expense.category { return category.name }
         return "Uncategorized"
+    }
+
+    /// Comma-joined item names from the structured `items` relationship.
+    private var itemsSummary: String {
+        expense.items.map { $0.name.capitalized }.joined(separator: ", ")
     }
 
     /// Subtitle stack. When the title is the merchant, the subtitle leads
@@ -51,13 +57,16 @@ struct ExpenseRow: View {
         var parts: [String] = []
         let titleIsMerchant = !(expense.merchant ?? "").isEmpty
 
-        if titleIsMerchant,
-           let note = expense.note, !note.isEmpty,
-           note.lowercased() != expense.merchant?.lowercased() {
-            // Item appears in the subtitle when title is the merchant.
-            // Surfaces "Masala Dosa" alongside "Ramachandra" so the user
-            // sees both pieces in one glance.
-            parts.append(note)
+        if titleIsMerchant {
+            // Item(s) appear in the subtitle when the title is the merchant —
+            // surfaces "Milk, Curd" alongside "Raithu Kendra" in one glance.
+            // Prefer the structured items; fall back to a freehand note.
+            if !expense.items.isEmpty {
+                parts.append(itemsSummary)
+            } else if let note = expense.note, !note.isEmpty,
+                      note.lowercased() != expense.merchant?.lowercased() {
+                parts.append(note)
+            }
         }
         if let category = expense.category {
             parts.append(category.name)
@@ -80,11 +89,23 @@ struct ExpenseRow: View {
         ExpenseItemParser.parse(expense.note)
     }
 
-    /// Whether this expense has enough parsed items to be worth a sheet.
-    /// Single-item lists wouldn't be useful — the note already shows
-    /// "Masala Dosa ₹80" in the row.
+    /// Items to display: the structured `items` relationship when present
+    /// (voice / quick-log / Siri), otherwise items parsed from a receipt note.
+    private var displayItems: [ExpenseItem] {
+        if !expense.items.isEmpty {
+            return expense.items.map { ExpenseItem(name: $0.name, price: $0.price ?? 0) }
+        }
+        return parsedItems.items
+    }
+
+    /// Total shown in the items sheet — only for note-based (priced) items.
+    private var itemsTotal: Double? {
+        expense.items.isEmpty ? parsedItems.total : nil
+    }
+
+    /// Whether this expense has enough items to be worth a sheet.
     private var hasItemsBreakdown: Bool {
-        parsedItems.items.count >= 2
+        displayItems.count >= 2
     }
 
     /// Controls presentation of the items breakdown sheet. Sheet is
@@ -140,7 +161,7 @@ struct ExpenseRow: View {
                             HStack(spacing: 3) {
                                 Image(systemName: "list.bullet.rectangle.portrait.fill")
                                     .font(.caption2.weight(.semibold))
-                                Text("\(parsedItems.items.count)")
+                                Text("\(displayItems.count)")
                                     .font(.caption2.weight(.semibold))
                                     .monospacedDigit()
                             }
@@ -152,7 +173,7 @@ struct ExpenseRow: View {
                             .fixedSize()
                         }
                         .buttonStyle(.plain)
-                        .accessibilityLabel("Show \(parsedItems.items.count) items")
+                        .accessibilityLabel("Show \(displayItems.count) items")
                     }
                     if needsReview {
                         Text("Review")
@@ -219,8 +240,8 @@ struct ExpenseRow: View {
                 date: expense.date,
                 categoryName: expense.category?.name ?? "Uncategorized",
                 receiptImageData: expense.receiptImageData,
-                items: parsedItems.items,
-                total: parsedItems.total
+                items: displayItems,
+                total: itemsTotal
             )
             .presentationDetents([.medium, .large])
             .presentationDragIndicator(.visible)
@@ -302,6 +323,15 @@ struct ExpenseContextPreview: View {
                     } else if let note = expense.note, !note.isEmpty {
                         Text(note)
                             .font(.headline)
+                        if let category = expense.category {
+                            Text(category.name)
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        }
+                    } else if !expense.items.isEmpty {
+                        Text(expense.items.map { $0.name.capitalized }.joined(separator: ", "))
+                            .font(.headline)
+                            .lineLimit(2)
                         if let category = expense.category {
                             Text(category.name)
                                 .font(.subheadline)

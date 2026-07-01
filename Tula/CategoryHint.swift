@@ -40,10 +40,10 @@ enum CategoryHint {
         // Food & dining
         case "fork.knife", "fork.knife.circle.fill",
              "cup.and.saucer.fill", "takeoutbag.and.cup.and.straw.fill":
-            return "restaurants, cafes, food delivery, dining out, snacks, tea, coffee, lunch, dinner, breakfast, biryani, pizza, burger, chai, samosa, dosa, thali, meal, noodles, momos, sweets, bakery, juice, paneer, roti, paratha, idli, vada, pav"
+            return "restaurants, cafes, food delivery, dining out, snacks, tea, coffee, lunch, dinner, breakfast, biryani, pizza, burger, chai, samosa, dosa, thali, meal, noodles, momos, sweets, bakery, juice, paneer, roti, paratha, idli, vada, pav, sandwich, wrap, roll, shawarma, kebab, tandoori, kulcha, naan, puri, bhaji, chaat, golgappa, pani puri, sev puri, dabeli, frankie, tikka, malai, lassi, milkshake, smoothie, falooda, kulfi, ice cream, gelato, pastry, donut, muffin, brownie, cookie, biscuit, biscoff, lotus, oreo, cake, waffle, pancake, croissant, nachos, fries, wings, steak, sushi, ramen, pho, dim sum, dumpling, momo, chowmein, manchurian, fried rice, pulao, khichdi, rajma, chole, aloo, gobi, bhindi, dal makhani, butter chicken, chicken tikka, fish fry, egg, omelette, maggi, poha, upma, uttapam, medu vada, pongal, pesarattu, misal pav, vada pav, bhel puri, jalebi, gulab jamun, rasgulla, barfi, ladoo, halwa, kheer, payasam, rabri, mithai, tiffin, nashta, khana, snack"
         // Groceries
         case "basket.fill", "cart.fill", "bag.fill":
-            return "supermarkets, grocery stores, kirana, vegetables, fruits, fruit, milk, eggs, rice, atta, dal, oil, bread, dairy, daily essentials, provisions, sabzi, subzi, grocery, doodh, butter, cheese, flour, sugar, masala, spices, apple, banana, mango, orange, onion, potato, tomato, pomegranate, grapes, papaya, watermelon, lemon, ginger, garlic, coriander, paneer"
+            return "supermarkets, grocery stores, kirana, vegetables, fruits, fruit, milk, eggs, rice, atta, dal, oil, bread, dairy, daily essentials, provisions, sabzi, subzi, grocery, doodh, butter, cheese, flour, sugar, masala, spices, apple, banana, mango, orange, onion, potato, tomato, pomegranate, grapes, papaya, watermelon, lemon, ginger, garlic, coriander, paneer, curd, yogurt, ghee, cream, chips, biscuits, cookies, chocolate, namkeen, mixture, papad, pickle, achar, jam, ketchup, sauce, noodles, pasta, oats, cereal, muesli, cornflakes, peanut butter, honey, tea leaves, coffee powder, detergent, soap, shampoo, toothpaste, tissue, napkins, salt, pepper, turmeric, chilli, cumin, jeera, cinnamon, cardamom, saffron, besan, sooji, maida, poha flakes, jaggery, nuts, almonds, cashew, raisins, dates, dry fruits, coconut, tamarind, vinegar, soda, water bottle, juice pack, amul, mother dairy, britannia, parle, haldirams, lijjat, aashirvaad, fortune, saffola, tata"
         // Transport - fuel
         case "fuelpump.fill", "fuelpump":
             return "petrol, fuel, diesel, CNG, gas station, petrol pump, filling station"
@@ -54,15 +54,15 @@ enum CategoryHint {
         // Health / medical
         case "cross.case.fill", "cross.fill", "heart.fill",
              "pills.fill", "stethoscope":
-            return "pharmacies, medicines, doctors, hospitals, clinics, lab tests, medical, checkup, health, prescription, medicine, doctor, hospital, pharmacy"
+            return "pharmacies, medicines, doctors, hospitals, clinics, lab tests, medical, checkup, health, prescription, medicine, doctor, hospital, pharmacy, dawai, tablet, capsule, syrup, ointment, bandage, sanitizer, thermometer, inhaler, drops, vitamins, supplements, protein, crocin, dolo, paracetamol, aspirin, antacid, digene, eno, vicks, ibuprofen, betadine"
         // Shopping (clothes, electronics, lifestyle)
         case "tshirt.fill", "tv.fill", "laptopcomputer", "iphone",
              "gift.fill", "tag.fill":
-            return "clothing, electronics, gadgets, lifestyle, online shopping, accessories, clothes, shoes, shirt, jeans, phone, laptop, headphones"
+            return "clothing, electronics, gadgets, lifestyle, online shopping, accessories, clothes, shoes, shirt, jeans, phone, laptop, headphones, earbuds, airpods, charger, cable, case, cover, watch, sunglasses, perfume, deodorant, bag, backpack, wallet, belt, kurta, saree, lehenga, kurti, chudi, dress, trousers, shorts, sneakers, sandals, slippers, chappal"
         // Entertainment / leisure
         case "film.fill", "ticket.fill", "music.note", "gamecontroller.fill",
              "popcorn.fill":
-            return "movies, concerts, streaming, games, theatre, events, movie, tickets, netflix, spotify, gaming"
+            return "movies, concerts, streaming, games, theatre, events, movie, tickets, netflix, spotify, gaming, popcorn, arcade, bowling, paintball, cricket, football, badminton, swimming, match, show, standup, comedy, drama, musical"
         // Utilities & bills
         case "bolt.fill", "lightbulb.fill", "wifi", "drop.fill",
              "flame.fill", "phone.fill":
@@ -97,24 +97,105 @@ enum CategoryHint {
         }
     }
 
+    // MARK: - Compound Phrases
+
+    /// Compound phrases that indicate a specific category. Checked BEFORE
+    /// individual token matching so "movie ticket" hits Entertainment even
+    /// though "movie" alone might also hit it. Longer phrases first to
+    /// avoid partial matches.
+    private static let compoundPhrases: [(phrase: String, category: String)] = [
+        // Entertainment
+        ("movie ticket", "Entertainment"), ("movie tickets", "Entertainment"),
+        ("concert ticket", "Entertainment"), ("concert tickets", "Entertainment"),
+        ("game pass", "Entertainment"), ("amusement park", "Entertainment"),
+        ("theme park", "Entertainment"), ("escape room", "Entertainment"),
+        ("book ticket", "Entertainment"),
+        // Food (compound items clearly food)
+        ("office lunch", "Food"), ("team lunch", "Food"),
+        ("team dinner", "Food"), ("working lunch", "Food"),
+        ("coffee break", "Food"), ("chai nashta", "Food"),
+        ("nashta", "Food"),
+        // Transport
+        ("cab fare", "Transport"), ("auto fare", "Transport"),
+        ("metro card", "Transport"), ("bus pass", "Transport"),
+        ("toll charge", "Transport"), ("parking fee", "Transport"),
+        ("cab ride", "Transport"), ("auto ride", "Transport"),
+        // Health
+        ("doctor visit", "Health"), ("lab test", "Health"),
+        ("blood test", "Health"), ("health checkup", "Health"),
+        ("eye checkup", "Health"), ("dawai", "Health"),
+        // Education
+        ("school fees", "Education"), ("school fee", "Education"),
+        ("tuition fee", "Education"), ("tuition fees", "Education"),
+        ("coaching class", "Education"), ("online course", "Education"),
+        // Personal Care
+        ("hair cut", "Personal Care"), ("haircut", "Personal Care"),
+        ("spa visit", "Personal Care"),
+        // Subscriptions
+        ("gym membership", "Subscriptions"), ("club membership", "Subscriptions"),
+        // Home
+        ("house rent", "Home"), ("pest control", "Home"),
+        ("water purifier", "Home"),
+        // Bills & Utilities
+        ("phone recharge", "Bills"), ("mobile recharge", "Bills"),
+        ("electricity bill", "Bills"), ("gas cylinder", "Bills"),
+        ("wifi bill", "Bills"), ("internet bill", "Bills"),
+    ]
+
+    // MARK: - Action Verbs
+
+    /// Verbs/action words that strongly indicate a category context.
+    /// Weaker than compound phrases or keyword matches — only used when
+    /// no other signal found a category.
+    private static let actionVerbs: [String: String] = [
+        // Food
+        "ate": "Food", "eaten": "Food", "dined": "Food",
+        "ordered": "Food", "drank": "Food",
+        // Entertainment
+        "watched": "Entertainment", "streamed": "Entertainment",
+        "played": "Entertainment",
+        // Transport
+        "drove": "Transport", "rode": "Transport",
+        "commuted": "Transport", "traveled": "Transport",
+        "travelled": "Transport",
+        "refueled": "Transport", "fueled": "Transport",
+        // Shopping
+        "purchased": "Shopping", "shopped": "Shopping",
+        // Health
+        "consulted": "Health", "prescribed": "Health",
+    ]
+
     /// Match input text against category hint keywords. Used by the rule
     /// parser as a semantic fallback when neither direct name match nor
-    /// MerchantRule/FuzzyMatcher found a category. Tokenizes both the
-    /// input and each category's hint into individual words, then counts
-    /// overlap. The category with the most keyword hits wins.
+    /// MerchantRule/FuzzyMatcher found a category.
+    ///
+    /// **Priority order:**
+    /// 1. Compound phrase match (strongest — "movie ticket" → Entertainment)
+    /// 2. Single-token keyword match (existing — "fruits" → Groceries)
+    /// 3. Action-verb inference (weakest — "ate" → Food)
     ///
     /// **Minimum token length**: 3 characters — avoids matching on tiny
-    /// filler words ("on", "at", "to") that appear in hints as part of
-    /// multi-word phrases.
-    ///
-    /// **Example**: input "fruits" matches Groceries' hint which contains
-    /// "fruits, fruit, ...". Input "fuel" matches Fuel/Transport's hint.
+    /// filler words ("on", "at", "to").
     static func matchCategory(
         text: String,
         categories: [(category: Category, iconKey: String)]
     ) -> Category? {
+        let lowered = text.lowercased()
+
+        // Phase 1: Compound phrase match (strongest signal).
+        for entry in compoundPhrases {
+            guard lowered.contains(entry.phrase) else { continue }
+            if let cat = categories.first(where: {
+                $0.category.name.localizedCaseInsensitiveCompare(entry.category) == .orderedSame
+                || $0.category.name.lowercased().contains(entry.category.lowercased())
+            }) {
+                return cat.category
+            }
+        }
+
+        // Phase 2: Single-token keyword match.
         let inputTokens = Array(
-            text.lowercased()
+            lowered
                 .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
                 .map(String.init)
                 .filter { $0.count >= 3 }
@@ -133,11 +214,6 @@ enum CategoryHint {
                     .filter { $0.count >= 3 }
             )
 
-            // Count hits: exact match OR prefix/stem match (handles
-            // plurals like "apples" ↔ "apple", "medicines" ↔ "medicine").
-            // Prefix match requires both tokens ≥ 4 chars and the shorter
-            // one to be a prefix of the longer one — avoids false positives
-            // on short words.
             var score = 0
             for input in inputTokens {
                 if hintTokens.contains(input) {
@@ -161,7 +237,21 @@ enum CategoryHint {
             }
         }
 
-        return bestScore > 0 ? bestCategory : nil
+        if bestScore > 0 { return bestCategory }
+
+        // Phase 3: Action verb inference (only if Phase 2 found nothing).
+        for token in inputTokens {
+            if let targetCategory = actionVerbs[token] {
+                if let cat = categories.first(where: {
+                    $0.category.name.localizedCaseInsensitiveCompare(targetCategory) == .orderedSame
+                    || $0.category.name.lowercased().contains(targetCategory.lowercased())
+                }) {
+                    return cat.category
+                }
+            }
+        }
+
+        return nil
     }
 
     /// Build a formatted category list for inclusion in an FM prompt.

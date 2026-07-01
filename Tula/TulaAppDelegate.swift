@@ -235,7 +235,7 @@ enum RecurringConfirmationHandler {
         let schema = Schema([
             Account.self, Category.self, Expense.self, Transfer.self,
             RecurringRule.self, MerchantRule.self, Budget.self,
-            BalanceAdjustment.self,
+            BalanceAdjustment.self, LineItem.self,
         ])
         if let storeURL = SharedStorage.sharedStoreURL {
             let config = ModelConfiguration("Tula", schema: schema, url: storeURL)

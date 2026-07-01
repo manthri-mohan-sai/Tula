@@ -50,6 +50,15 @@ enum FMContextBuilder {
         if let corrections = correctionHints() {
             sections.append(corrections)
         }
+        if let affinities = userCategoryAffinities() {
+            sections.append(affinities)
+        }
+        if let velocity = spendingVelocity(in: modelContext, now: now, calendar: calendar) {
+            sections.append(velocity)
+        }
+        if let payments = paymentAccounts(in: modelContext) {
+            sections.append(payments)
+        }
 
         return sections.joined(separator: "\n\n")
     }
@@ -327,9 +336,12 @@ enum FMContextBuilder {
     ///
     /// No DB access — reads from UserDefaults directly. Safe to call
     /// from any actor.
+    /// Key shared with UserLearningEngine — both read/write the same store.
+    private static let merchantMapKey = "merchantCorrectionMap"
+
     nonisolated private static func correctionHints() -> String? {
         guard let dict = UserDefaults.standard.dictionary(
-            forKey: "merchantCorrectionMap") as? [String: String],
+            forKey: merchantMapKey) as? [String: String],
               !dict.isEmpty else { return nil }
 
         let entries = dict.prefix(20)
@@ -339,6 +351,85 @@ enum FMContextBuilder {
         LEARNED CORRECTIONS (user has previously corrected these \
         transcriptions — apply the same fix when you see the left side):
         \(entries.joined(separator: ", "))
+        """
+    }
+
+    // MARK: - Learned category affinities
+
+    /// Surfaces the user's learned merchant→category preferences so the
+    /// FM applies the same mapping the user has historically chosen.
+    nonisolated private static func userCategoryAffinities() -> String? {
+        guard let dict = UserDefaults.standard.dictionary(
+            forKey: merchantMapKey) as? [String: String],
+              !dict.isEmpty else { return nil }
+
+        let correctionEntries = dict.prefix(15)
+            .map { "\"\($0.key)\" → \"\($0.value)\"" }
+
+        return """
+        USER'S LEARNED PREFERENCES:
+        Merchant corrections: \(correctionEntries.joined(separator: ", "))
+        Apply these corrections AUTOMATICALLY when you see the left-hand \
+        side in the input. The user has confirmed these mappings by \
+        previously editing parsed results.
+        """
+    }
+
+    // MARK: - Spending velocity
+
+    /// Average daily spend over last 30 days. Helps FM flag implausible
+    /// amounts (e.g. ₹50,000 for chai when daily average is ₹800).
+    private static func spendingVelocity(in context: ModelContext,
+                                          now: Date,
+                                          calendar: Calendar) -> String? {
+        let thirtyDaysAgo = calendar.date(byAdding: .day, value: -30, to: now) ?? now
+        var descriptor = FetchDescriptor<Expense>(
+            predicate: #Predicate { $0.date >= thirtyDaysAgo }
+        )
+        guard let recent = try? context.fetch(descriptor),
+              recent.count >= 10 else { return nil }
+
+        let total = recent.reduce(0.0) { $0 + $1.amount }
+        let avgPerDay = total / 30.0
+
+        return """
+        SPENDING VELOCITY: User averages ~₹\(Int(avgPerDay))/day over \
+        the last 30 days (total ₹\(Int(total))). If a parsed amount is \
+        wildly above this (e.g. 10x daily average), double-check the \
+        amount interpretation — it may be a transcription error.
+        """
+    }
+
+    // MARK: - Payment accounts
+
+    /// Surfaces the user's payment accounts with type metadata so the FM
+    /// can resolve "credit card", "bank", "cash", "UPI" keywords to the
+    /// correct account. Without this, the FM only sees flat names and
+    /// can't distinguish account types.
+    private static func paymentAccounts(in context: ModelContext) -> String? {
+        let descriptor = FetchDescriptor<Account>(
+            predicate: #Predicate { !$0.isArchived },
+            sortBy: [SortDescriptor(\.sortOrder)]
+        )
+        guard let accounts = try? context.fetch(descriptor),
+              !accounts.isEmpty else { return nil }
+
+        let lines = accounts.map { acct -> String in
+            var s = "- \(acct.name) [\(acct.kind.displayName)]"
+            if let d = acct.last4Digits, !d.isEmpty { s += " (ending \(d))" }
+            return s
+        }
+
+        return """
+        PAYMENT ACCOUNTS:
+        \(lines.joined(separator: "\n"))
+        When user says "card" or "credit card", prefer [Credit Card] accounts.
+        When user says "bank" or "transfer" or "NEFT", prefer [Bank] accounts.
+        When user says "cash", prefer [Cash] accounts.
+        When user says "UPI" or "wallet" or "Paytm" or "PhonePe" or "GPay", \
+        prefer [Wallet] accounts.
+        Match last-4 digits if the user mentions them (e.g. "card ending 8891").
+        Return ONLY the account name — no brackets or digits.
         """
     }
 }

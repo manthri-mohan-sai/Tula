@@ -26,7 +26,7 @@ enum CloudAIParser {
 
     static func parse(_ input: String,
                       categories: [CategoryEntry],
-                      accountNames: [String] = [],
+                      accounts: [AccountEntry] = [],
                       isVoice: Bool = false,
                       contextBlock: String = "",
                       config: CloudAIConfig? = nil) async -> SmartParseResult? {
@@ -40,9 +40,13 @@ enum CloudAIParser {
         let categoryList = CategoryHint.formatList(
             categories.map { (name: $0.name, iconKey: $0.iconKey) }
         )
-        let accountList = accountNames.isEmpty
+        let accountList = accounts.isEmpty
             ? "(no account list provided)"
-            : accountNames.joined(separator: ", ")
+            : accounts.map { entry in
+                var s = entry.name + " [\(entry.kind)]"
+                if let d = entry.last4Digits, !d.isEmpty { s += " (ending \(d))" }
+                return s
+            }.joined(separator: ", ")
 
         let contextSection = contextBlock.isEmpty ? "" : "\n\n\(contextBlock)\n"
 
@@ -78,7 +82,9 @@ enum CloudAIParser {
             - category: pick ONE from this list — use the parenthesized hint \
               keywords to decide which category fits the merchant/item:
             \(categoryList)
-            - account: best fit from this exact list, or null if none mentioned: \(accountList)
+            - account: best fit from this exact list. Match by name, type keywords \
+              (credit card, bank, UPI, cash, wallet), or last-4 digits. Return ONLY \
+              the account name (no brackets/digits), or null if none mentioned. List: \(accountList)
 
             **AMOUNT RULES — read these first and apply STRICTLY.**
 
@@ -220,8 +226,9 @@ enum CloudAIParser {
             - category: pick ONE — match the merchant/item to the parenthesized \
               keywords (e.g. petrol/fuel → Transport, restaurants → Food):
             \(categoryList)
-            - account: best fit from this exact list, or null if none mentioned: \
-              \(accountList)
+            - account: best fit from this exact list. Match by name, type \
+              keywords, or last-4 digits. Return ONLY the account name \
+              (no brackets/digits), or null. List: \(accountList)
 
             Rules:
             - If amount is unclear, return 0.
@@ -279,7 +286,7 @@ enum CloudAIParser {
     static func parseVoiceMulti(
         _ input: String,
         categories: [CategoryEntry],
-        accountNames: [String] = [],
+        accounts: [AccountEntry] = [],
         contextBlock: String = "",
         config: CloudAIConfig? = nil
     ) async -> [SmartParseResult]? {
@@ -290,9 +297,13 @@ enum CloudAIParser {
         let categoryList = CategoryHint.formatList(
             categories.map { (name: $0.name, iconKey: $0.iconKey) }
         )
-        let accountList = accountNames.isEmpty
+        let accountList = accounts.isEmpty
             ? "(no account list provided)"
-            : accountNames.joined(separator: ", ")
+            : accounts.map { entry in
+                var s = entry.name + " [\(entry.kind)]"
+                if let d = entry.last4Digits, !d.isEmpty { s += " (ending \(d))" }
+                return s
+            }.joined(separator: ", ")
         let contextSection = contextBlock.isEmpty ? "" : "\n\n\(contextBlock)\n"
 
         let systemPrompt = """

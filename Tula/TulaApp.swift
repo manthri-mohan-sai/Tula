@@ -62,7 +62,7 @@ struct TulaApp: App {
         let schema = Schema([
             Account.self, Category.self, Expense.self, Transfer.self,
             RecurringRule.self, MerchantRule.self, Budget.self,
-            BalanceAdjustment.self,
+            BalanceAdjustment.self, LineItem.self,
         ])
 
         // **Primary path**: shared App Group container. This is the

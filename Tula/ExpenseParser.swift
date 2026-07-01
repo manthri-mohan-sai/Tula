@@ -11,6 +11,9 @@ struct ParsedExpense: Identifiable {
     /// the saved Expense's note field. Empty when no separation exists.
     var note: String?
     var account: Account?
+    /// True when the account was matched directly from the input text
+    /// (word-boundary or substring match) rather than defaulted.
+    var accountExplicitlyMatched: Bool = false
     var category: Category?
     var rawInput: String = ""
     /// Resolved date from relative expressions in the input ("yesterday",
@@ -172,6 +175,19 @@ enum ExpenseParser {
         var result = ParsedExpense(rawInput: originalInput)
         var remaining = segment.lowercased()
 
+        // 0. Apply learned merchant corrections from UserLearningEngine.
+        // If the user previously corrected "swigy" → "Swiggy", apply that
+        // correction so downstream matching sees the canonical form.
+        // O(k) where k = number of corrections (capped at 500). ~0.1ms.
+        let corrections = UserLearningEngine.allMerchantCorrections
+        for (raw, corrected) in corrections {
+            if remaining.contains(raw) {
+                remaining = remaining.replacingOccurrences(
+                    of: raw, with: corrected.lowercased()
+                )
+            }
+        }
+
         // 1. Strip currency markers
         for marker in currencyMarkers {
             remaining = remaining.replacingOccurrences(of: marker, with: " ")
@@ -230,6 +246,11 @@ enum ExpenseParser {
         remaining = dateResult.remaining
         result.date = dateResult.date
 
+        // 1f. Collapse speech abbreviation artifacts ("s b i" → "sbi",
+        // "S.B.I." → "sbi") so account/merchant matching can recognize
+        // abbreviated names that the speech recognizer spelled out.
+        remaining = Self.normalizeAbbreviations(in: remaining)
+
         // 2. Extract the first numeric token as amount.
         // No number = no expense — skip this segment.
         guard let amountRange = remaining.range(of: #"\d+(?:\.\d+)?"#, options: .regularExpression) else {
@@ -248,6 +269,7 @@ enum ExpenseParser {
         let activeAccounts = accounts.filter { !$0.isArchived }
         if let match = matchAccount(in: remaining, candidates: activeAccounts) {
             result.account = match.account
+            result.accountExplicitlyMatched = true
             // Strip every matched token so it doesn't pollute merchant extraction.
             for token in match.matchedTokens {
                 let escapedToken = NSRegularExpression.escapedPattern(for: token)
@@ -347,6 +369,8 @@ enum ExpenseParser {
                 }
                 if !filteredPlace.isEmpty {
                     explicitMerchant = filteredPlace
+                        .map { $0.trimmingCharacters(in: .punctuationCharacters) }
+                        .filter { !$0.isEmpty }
                         .joined(separator: " ")
                         .capitalized
                 }
@@ -368,8 +392,10 @@ enum ExpenseParser {
                 result.note = itemContext.capitalized
             }
         } else {
-            // Fallback path — no place marker found. Clean the residual
-            // text and use all non-filler tokens as the merchant.
+            // Fallback path — no place marker found.
+            // Separate tokens into "likely merchant" vs "likely item" so
+            // that "350 chai" routes "chai" through category detection
+            // instead of creating merchant="Chai" with no category.
             let tokens = remaining
                 .replacingOccurrences(of: #"[^a-zA-Z0-9 ]"#,
                                        with: " ",
@@ -378,7 +404,47 @@ enum ExpenseParser {
                 .filter { !$0.isEmpty && !fillerWords.contains($0) }
 
             if !tokens.isEmpty {
-                result.merchant = tokens.joined(separator: " ").capitalized
+                var merchantTokens: [String] = []
+                var itemTokens: [String] = []
+
+                for token in tokens {
+                    // Known merchant patterns are always merchant tokens.
+                    let isKnownMerchant = ReceiptMeta.knownMerchantCategories.keys
+                        .contains(where: { key in
+                            key.contains(token) || token.contains(key)
+                        })
+
+                    if isKnownMerchant {
+                        merchantTokens.append(token)
+                    } else if isCategoryKeyword(token) && !merchantTokens.isEmpty {
+                        // Category keywords become item tokens only when we
+                        // already have a merchant. Otherwise they serve as
+                        // both merchant and category signal (e.g. "350 chai"
+                        // → merchant "Chai", category via hint).
+                        itemTokens.append(token)
+                    } else {
+                        merchantTokens.append(token)
+                    }
+                }
+
+                if !merchantTokens.isEmpty {
+                    result.merchant = merchantTokens.joined(separator: " ").capitalized
+                }
+                if !itemTokens.isEmpty {
+                    result.note = itemTokens.joined(separator: " ").capitalized
+                }
+            }
+        }
+
+        // 5b. High-precision keyword classification. Owns unambiguous item
+        // lists ("onions tomatoes ginger garlic paste" → Groceries) and stays
+        // silent on ambiguous input, so the fuzzy/hint steps below still run.
+        if result.category == nil {
+            let text = [result.merchant, result.note, itemContext]
+                .compactMap { $0 }
+                .joined(separator: " ")
+            if let classified = CategoryClassifier.classify(text, into: activeCategories) {
+                result.category = classified
             }
         }
 
@@ -428,6 +494,22 @@ enum ExpenseParser {
                 ) {
                     result.category = match
                 }
+            }
+        }
+
+        // 8. Learned category affinity from UserLearningEngine.
+        // If we still don't have a category but we have a merchant, check
+        // what category the user usually assigns to this merchant. This
+        // resolves categories from historical behavior without any keyword
+        // or rule match — e.g. a novel local restaurant that has no rules.
+        if result.category == nil, let merchant = result.merchant {
+            if let preferred = UserLearningEngine.preferredCategory(
+                for: merchant
+            ) {
+                let match = activeCategories.first {
+                    $0.name.lowercased() == preferred.lowercased()
+                }
+                if let match { result.category = match }
             }
         }
 
@@ -494,7 +576,7 @@ enum ExpenseParser {
     ///
     /// Returns the matched account plus the exact tokens that hit (so the
     /// caller can strip them from the input before merchant extraction).
-    private static func matchAccount(
+    static func matchAccount(
         in text: String,
         candidates: [Account]
     ) -> (account: Account, matchedTokens: [String])? {
@@ -536,6 +618,127 @@ enum ExpenseParser {
 
         if let best { return (best.account, best.tokens) }
         return nil
+    }
+
+    /// Resolve an FM-returned account name string to an actual Account
+    /// using multi-tier fuzzy matching. Falls back to `defaultAccount`
+    /// only when no match is found at any tier.
+    static func resolveAccount(
+        named fmName: String?,
+        in candidates: [Account],
+        defaultAccount: Account?
+    ) -> Account? {
+        guard let name = fmName?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !name.isEmpty else {
+            return defaultAccount
+        }
+        // Normalize abbreviation artifacts from FM output ("S B I" → "sbi")
+        let lowered = normalizeAbbreviations(in: name).lowercased()
+        let active = candidates.filter { !$0.isArchived }
+
+        // Tier 0: Exact name match
+        if let exact = active.first(where: { $0.name.lowercased() == lowered }) {
+            return exact
+        }
+
+        // Tier 1: Substring containment — prefer the account whose name
+        // length is closest to the search string (highest coverage ratio).
+        // This avoids a longest-name bias where "credit card" would match
+        // "Mayur Credit Card" over "SBI Credit Card" just because Mayur is
+        // longer.
+        let tier1Matches = active.compactMap { acct -> (Account, Double)? in
+            let n = acct.name.lowercased()
+            guard !n.isEmpty else { return nil }
+            guard n.contains(lowered) || lowered.contains(n) else { return nil }
+            let overlap = Double(min(n.count, lowered.count))
+            let span    = Double(max(n.count, lowered.count))
+            return (acct, overlap / span)   // higher = tighter match
+        }
+        if let best = tier1Matches.max(by: { $0.1 < $1.1 }) {
+            return best.0
+        }
+
+        // Tier 2: Word-level match (reuses matchAccount scoring)
+        if let match = matchAccount(in: lowered, candidates: active) {
+            return match.account
+        }
+
+        // Tier 3: Account kind keyword matching
+        // When FM returns "credit card" or "cash" without a specific name,
+        // pick the first account of that type.
+        let kindMap: [(keys: [String], kind: AccountKind)] = [
+            (["credit card", "cc", "credit"], .creditCard),
+            (["cash", "naqad"], .cash),
+            (["wallet", "upi", "paytm", "phonepe", "gpay"], .wallet),
+            (["bank", "savings", "neft", "transfer"], .bank),
+        ]
+        for entry in kindMap {
+            if entry.keys.contains(where: { lowered.contains($0) }) {
+                if let match = active.first(where: { $0.kind == entry.kind }) {
+                    return match
+                }
+            }
+        }
+
+        return defaultAccount
+    }
+
+    // MARK: - Abbreviation Normalization
+
+    /// Collapse speech-recognizer abbreviation artifacts back into
+    /// continuous abbreviations so entity matching can recognize them.
+    ///
+    /// Apple's speech recognizer often spells out abbreviations as
+    /// individual letters: "SBI" → "S B I" or "S.B.I." in the transcript.
+    /// The word-boundary account matcher then fails because `\bsbi\b`
+    /// doesn't match three separate single-letter tokens.
+    ///
+    /// **Examples:**
+    /// - "s b i" → "sbi"
+    /// - "h d f c" → "hdfc"
+    /// - "S.B.I. credit card" → "sbi credit card"
+    /// - "i c i c i bank" → "icici bank"
+    /// - "a t m 500" → "atm 500"
+    /// - "a nice day" → "a nice day" (unchanged: isolated letters)
+    static func normalizeAbbreviations(in text: String) -> String {
+        var result = text
+
+        // Step 1: Remove dots after single letters so "S.B.I." becomes
+        // "S B I " — ready for the letter-run collapse in step 2.
+        result = result.replacingOccurrences(
+            of: #"(?<=\b[A-Za-z])\.\s*"#,
+            with: " ",
+            options: .regularExpression
+        )
+
+        // Step 2: Collapse runs of 2+ consecutive single-letter words
+        // into one token: "s b i" → "sbi", "h d f c" → "hdfc".
+        let tokens = result.split(separator: " ", omittingEmptySubsequences: true)
+            .map(String.init)
+        var collapsed: [String] = []
+        var letterRun: [String] = []
+
+        for token in tokens {
+            let stripped = token.trimmingCharacters(in: .punctuationCharacters)
+            if stripped.count == 1, stripped.first?.isLetter == true {
+                letterRun.append(stripped)
+            } else {
+                if letterRun.count >= 2 {
+                    collapsed.append(letterRun.joined())
+                } else {
+                    collapsed.append(contentsOf: letterRun)
+                }
+                letterRun = []
+                collapsed.append(token)
+            }
+        }
+        if letterRun.count >= 2 {
+            collapsed.append(letterRun.joined())
+        } else {
+            collapsed.append(contentsOf: letterRun)
+        }
+
+        return collapsed.joined(separator: " ")
     }
 
     // MARK: - Number-Word Normalization
@@ -760,5 +963,33 @@ enum ExpenseParser {
         }
 
         return (now, text)
+    }
+
+    // MARK: - Category Keyword Detection
+
+    /// Quick check whether a token is a category keyword (from CategoryHint
+    /// descriptions). Used to distinguish item words from merchant words
+    /// in preposition-free inputs like "350 chai" vs "350 swiggy".
+    static func isCategoryKeyword(_ token: String) -> Bool {
+        let lowered = token.lowercased()
+        guard lowered.count >= 3 else { return false }
+        let allHintIcons = [
+            "fork.knife", "basket.fill", "fuelpump.fill", "car.fill",
+            "cross.case.fill", "tshirt.fill", "film.fill", "bolt.fill",
+            "house.fill", "book.fill", "scissors", "repeat.circle.fill",
+            "suitcase.fill", "pawprint.fill", "figure.child"
+        ]
+        for icon in allHintIcons {
+            guard let hint = CategoryHint.description(forIcon: icon) else { continue }
+            let hintTokens = hint.lowercased()
+                .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+                .map(String.init)
+            if hintTokens.contains(lowered) { return true }
+            // Prefix match for plurals
+            for h in hintTokens where h.count >= 4 && lowered.count >= 4 {
+                if h.hasPrefix(lowered) || lowered.hasPrefix(h) { return true }
+            }
+        }
+        return false
     }
 }

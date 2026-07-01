@@ -273,27 +273,37 @@ enum InsightEngine {
         // MARK: "You Saved" positive reinforcement
 
         if let monthStart = calendar.dateInterval(of: .month, for: now)?.start,
-           let lastMonthStart = calendar.date(byAdding: .month, value: -1, to: monthStart),
-           let lastMonthEnd = calendar.dateInterval(of: .month, for: lastMonthStart)?.end {
+           let lastMonthStart = calendar.date(byAdding: .month, value: -1, to: monthStart) {
 
-            let lastMonthTotal = expenses
-                .filter { $0.date >= lastMonthStart && $0.date < lastMonthEnd }
-                .reduce(0) { $0 + $1.amount }
-            let thisTotal = expenses.filter { $0.date >= monthStart }.reduce(0) { $0 + $1.amount }
+            let day = calendar.component(.day, from: now)
 
-            if lastMonthTotal > 0 && thisTotal < lastMonthTotal {
-                let saved = lastMonthTotal - thisTotal
-                let percent = Int((saved / lastMonthTotal * 100).rounded())
-                if percent >= 10 {
-                    insights.append(Insight(
-                        id: "youSaved",
-                        kind: .youSaved,
-                        title: "You saved \(Currency.format(saved, code: currencyCode))",
-                        detail: "\(percent)% less than last month so far. Keep it up!",
-                        icon: "leaf.fill",
-                        color: .green,
-                        priority: 4
-                    ))
+            // Compare like-for-like: this month-to-date vs. last month up to the
+            // SAME day. Comparing a fresh month against last month's FULL total
+            // made day 1 read as "saved ₹1,50,000 / 100% less" — nonsense.
+            // Also require a few days elapsed and real spend this month, so we
+            // never celebrate savings that are just "haven't logged yet".
+            if day >= 4, let cap = calendar.date(byAdding: .day, value: day, to: lastMonthStart) {
+                let lastWindow = expenses
+                    .filter { $0.date >= lastMonthStart && $0.date < cap }
+                    .reduce(0) { $0 + $1.amount }
+                let thisTotal = expenses
+                    .filter { $0.date >= monthStart }
+                    .reduce(0) { $0 + $1.amount }
+
+                if lastWindow > 0, thisTotal > 0, thisTotal < lastWindow {
+                    let saved = lastWindow - thisTotal
+                    let percent = Int((saved / lastWindow * 100).rounded())
+                    if percent >= 10 {
+                        insights.append(Insight(
+                            id: "youSaved",
+                            kind: .youSaved,
+                            title: "You saved \(Currency.format(saved, code: currencyCode))",
+                            detail: "\(percent)% less than last month at this point. Keep it up!",
+                            icon: "leaf.fill",
+                            color: .green,
+                            priority: 4
+                        ))
+                    }
                 }
             }
         }

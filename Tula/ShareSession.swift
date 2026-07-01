@@ -486,7 +486,7 @@ final class ShareSession: ObservableObject {
                 let smart = await SmartExpenseParser.parseVoice(
                     text,
                     categories: categoryEntries,
-                    accountNames: [],
+                    accounts: [],
                     contextBlock: fmContext
                 )
                 if let smart {

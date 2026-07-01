@@ -92,7 +92,8 @@ enum SharedStorage {
             Transfer.self,
             RecurringRule.self,
             MerchantRule.self,
-            Budget.self
+            Budget.self,
+            LineItem.self
         ])
         let configuration = ModelConfiguration(
             schema: schema,

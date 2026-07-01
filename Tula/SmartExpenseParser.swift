@@ -28,6 +28,15 @@ import FoundationModels
 /// internally gated with `#if canImport(FoundationModels)` and
 /// `#available(iOS 26.0, *)` checks, returning nil on systems that
 /// don't have FM. Callers can invoke these unconditionally.
+/// Lightweight value type carrying account metadata for FM prompts.
+/// Parallel to `CategoryEntry` — gives the model enough context to
+/// distinguish bank vs credit card vs cash vs wallet.
+struct AccountEntry {
+    let name: String
+    let kind: String       // "Bank", "Credit Card", "Cash", "Wallet"
+    let last4Digits: String?
+}
+
 enum SmartExpenseParser {
 
     // MARK: - Availability
@@ -50,18 +59,17 @@ enum SmartExpenseParser {
         #endif
     }
 
-    /// Best provider — prefers Gemini when configured, falls through to
-    /// on-device FM when no cloud key is present. Without this fallback,
-    /// the default `AIProviderStorage.selected` (.gemini) would silently
-    /// fail on devices that have FM but no API key, causing the caller
-    /// to fall back to rules and skip FM entirely.
+    /// Best provider — honors explicit user choice, then prefers on-device
+    /// Apple FM (free, private, fast), then falls back to cloud providers.
     private static var bestProvider: AIProvider {
         let selected = AIProviderStorage.selected
-        if selected.isReady { return selected }
-        // Fallback chain
+        // Honor explicit user choice from Settings
+        if AIProviderStorage.hasExplicitSelection, selected.isReady { return selected }
+        // Prefer on-device FM — free, private, no API key needed
+        if isFMAvailable { return .appleFM }
+        // Cloud fallbacks
         if !CloudAIConfig.loadGemini().apiKey.isEmpty { return .gemini }
         if !CloudAIConfig.load().apiKey.isEmpty { return .openAI }
-        if isFMAvailable { return .appleFM }
         return selected
     }
 
@@ -132,11 +140,11 @@ enum SmartExpenseParser {
                       contextBlock: String = "") async -> SmartParseResult? {
         switch bestProvider {
         case .gemini:
-            return await CloudAIParser.parse(input, categories: categories, accountNames: [], isVoice: false, contextBlock: contextBlock, config: .loadGemini())
+            return await CloudAIParser.parse(input, categories: categories, accounts: [], isVoice: false, contextBlock: contextBlock, config: .loadGemini())
         case .openAI:
-            return await CloudAIParser.parse(input, categories: categories, accountNames: [], isVoice: false, contextBlock: contextBlock)
+            return await CloudAIParser.parse(input, categories: categories, accounts: [], isVoice: false, contextBlock: contextBlock)
         case .appleFM:
-            return await parse(input, categories: categories, accountNames: [], contextBlock: contextBlock, isVoice: false)
+            return await parse(input, categories: categories, accounts: [], contextBlock: contextBlock, isVoice: false)
         }
     }
 
@@ -152,21 +160,22 @@ enum SmartExpenseParser {
     ///   - input: The raw speech transcript.
     ///   - categories: User's actual categories (name + icon key for
     ///     hint-augmented prompts).
-    ///   - accountNames: User's actual account names (Bank, Cash, etc.) so
-    ///     the model can correctly identify which account was charged when
-    ///     mentioned in the transcript ("paid from HDFC", "in cash", etc.).
+    ///   - accounts: User's actual accounts with type metadata (Bank, Credit
+    ///     Card, Cash, Wallet) so the model can correctly identify which
+    ///     account was charged when mentioned in the transcript ("paid from
+    ///     HDFC", "on credit card", "in cash", etc.).
     static func parseVoice(_ input: String,
                             categories: [CategoryEntry],
-                            accountNames: [String],
+                            accounts: [AccountEntry],
                             contextBlock: String = "") async -> SmartParseResult? {
         switch bestProvider {
         case .gemini:
-            return await CloudAIParser.parse(input, categories: categories, accountNames: accountNames, isVoice: true, contextBlock: contextBlock, config: .loadGemini())
+            return await CloudAIParser.parse(input, categories: categories, accounts: accounts, isVoice: true, contextBlock: contextBlock, config: .loadGemini())
         case .openAI:
-            return await CloudAIParser.parse(input, categories: categories, accountNames: accountNames, isVoice: true, contextBlock: contextBlock)
+            return await CloudAIParser.parse(input, categories: categories, accounts: accounts, isVoice: true, contextBlock: contextBlock)
         case .appleFM:
             return await parse(input, categories: categories,
-                        accountNames: accountNames, contextBlock: contextBlock, isVoice: true)
+                        accounts: accounts, contextBlock: contextBlock, isVoice: true)
         }
     }
 
@@ -180,23 +189,23 @@ enum SmartExpenseParser {
     static func parseVoiceMulti(
         _ input: String,
         categories: [CategoryEntry],
-        accountNames: [String],
+        accounts: [AccountEntry],
         contextBlock: String = ""
     ) async -> [SmartParseResult]? {
         switch bestProvider {
         case .gemini:
             return await CloudAIParser.parseVoiceMulti(
-                input, categories: categories, accountNames: accountNames,
+                input, categories: categories, accounts: accounts,
                 contextBlock: contextBlock, config: .loadGemini()
             )
         case .openAI:
             return await CloudAIParser.parseVoiceMulti(
-                input, categories: categories, accountNames: accountNames,
+                input, categories: categories, accounts: accounts,
                 contextBlock: contextBlock
             )
         case .appleFM:
             return await parseMulti(input, categories: categories,
-                                    accountNames: accountNames,
+                                    accounts: accounts,
                                     contextBlock: contextBlock)
         }
     }
@@ -523,9 +532,19 @@ enum SmartExpenseParser {
         Indian English speakers. Return the corrected version of the input.
 
         Correct ONLY these issues:
-        - Homophones common in Indian English speech: "rahul" → "waffle" \
+        - Homophones and near-homophones where STT picked a real word \
+          that makes no sense in an expense context. Common ones:
+          - "bottle" → "bought" (action verb context)
+          - "board"/"bored" → "bought"/"booked"
+          - "diner" → "dinner", "flower" → "flour" (grocery)
+          - "check in"/"chicken" → "chicken" (food context)
+          - "par cell" → "parcel", "way" → "veg" (Indian food)
+          - "sam also" → "samosa", "dollar"/"dolla" → "dosa"
+          - "buy rain"/"burying" → "biryani"
+          - "root tea"/"route he" → "roti"
+        - Indian English homophones: "rahul" → "waffle" \
           (food context), "pune" → "paneer", "berani" → "biryani", \
-          "old uh" → "ola", "swigy" → "swiggy"
+          "old uh"/"all ah" → "ola", "swigy" → "swiggy"
         - Indian English number compounds — ones word followed by tens \
           word means ones×100+tens. Apply these EVERY time you see them:
             - "two fifty" → "250"
@@ -589,7 +608,7 @@ enum SmartExpenseParser {
     /// `isVoice` tunes the instructions toward speech-recognition quirks.
     private static func parse(_ input: String,
                                categories: [CategoryEntry],
-                               accountNames: [String],
+                               accounts: [AccountEntry],
                                contextBlock: String = "",
                                isVoice: Bool) async -> SmartParseResult? {
         #if canImport(FoundationModels)
@@ -604,9 +623,13 @@ enum SmartExpenseParser {
         let categoryList = CategoryHint.formatList(
             categories.map { (name: $0.name, iconKey: $0.iconKey) }
         )
-        let accountList = accountNames.isEmpty
+        let accountList = accounts.isEmpty
             ? "(no account list provided)"
-            : accountNames.joined(separator: ", ")
+            : accounts.map { entry in
+                var s = entry.name + " [\(entry.kind)]"
+                if let d = entry.last4Digits, !d.isEmpty { s += " (ending \(d))" }
+                return s
+            }.joined(separator: ", ")
 
         // **Role preamble** — pasted at the top of every prompt.
         // Establishes the FM's identity and the bar for output quality.
@@ -662,7 +685,9 @@ enum SmartExpenseParser {
             - category: pick ONE — use the parenthesized hint keywords to \
               decide which category fits the merchant/item:
             \(categoryList)
-            - account: best fit from this exact list, or empty if none mentioned: \(accountList)
+            - account: best fit from this exact list. Match by name, type keywords \
+              (credit card, bank, UPI, cash, wallet), or last-4 digits. Return ONLY \
+              the account name (no brackets/digits). List: \(accountList)
 
             **AMOUNT RULES — read these first and apply STRICTLY.**
 
@@ -695,15 +720,50 @@ enum SmartExpenseParser {
             that's 50 — but as soon as a small digit precedes the tens \
             word, multiply.
 
-            Common Indian-English speech-recognition mistakes — CORRECT \
-            them based on context:
-            - "rahul", "flat", "raffle", "waffel" near a food context → \
-              likely "waffle"
-            - "pune", "panner" near food → likely "paneer"
+            **SPEECH-TO-TEXT ERROR CORRECTION — apply aggressively.**
+
+            STT often produces real English words that SOUND similar to \
+            what the user said but are semantically wrong in an expense \
+            context. You MUST detect these and correct to the intended \
+            word based on context:
+
+            Common phonetic substitutions:
+            - "bottle" → "bought" (as in "I bought X")
+            - "board"/"bored" → "bought"/"booked"
+            - "cold"/"called" → "cod"/"card" (fish/payment)
+            - "flower" → "flour" (grocery context)
+            - "bred" → "bread"
+            - "meet"/"meat" near food → keep "meat"; near person → "met"
+            - "berry"/"bury" → "berry" (food) or "biryani" (Indian food)
+            - "ordered"/"auto" may be "auto" (auto-rickshaw) or "ordered"
+            - "diner" → "dinner"
+            - "cereal" → "cereal" (keep if groceries) or "serial" (discard)
+            - "fries"/"freeze" → "fries" (food context)
+            - "way"/"weigh" → "veg" (Indian food shorthand)
+            - "par cell"/"parcel" → "parcel"
+            - "check in"/"chicken" → "chicken" (food context)
+            - "buy rain" / "burying" → "biryani"
+
+            Indian-English specific mistakes:
+            - "rahul", "flat", "raffle", "waffel" near food → "waffle"
+            - "pune", "panner" near food → "paneer"
             - "berani", "biriyani" → "biryani"
-            - "old uh" near transport → "ola"
-            - "swiggy" might be heard as "swigy", "swiggi" — fix
+            - "old uh", "all ah" near transport → "ola"
+            - "swiggy" heard as "swigy", "swiggi" — fix
             - "two flat hub", "rahul hub" → "Waffle Hub"
+            - "sam also"/"some also" → "samosa"
+            - "dollar"/"dolla" → "dosa" (Indian food context)
+            - "birdie"/"buddy" → "barfi" (Indian sweet, food context)
+            - "naan"/"none" → "naan" (food context)
+            - "root tea"/"route he" → "roti" (food context)
+
+            **GENERAL RULE:** When a word makes no semantic sense in an \
+            expense context but SOUNDS like a word that would (food, \
+            transport, shopping item), correct it. The user is logging \
+            an expense — every word should relate to money, items, \
+            places, or actions. If "bottle" appears where an action \
+            verb should be, it's almost certainly "bought". If "check \
+            in" appears in a food context, it's "chicken".
 
             When the transcript names a generic word as a merchant ("flat", \
             "rahul", "raffle") AND the same word appears as the item \
@@ -787,6 +847,40 @@ enum SmartExpenseParser {
             - "150 chai at chai point" → merchant "Chai Point", item "Chai"
             - "yesterday 500 at swiggy" → date "2026-06-22", amount 500, \
               merchant "Swiggy"
+
+            **MERCHANT NORMALIZATION.** When you identify a merchant, check \
+            the LEARNED CORRECTIONS list above. If the transcription matches \
+            a known correction pattern (left side), use the corrected form \
+            (right side). This overrides your own guesses — the user has \
+            explicitly confirmed these mappings.
+
+            **CATEGORY CONFIDENCE.** When multiple categories could fit:
+            1. If USER'S FREQUENT MERCHANTS lists the merchant → use \
+               whatever category the user historically associated with it
+            2. If TIME-PATTERN HINT suggests a category that matches the \
+               merchant/item → prefer that
+            3. If MERCHANT AMOUNT RANGES shows the amount is typical for \
+               this merchant → additional confidence the identification \
+               is correct
+            4. When genuinely ambiguous (no signal from any context), \
+               return nil for category rather than guessing wrong
+
+            **EDGE CASES:**
+            - "350 swiggy groceries" → amount 350, merchant "Swiggy", \
+              item "Groceries", category "Groceries" (explicit keyword \
+              overrides default Swiggy→Food mapping)
+            - "bottle lotus biscoff" → the user said "bought lotus \
+              biscoff" — "bottle" is STT mishearing "bought". \
+              amount from input, merchant nil, item "Lotus Biscoff", \
+              category "Food"
+            - "bottle some also from haldiram" → "bought samosa from \
+              Haldiram" → merchant "Haldiram", item "Samosa", category "Food"
+            - "chai nashta" → amount from input, merchant nil, item \
+              "Chai Nashta", category "Food" ("nashta" = breakfast in Hindi)
+            - "dawai ke liye 500" → amount 500, merchant nil, item \
+              "Medicine", category "Health" ("dawai" = medicine in Hindi)
+            - "gym membership 2000" → amount 2000, merchant nil, item \
+              "Gym Membership", category "Subscriptions"
             """
         } else {
             instructions = """
@@ -800,8 +894,9 @@ enum SmartExpenseParser {
             - category: pick ONE — match the merchant/item to the parenthesized \
               keywords (e.g. petrol/fuel → Transport, restaurants → Food):
             \(categoryList)
-            - account: best fit from this exact list, or empty if none mentioned: \
-              \(accountList)
+            - account: best fit from this exact list. Match by name, type \
+              keywords, or last-4 digits. Return ONLY the account name \
+              (no brackets/digits). List: \(accountList)
 
             Rules:
             - If amount is unclear, return 0.
@@ -831,8 +926,8 @@ enum SmartExpenseParser {
             let fm = response.content
             return SmartParseResult(
                 amount: fm.amount,
-                merchant: fm.merchant,
-                item: fm.item,
+                merchant: fm.merchant?.trimmingCharacters(in: .punctuationCharacters),
+                item: fm.item?.trimmingCharacters(in: .punctuationCharacters),
                 category: fm.category,
                 account: fm.account,
                 date: fm.date
@@ -854,7 +949,7 @@ enum SmartExpenseParser {
     private static func parseMulti(
         _ input: String,
         categories: [CategoryEntry],
-        accountNames: [String],
+        accounts: [AccountEntry],
         contextBlock: String = ""
     ) async -> [SmartParseResult]? {
         #if canImport(FoundationModels)
@@ -866,9 +961,13 @@ enum SmartExpenseParser {
         let categoryList = CategoryHint.formatList(
             categories.map { (name: $0.name, iconKey: $0.iconKey) }
         )
-        let accountList = accountNames.isEmpty
+        let accountList = accounts.isEmpty
             ? "(no account list provided)"
-            : accountNames.joined(separator: ", ")
+            : accounts.map { entry in
+                var s = entry.name + " [\(entry.kind)]"
+                if let d = entry.last4Digits, !d.isEmpty { s += " (ending \(d))" }
+                return s
+            }.joined(separator: ", ")
 
         let contextSection = contextBlock.isEmpty ? "" : "\n\n\(contextBlock)\n"
 
@@ -929,8 +1028,8 @@ enum SmartExpenseParser {
             let results = response.content.expenses.map { fm in
                 SmartParseResult(
                     amount: fm.amount,
-                    merchant: fm.merchant,
-                    item: fm.item,
+                    merchant: fm.merchant?.trimmingCharacters(in: .punctuationCharacters),
+                    item: fm.item?.trimmingCharacters(in: .punctuationCharacters),
                     category: fm.category,
                     account: fm.account,
                     date: fm.date
@@ -1064,7 +1163,7 @@ struct _FMSmartParseResult: Codable, Sendable {
     @Guide(description: "The place, vendor, or shop where money was spent. Always a place name (restaurant, store, app, brand), NEVER a dish or product. \"Masala Dosa\" is NOT a merchant — \"Sagar Ratna\" is. Title-cased. Words like restaurant, hotel, cafe, bhavan, ratna, house, kitchen indicate a merchant.")
     let merchant: String?
 
-    @Guide(description: "The thing that was bought, if mentioned separately from the merchant. Include meal types (dinner, lunch, breakfast, snacks, tea, coffee), specific dishes (masala dosa, biryani, paneer butter masala, vada pav, idli), and any item word. For \"560 for dinner at ramachandra restaurant\", item=\"Dinner\". For \"280 for masala dosa at ramachandra\", item=\"Masala Dosa\", merchant=\"Ramachandra\". Nil ONLY when the input doesn't mention anything separate from the place name (e.g. \"ola 480\" — no item).")
+    @Guide(description: "The thing that was bought, if mentioned separately from the merchant. Include meal types (dinner, lunch, breakfast, snacks, tea, coffee), specific dishes (masala dosa, biryani, paneer butter masala, vada pav, idli), and any item word. If MULTIPLE items are mentioned, list them comma-separated: 'Samosa, Chai, Gulab Jamun'. For \"560 for dinner at ramachandra restaurant\", item=\"Dinner\". For \"280 for masala dosa at ramachandra\", item=\"Masala Dosa\", merchant=\"Ramachandra\". For \"samosa and chai at haldiram 200\", item=\"Samosa, Chai\". Nil ONLY when the input doesn't mention anything separate from the place name (e.g. \"ola 480\" — no item).")
     let item: String?
 
     @Guide(description: "Best-fitting category name. Must match one of the categories listed in the instructions exactly.")

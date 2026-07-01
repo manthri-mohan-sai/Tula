@@ -54,6 +54,12 @@ final class SpeechRecognizer: ObservableObject {
     /// runs mid-recording, so it can't rewrite text under the user's eyes.
     @Published private(set) var isCorrecting: Bool = false
 
+    /// Normalized audio level (0.0–1.0) derived from mic RMS amplitude.
+    /// Updated ~43 times/sec (1024 samples at 44.1 kHz). Smoothed with
+    /// exponential moving average for organic visual feel. Drives the
+    /// voice overlay's dynamic waveform.
+    @Published private(set) var audioLevel: CGFloat = 0
+
     /// Contextual phrases that bias recognition toward the user's vocabulary —
     /// merchant names, account names, category names, learned corrections.
     /// Set by the caller before `start()`. Injected into every request via
@@ -209,6 +215,24 @@ final class SpeechRecognizer: ObservableObject {
             // request reference is swapped atomically on the main actor during
             // restarts, so we always feed whichever task is live.
             self?.recognitionRequest?.append(buffer)
+
+            // Compute RMS amplitude for dynamic waveform visualization.
+            guard let channelData = buffer.floatChannelData?[0] else { return }
+            let frameLength = Int(buffer.frameLength)
+            var sum: Float = 0
+            for i in 0..<frameLength {
+                let sample = channelData[i]
+                sum += sample * sample
+            }
+            let rms = sqrt(sum / Float(max(frameLength, 1)))
+            // Map to 0–1 range. Voice RMS is typically 0.01–0.15; we
+            // compress with a power curve so quiet speech still registers.
+            let normalized = CGFloat(min(1.0, pow(Double(rms) * 8.0, 0.6)))
+            DispatchQueue.main.async {
+                guard let self else { return }
+                // Exponential moving average for smooth animation
+                self.audioLevel = self.audioLevel * 0.3 + normalized * 0.7
+            }
         }
 
         audioEngine.prepare()
@@ -326,6 +350,35 @@ final class SpeechRecognizer: ObservableObject {
         finish(playEndCue: isRecording)
     }
 
+    /// Clears the transcript without stopping recording. Used by the voice
+    /// overlay's explicit Clear button — distinct from the natural-language
+    /// clear intents ("scratch that") that operate on finalized segments.
+    func clearTranscript() {
+        committedText = ""
+        volatilePartial = ""
+        refreshTranscript()
+        // Restart the recognition task so the recognizer's internal audio
+        // buffer is flushed — otherwise the next partial result will carry
+        // the full transcription from before the clear, re-surfacing it.
+        guard isRecording else { return }
+
+        // CRITICAL: bump the generation BEFORE cancelling. Cancelling a task
+        // fires its callback with a cancellation error; without a generation
+        // bump that callback still matches (`generation == gen`, isRecording
+        // true) and — because we just emptied `committedText` — trips the
+        // on-device fallback in `handleRecognitionError`, which cancels and
+        // restarts a SECOND task. Two tasks then race on one request and
+        // recognition silently dies until the overlay is reopened. Bumping
+        // the generation neutralises every stale callback, exactly like
+        // start()/stop()/finish() do.
+        generation &+= 1
+        recognitionTask?.cancel()
+        recognitionTask = nil
+        recognitionRequest?.endAudio()
+        recognitionRequest = nil
+        startRecognitionTask()
+    }
+
     /// Centralized teardown. Bumps the generation (neutralizing every pending
     /// callback), stops audio, and optionally plays the end cue + runs the
     /// one-shot AI cleanup on the finalized transcript.
@@ -335,6 +388,7 @@ final class SpeechRecognizer: ObservableObject {
         // Invalidate all in-flight callbacks atomically.
         generation &+= 1
         isRecording = false
+        audioLevel = 0
 
         teardownAudio(deactivateSession: wasRecording)
 

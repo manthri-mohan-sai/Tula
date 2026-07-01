@@ -70,6 +70,7 @@ struct HomeView: View {
     @AppStorage("launchAnimationEnabled") private var launchAnimationEnabled: Bool = true
 
     @State private var editingExpense: Expense?
+    @State private var showingVoiceOverlay = false
     @State private var expenseToDelete: Expense?
     @State private var showingSettings = false
     @State private var showingRecurring = false
@@ -533,6 +534,68 @@ struct HomeView: View {
             .sensoryFeedback(.impact(flexibility: .solid, intensity: 0.6), trigger: editingExpense)
             .sheet(item: $editingExpense) { expense in
                 AddExpenseView(existingExpense: expense)
+            }
+            .fullScreenCover(isPresented: $showingVoiceOverlay) {
+                VoiceInputOverlay(
+                    accounts: allAccounts.filter { !$0.isArchived },
+                    categories: allCategories.filter { !$0.isArchived },
+                    merchantRules: allMerchantRules,
+                    defaultAccount: defaultAccount,
+                    currencyCode: currencyCode,
+                    topMerchants: frequentMerchantNames,
+                    onSave: { expense in
+                        context.insert(expense)
+                        UserLearningEngine.learn(
+                            merchant: expense.merchant,
+                            category: expense.category?.name,
+                            amount: expense.amount,
+                            hour: Calendar.current.component(.hour, from: expense.date)
+                        )
+                        try? context.save()
+                        WidgetRefresh.refresh(using: context)
+                        NotificationManager.refreshDailyReminder(using: context)
+                        if let acct = expense.account {
+                            lastUsedAccountID = acct.id.uuidString
+                        }
+                        Haptics.success()
+                        triggerSavePulse()
+                        showToast("Expense saved · Voice")
+                        evaluateBudgetAlerts()
+                    },
+                    onEdit: { expense in
+                        context.insert(expense)
+                        try? context.save()
+                        // Slight delay so fullScreenCover dismisses before
+                        // the edit sheet appears — avoids SwiftUI sheet
+                        // conflicts.
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                            editingExpense = expense
+                        }
+                    },
+                    onSaveMany: { expenses in
+                        guard !expenses.isEmpty else { return }
+                        for expense in expenses {
+                            context.insert(expense)
+                            UserLearningEngine.learn(
+                                merchant: expense.merchant,
+                                category: expense.category?.name,
+                                amount: expense.amount,
+                                hour: Calendar.current.component(.hour, from: expense.date)
+                            )
+                        }
+                        try? context.save()
+                        WidgetRefresh.refresh(using: context)
+                        NotificationManager.refreshDailyReminder(using: context)
+                        if let last = expenses.last?.account {
+                            lastUsedAccountID = last.id.uuidString
+                        }
+                        Haptics.success()
+                        triggerSavePulse()
+                        showToast("\(expenses.count) expenses saved · Voice")
+                        evaluateBudgetAlerts()
+                    },
+                    onDismiss: { }
+                )
             }
             .sheet(isPresented: $showingSettings) {
                 SettingsView()
@@ -1007,269 +1070,31 @@ struct HomeView: View {
             merchantRules: allMerchantRules,
             defaultAccount: defaultAccount,
             currencyCode: currencyCode,
-            onSubmit: handleQuickLog,
-            onError: { showToast($0) },
-            isSmartParsing: smartParseInFlight > 0,
-            topMerchants: frequentMerchantNames
-        )
-    }
-
-    /// Routes the submission. Typed input takes the fast rule-based path;
-    /// voice input gets re-parsed by Foundation Models so transcription
-    /// noise (homophones like "waffle" → "rahul", split digits "1 20")
-    /// gets corrected with full context.
-    ///
-    /// Both single and multi-expense voice go through FM when available.
-    /// Multi-expense uses `parseVoiceMulti()` which extracts all expenses
-    /// in a single FM call, letting the model use cross-expense context
-    /// (e.g. "from cash" at the end applies to all). Falls back to
-    /// rule-parsed results if FM is unavailable or returns nil.
-    private func handleQuickLog(_ parsedExpenses: [ParsedExpense],
-                                rawInput: String,
-                                isVoice: Bool) {
-        let isMultiExpense = parsedExpenses.count >= 2
-
-        if isVoice, SmartExpenseParser.isAvailable {
-            if isMultiExpense {
-                handleVoiceMultiQuickLog(rawInput: rawInput, ruleFallback: parsedExpenses)
-            } else {
-                handleVoiceQuickLog(rawInput: rawInput, ruleFallback: parsedExpenses)
-            }
-            return
-        }
-        // Typed input or no-FM/Cloud device: rule path.
-        if isVoice {
-            print("🎤 [Voice] No AI available (FM=\(SmartExpenseParser.isFMAvailable), Cloud=\(SmartExpenseParser.hasCloudVision)), using rules")
-        }
-        saveParsedExpenses(parsedExpenses)
-    }
-
-    /// FM-first voice path. Sends the raw speech transcript to Foundation
-    /// Models with the user's category and account lists as anchors, then
-    /// constructs and saves an Expense from the structured result. Falls
-    /// back to the rule-parsed expenses if FM is unavailable, returns
-    /// garbage, or times out.
-    private func handleVoiceQuickLog(rawInput: String,
-                                     ruleFallback: [ParsedExpense]) {
-        let usableCategories = allCategories.filter { !$0.isArchived }
-        let usableAccounts = allAccounts.filter { !$0.isArchived }
-        let categoryEntries = usableCategories.map {
-            CategoryEntry(name: $0.name, iconKey: $0.iconKey)
-        }
-        let accountNames = usableAccounts.map { $0.name }
-        // Collision-safe: two accounts can share a name case-insensitively
-        // ("Cash" / "cash"). `uniqueKeysWithValues` would trap; keep the
-        // first (lowest sortOrder, since usableAccounts is already ordered).
-        let accountByName = Dictionary(
-            usableAccounts.map { ($0.name.lowercased(), $0) },
-            uniquingKeysWith: { first, _ in first }
-        )
-
-        // Show the AI pill for the duration of the FM call. Floor ensures
-        // it stays visible long enough to register (FM can be fast on
-        // iPhone 17 — 100-200ms wouldn't otherwise be seen).
-        smartParseInFlight += 1
-        let startedAt = Date()
-        let minPillVisible: TimeInterval = 0.8
-        let timeout: TimeInterval = 6.0
-
-        // Build the situational + DB context block BEFORE the detached
-        // task so MainActor access to ModelContext works. The string is
-        // Sendable and crosses the actor boundary safely.
-        let contextBlock = FMContextBuilder.build(modelContext: context)
-
-        let provider = SmartExpenseParser.hasCloudVision ? "Cloud AI" : (SmartExpenseParser.isFMAvailable ? "FM" : "Rules")
-        print("🎤 [Voice] Parsing via \(provider): \"\(rawInput.prefix(80))\"")
-
-        Task.detached(priority: .userInitiated) {
-            // Race the FM call against a timeout so a hung model doesn't
-            // freeze the save flow indefinitely.
-            let result = await withTaskGroup(of: SmartParseResult?.self) { group in
-                group.addTask {
-                    await SmartExpenseParser.parseVoice(
-                        rawInput,
-                        categories: categoryEntries,
-                        accountNames: accountNames,
-                        contextBlock: contextBlock
-                    )
-                }
-                group.addTask {
-                    try? await Task.sleep(for: .seconds(timeout))
-                    return nil
-                }
-                let first = await group.next() ?? nil
-                group.cancelAll()
-                return first
-            }
-
-            // Enforce minimum pill visibility.
-            let elapsed = Date().timeIntervalSince(startedAt)
-            if elapsed < minPillVisible {
-                try? await Task.sleep(for: .seconds(minPillVisible - elapsed))
-            }
-
-            await MainActor.run {
-                smartParseInFlight = max(0, smartParseInFlight - 1)
-
-                // Build and save from FM result if it produced a usable
-                // amount + account; otherwise fall back to rule output.
-                if let result, result.amount > 0 {
-                    print("🎤 [Voice] AI result: ₹\(result.amount) \(result.merchant ?? "-") | cat=\(result.category ?? "-") | item=\(result.item ?? "-")")
-
-                    // Amount sanity check: if FM's amount is significantly
-                    // smaller than what the rule parser extracted from the
-                    // same raw input, FM probably dropped a digit during
-                    // its interpretation. Fall back to rules in that case.
-                    let ruleAmount = ruleFallback.first?.amount ?? 0
-                    if ruleAmount > 0, result.amount < ruleAmount / 2 {
-                        print("🎤 [Voice] Amount sanity fail: AI=\(result.amount) vs Rule=\(ruleAmount), using rules")
-                        saveParsedExpenses(ruleFallback)
-                        return
-                    }
-
-                    // Category resolution — same order as receipt path:
-                    // 1. MerchantRuleResolver (deterministic, user-learned)
-                    // 2. FM suggestion with fuzzy name match
-                    let category = MerchantRuleResolver.category(
-                        for: result.merchant, in: context
-                    ) ?? resolveCategory(named: result.category)
-                    let account = result.account
-                        .flatMap { accountByName[$0.lowercased()] }
-                        ?? defaultAccount
-                    guard let account else {
-                        saveParsedExpenses(ruleFallback)
-                        return
-                    }
-
-                    print("🎤 [Voice] Resolved: cat=\(category?.name ?? "nil") acct=\(account.name)")
-
-                    let expenseDate = Self.parseYMD(result.date) ?? .now
-
-                    let expense = Expense(
-                        amount: result.amount,
-                        date: expenseDate,
-                        merchant: result.merchant,
-                        note: result.item,
-                        source: .smartParsed,
-                        category: category,
-                        account: account
-                    )
-                    expense.rawInput = rawInput
+            onSaveDrafts: { expenses in
+                guard !expenses.isEmpty else { return }
+                for expense in expenses {
                     context.insert(expense)
-                    try? context.save(); WidgetRefresh.refresh(using: context)
-                    NotificationManager.refreshDailyReminder(using: context)
-                    lastUsedAccountID = account.id.uuidString
-                    Haptics.success()
-                    triggerSavePulse()
-                    showToast("Expense saved · AI")
-                    evaluateBudgetAlerts()
-                } else {
-                    // FM unavailable / failed / no usable result. Use rule output.
-                    print("🎤 [Voice] AI returned nil/zero, falling to rules")
-                    saveParsedExpenses(ruleFallback)
-                }
-            }
-        }
-    }
-
-    /// FM-first voice path for MULTI-expense input. Sends the raw
-    /// transcript to `parseVoiceMulti()` which extracts all expenses in
-    /// one FM call. Falls back to rule-parsed results if FM fails or is
-    /// unavailable. Same timeout/safety pattern as `handleVoiceQuickLog`.
-    private func handleVoiceMultiQuickLog(rawInput: String,
-                                          ruleFallback: [ParsedExpense]) {
-        let usableCategories = allCategories.filter { !$0.isArchived }
-        let usableAccounts = allAccounts.filter { !$0.isArchived }
-        let categoryEntries = usableCategories.map {
-            CategoryEntry(name: $0.name, iconKey: $0.iconKey)
-        }
-        let accountNames = usableAccounts.map { $0.name }
-        // Collision-safe: two accounts can share a name case-insensitively
-        // ("Cash" / "cash"). `uniqueKeysWithValues` would trap; keep the
-        // first (lowest sortOrder, since usableAccounts is already ordered).
-        let accountByName = Dictionary(
-            usableAccounts.map { ($0.name.lowercased(), $0) },
-            uniquingKeysWith: { first, _ in first }
-        )
-
-        smartParseInFlight += 1
-        let startedAt = Date()
-        let minPillVisible: TimeInterval = 0.8
-        let timeout: TimeInterval = 8.0  // slightly longer for multi
-
-        let contextBlock = FMContextBuilder.build(modelContext: context)
-
-        Task.detached(priority: .userInitiated) {
-            let results = await withTaskGroup(of: [SmartParseResult]?.self) { group in
-                group.addTask {
-                    await SmartExpenseParser.parseVoiceMulti(
-                        rawInput,
-                        categories: categoryEntries,
-                        accountNames: accountNames,
-                        contextBlock: contextBlock
+                    UserLearningEngine.learn(
+                        merchant: expense.merchant,
+                        category: expense.category?.name,
+                        amount: expense.amount,
+                        hour: Calendar.current.component(.hour, from: expense.date)
                     )
                 }
-                group.addTask {
-                    try? await Task.sleep(for: .seconds(timeout))
-                    return nil
+                try? context.save()
+                WidgetRefresh.refresh(using: context)
+                NotificationManager.refreshDailyReminder(using: context)
+                if let last = expenses.last?.account {
+                    lastUsedAccountID = last.id.uuidString
                 }
-                let first = await group.next() ?? nil
-                group.cancelAll()
-                return first
-            }
-
-            let elapsed = Date().timeIntervalSince(startedAt)
-            if elapsed < minPillVisible {
-                try? await Task.sleep(for: .seconds(minPillVisible - elapsed))
-            }
-
-            await MainActor.run {
-                smartParseInFlight = max(0, smartParseInFlight - 1)
-
-                // Validate FM results: all expenses need usable amounts.
-                if let results, !results.isEmpty,
-                   results.allSatisfy({ $0.amount > 0 }) {
-                    var saved = 0
-                    for result in results {
-                        let category = MerchantRuleResolver.category(
-                            for: result.merchant, in: context
-                        ) ?? resolveCategory(named: result.category)
-                        let account = result.account
-                            .flatMap { accountByName[$0.lowercased()] }
-                            ?? defaultAccount
-                        guard let account else { continue }
-
-                        let expenseDate = Self.parseYMD(result.date) ?? .now
-                        let expense = Expense(
-                            amount: result.amount,
-                            date: expenseDate,
-                            merchant: result.merchant,
-                            note: result.item,
-                            source: .smartParsed,
-                            category: category,
-                            account: account
-                        )
-                        expense.rawInput = rawInput
-                        context.insert(expense)
-                        lastUsedAccountID = account.id.uuidString
-                        saved += 1
-                    }
-                    if saved > 0 {
-                        try? context.save(); WidgetRefresh.refresh(using: context)
-                        NotificationManager.refreshDailyReminder(using: context)
-                        Haptics.success()
-                        triggerSavePulse()
-                        showToast("\(saved) expenses saved")
-                        evaluateBudgetAlerts()
-                    } else {
-                        saveParsedExpenses(ruleFallback)
-                    }
-                } else {
-                    // FM unavailable / failed / timeout. Use rule output.
-                    saveParsedExpenses(ruleFallback)
-                }
-            }
-        }
+                Haptics.success()
+                triggerSavePulse()
+                showToast(expenses.count > 1 ? "\(expenses.count) expenses saved" : "Expense saved")
+                evaluateBudgetAlerts()
+            },
+            isSmartParsing: smartParseInFlight > 0,
+            onMicTap: { showingVoiceOverlay = true }
+        )
     }
 
     /// Original rule-based save path, extracted so both the typed flow
@@ -1294,6 +1119,12 @@ struct HomeView: View {
             )
             expense.rawInput = parsed.rawInput
             context.insert(expense)
+            UserLearningEngine.learn(
+                merchant: expense.merchant,
+                category: expense.category?.name,
+                amount: expense.amount,
+                hour: Calendar.current.component(.hour, from: expense.date)
+            )
             lastAccount = account
             savedExpenses.append(expense)
         }
@@ -2470,8 +2301,6 @@ struct HomeView: View {
         .buttonStyle(.plain)
     }
 
-
-
     // MARK: - Recent
 
     /// Recent expenses use a native `List` with `.scrollDisabled(true)` so we
@@ -3112,10 +2941,6 @@ private struct CardSlideEffect: GeometryEffect {
     }
 }
 
-
-
-
-
 extension View {
     func hideKeyboard() {
         UIApplication.shared.sendAction(
@@ -3178,63 +3003,53 @@ private struct QuickLogBar: View {
     let merchantRules: [MerchantRule]
     let defaultAccount: Account?
     let currencyCode: String
-    /// Submit callback. Carries the rule-parsed expenses, the raw input
-    /// string, and a flag indicating whether the input came from voice
-    /// dictation. The host (HomeView) uses these to decide whether to
-    /// save the rule-parsed result directly (typed input) or send the
-    /// raw transcript through Foundation Models for re-parse (voice
-    /// input, where rules can't reliably handle transcription noise).
-    let onSubmit: ([ParsedExpense], String, Bool) -> Void
-    /// Surfaces a transient failure from the speech recognizer (mic
-    /// unavailable, recording interrupted, nothing heard) to the host so it
-    /// can show a toast. Without this, capture failures are silent — the
-    /// single worst outcome for a feature whose whole job is to feel reliable.
-    let onError: (String) -> Void
+    /// Save callback for typed input — receives the fully-built expenses
+    /// produced by the shared `ExpenseInterpreter` (same pipeline as voice).
+    let onSaveDrafts: ([Expense]) -> Void
     /// True when Apple Foundation Models is currently enriching a
     /// recent submission. Drives the radiant amber glow around the
     /// input capsule so the user sees that on-device AI is engaged.
     /// Parent passes `smartParseInFlight > 0`.
     let isSmartParsing: Bool
-    /// Top merchant names by frequency — injected into the speech
-    /// recognizer's `contextualStrings` so iOS biases transcription
-    /// toward the user's actual vocabulary. Computed by HomeView from
-    /// allExpenses to avoid giving QuickLogBar a ModelContext dependency.
-    let topMerchants: [String]
+    /// Callback triggered when the user taps the mic button. HomeView
+    /// presents the full-screen voice overlay in response.
+    let onMicTap: () -> Void
 
     @State private var input: String = ""
     @FocusState private var focused: Bool
-    @StateObject private var speech = SpeechRecognizer()
-    @State private var showingPermissionDenied = false
-    /// Tracks whether we just finished a voice session — used to give the
-    /// preview card extra prominence and tappable confirm behavior.
-    @State private var justFinishedVoice = false
+    /// Inline corrections applied to the live single-expense preview without
+    /// retyping. Cleared whenever the field is cleared/submitted.
+    @State private var categoryOverride: Category?
+    @State private var accountOverride: Account?
 
-    /// Tracks whether the CURRENT input text originated from voice
-    /// dictation vs typing. Set to true whenever a speech transcript
-    /// update overwrites `input`; reset to false whenever the user
-    /// edits via keyboard. Used at submit time to decide whether to
-    /// route through Foundation Models (voice path, more forgiving of
-    /// transcription noise) or the rule parser (typed path, faster).
-    ///
-    /// More reliable than `justFinishedVoice` for routing decisions —
-    /// that flag depends on the rule parser successfully extracting an
-    /// amount AT the moment the user taps stop, which can be wrong when
-    /// transcription is noisy enough to break rule parsing.
-    @State private var inputCameFromVoice: Bool = false
-
-    private var parsed: [ParsedExpense] {
-        ExpenseParser.parse(
-            input: input,
-            accounts: accounts,
-            categories: categories,
-            merchantRules: merchantRules,
-            defaultAccount: defaultAccount
-        )
+    /// Live interpretation via the shared deterministic pipeline. Recomputed as
+    /// the user types; fast (on-device, no network).
+    private var drafts: [ExpenseDraft] {
+        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [] }
+        var produced = ExpenseInterpreter(
+            accounts: accounts, categories: categories,
+            merchantRules: merchantRules, defaultAccount: defaultAccount
+        ).interpret(input)
+        // Inline chip overrides apply to the single-expense case.
+        if produced.count == 1 {
+            if let categoryOverride { produced[0].category = categoryOverride }
+            if let accountOverride { produced[0].account = accountOverride }
+        }
+        return produced
     }
 
-    private var validParsed: [ParsedExpense] { parsed.filter { $0.isValid } }
-    private var canSubmit: Bool { !validParsed.isEmpty && !speech.isRecording }
-    private var showPreview: Bool { !validParsed.isEmpty }
+    private var validDrafts: [ExpenseDraft] { drafts.filter { $0.isValid } }
+    private var canSubmit: Bool { !validDrafts.isEmpty }
+    private var showPreview: Bool { !validDrafts.isEmpty }
+
+    /// Single-expense preview (nil for multi-expense — those show a summary row).
+    private var previewDraft: ExpenseDraft? {
+        validDrafts.count == 1 ? validDrafts.first : nil
+    }
+
+    private var activeAccounts: [Account] { accounts.filter { !$0.isArchived } }
+    private var activeCategories: [Category] { categories.filter { !$0.isArchived } }
 
     var body: some View {
         VStack(spacing: Spacing.sm) {
@@ -3245,81 +3060,21 @@ private struct QuickLogBar: View {
             }
         }
         .animation(AppAnimation.bouncy, value: showPreview)
-        .animation(AppAnimation.snappy, value: speech.isRecording)
-        .onChange(of: speech.transcript) { _, newValue in
-            // Speech recognizer updated the transcript — adopt it AND
-            // mark the input as voice-sourced so submit can route via FM.
-            // Track separately from the text content itself (which the
-            // user may then edit by hand) to avoid losing the voice
-            // routing decision if a small typo is corrected manually.
-            input = newValue
-            if !newValue.isEmpty {
-                inputCameFromVoice = true
-            }
-        }
-        .onChange(of: input) { oldValue, newValue in
-            // If the user changes the text without speech being involved
-            // (e.g. typing in the field), flip back to typed source.
-            // We compare against speech.transcript: if they diverge AND
-            // speech isn't currently producing this update, the user typed.
-            if newValue != speech.transcript && !speech.isRecording {
-                // But: speech.transcript may still hold the prior voice
-                // text after stop. Only switch to typed if the new value
-                // is meaningfully different (not just a small edit of the
-                // voice transcript). Conservative: keep voice flag unless
-                // input becomes empty (clean slate) or markedly different.
-                if newValue.isEmpty {
-                    inputCameFromVoice = false
-                }
-            }
-        }
-        // Voice deep-link from the Quick Actions widget posts this
-        // notification — auto-start the mic so the user goes straight
-        // from widget tap to speaking.
+        // Voice deep-link from the Quick Actions widget — trigger the
+        // full-screen voice overlay.
         .onReceive(NotificationCenter.default.publisher(for: .tulaStartVoiceCapture)) { _ in
-            if !speech.isRecording {
-                startVoice()
-            }
-        }
-        // Surface capture failures (interruption, no mic, nothing heard) as a
-        // toast. The recognizer resets errorMessage to nil on each start(), so
-        // the same failure can re-toast across sessions.
-        .onChange(of: speech.errorMessage) { _, message in
-            if let message, !message.isEmpty {
-                onError(message)
-            }
-        }
-
-        .alert("Voice access needed", isPresented: $showingPermissionDenied) {
-            Button("Open Settings") {
-                if let url = URL(string: UIApplication.openSettingsURLString) {
-                    UIApplication.shared.open(url)
-                }
-            }
-            Button("Cancel", role: .cancel) { }
-        } message: {
-            Text("Enable Microphone and Speech Recognition in iOS Settings to dictate expenses.")
+            onMicTap()
         }
     }
 
     // MARK: - Input capsule
 
-    /// Two visual modes:
-    /// 1. Idle/typing — text field with a prominent mic button on the right.
-    ///    The mic is brand-amber and 44pt so it reads as the primary action;
-    ///    typing is supported as the secondary path.
-    /// 2. Recording — the entire capsule transforms: a live waveform replaces
-    ///    the text field, the background tints red, and the trailing button
-    ///    becomes a clear stop control.
+    /// Text input capsule with a trailing mic/send button. Voice recording
+    /// now lives in the full-screen VoiceInputOverlay; this capsule handles
+    /// typed input only.
     private var inputCapsule: some View {
         HStack(spacing: Spacing.md) {
-            if speech.isRecording {
-                recordingMode
-            } else if justFinishedVoice && showPreview {
-                voiceFinishedMode
-            } else {
-                idleMode
-            }
+            idleMode
         }
         .padding(.leading, Spacing.lg)
         .padding(.trailing, Spacing.xs + 2)
@@ -3379,17 +3134,10 @@ private struct QuickLogBar: View {
         .animation(.easeInOut(duration: 0.35), value: aiActive)
     }
 
-    /// Unified "AI is engaged" state — true when any of:
-    /// - On-device speech recognition is recording
-    /// - Foundation Models is enriching a submitted expense
-    /// - Foundation Models is doing parallel transcript correction during
-    ///   a dictation pause (the user paused to think; we use that idle
-    ///   time to clean up homophones in the segment they just finished)
-    /// All three are forms of on-device AI helping the user; the glow
-    /// treats them as a single visual signal so the user sees one
-    /// coherent "AI is here" indicator rather than three separate cues.
+    /// True when Foundation Models is enriching a submitted expense.
+    /// Drives the amber glow halo around the capsule.
     private var aiActive: Bool {
-        speech.isRecording || isSmartParsing || speech.isCorrecting
+        isSmartParsing
     }
 
     /// Pulse scale state for the AI glow. Idles at 1.0; while AI is active,
@@ -3397,14 +3145,9 @@ private struct QuickLogBar: View {
     /// that signals "alive" without distracting from the user's reading.
     @State private var glowPulse: CGFloat = 1.0
 
-    /// Stroke color layered with the amber glow. Voice recording adds a
-    /// red ring on top of the amber halo, so red+amber together read as
-    /// "voice mode" (still AI, just a stronger signal because the mic is
-    /// hot). Amber alone reads as "smart parsing in progress".
+    /// Stroke color for the amber glow when smart parsing is active.
     private var capsuleStrokeColor: Color {
-        if speech.isRecording { return Color.red.opacity(0.40) }
-        if isSmartParsing { return Color.tulaBrandFallback.opacity(0.55) }
-        return .clear
+        isSmartParsing ? Color.tulaBrandFallback.opacity(0.55) : .clear
     }
 
     /// Glow color for the shadow ring. Always amber when AI is active —
@@ -3428,62 +3171,23 @@ private struct QuickLogBar: View {
                 .onSubmit { submit() }
                 .frame(maxWidth: .infinity)
 
-            trailingActionButton
-        }
-    }
-
-    /// Recording mode — live waveform visualization with stop button.
-    /// The waveform is purely decorative animated bars; the actual transcript
-    /// streams in below into the preview card once parseable.
-    private var recordingMode: some View {
-        HStack(spacing: Spacing.md) {
-            WaveformIndicator()
-                .frame(height: 24)
-                .frame(maxWidth: .infinity, alignment: .leading)
-
             if !input.isEmpty {
-                Text("•")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Text("\(input.split(separator: " ").count) words")
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            } else {
-                Text("Listening…")
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(.secondary)
+                Button {
+                    Haptics.tap()
+                    clearInput()
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.body)
+                        .foregroundStyle(.tertiary)
+                }
+                .buttonStyle(.plain)
+                .transition(.opacity)
+                .accessibilityLabel("Clear")
             }
 
             trailingActionButton
         }
-    }
-
-    /// After voice stops, the preview card carries all the parsed detail.
-    /// The capsule shows a compact, non-editable hint — NOT the raw
-    /// transcript, which would clutter the bar and look like it needs
-    /// editing. Tapping the text area switches to edit mode if the user
-    /// wants to correct the transcript manually.
-    private var voiceFinishedMode: some View {
-        HStack(spacing: Spacing.md) {
-            HStack(spacing: Spacing.xs) {
-                Image(systemName: "mic.badge.checkmark")
-                    .font(.subheadline)
-                    .foregroundStyle(Color.tulaBrandFallback)
-                Text("Tap Save below")
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
-            .onTapGesture {
-                // Let the user edit the transcript if they want.
-                justFinishedVoice = false
-                focused = true
-            }
-
-            trailingActionButton
-        }
+        .animation(.easeInOut(duration: 0.2), value: input.isEmpty)
     }
 
     // MARK: - Trailing action button
@@ -3503,7 +3207,7 @@ private struct QuickLogBar: View {
                     .font(.subheadline.weight(.bold))
                     .foregroundStyle(.white)
                     .contentTransition(.symbolEffect(.replace))
-                    .symbolEffect(.bounce, value: validParsed.count)
+                    .symbolEffect(.bounce, value: validDrafts.count)
             }
         }
         .buttonStyle(PressableScaleStyle(scale: 0.92))
@@ -3512,95 +3216,128 @@ private struct QuickLogBar: View {
     }
 
     private var trailingAccessibilityLabel: String {
-        if speech.isRecording { return "Stop recording" }
         if canSubmit { return "Submit expense" }
         return "Record expense"
     }
 
     private var trailingIconName: String {
-        if speech.isRecording { return "stop.fill" }
         if canSubmit { return "arrow.up" }
         if !input.isEmpty { return "arrow.up" }
         return "mic.fill"
     }
 
     private var trailingButtonFill: Color {
-        if speech.isRecording { return .red }
         if canSubmit { return Color.tulaBrandFallback }
         if !input.isEmpty { return Color(uiColor: .tertiaryLabel) }
         return Color.tulaBrandFallback
     }
 
     private var trailingDisabled: Bool {
-        if speech.isRecording { return false }
-        if canSubmit { return false }
-        if !input.isEmpty { return true }
-        return false
+        !input.isEmpty && !canSubmit
     }
 
     private func trailingAction() {
-        if speech.isRecording {
-            stopVoice()
-        } else if canSubmit {
+        if canSubmit {
             submit()
         } else if input.isEmpty {
-            startVoice()
+            onMicTap()
         } else {
             Haptics.error()
         }
     }
 
-    /// Compact summary of what will be saved. After voice ends, this card
-    /// becomes the primary "save here" target — bigger, with a clear CTA
-    /// button at the right. Tapping anywhere on the card submits.
-    /// During recording this card is a live, non-interactive preview — fields
-    /// animate in as speech recognition populates them, giving real-time
-    /// feedback that the app is "hearing" the user. Once recording stops,
-    /// the card transforms: amber highlight appears, "Save →" badge slides
-    /// in, and the entire card becomes tappable to save.
+    /// Compact summary of what will be saved. Category and account are inline-
+    /// editable chips; the trailing badge submits. Shimmers while on-device AI
+    /// is enriching a recent submission.
     private var previewCard: some View {
-        Button(action: submit) {
-            HStack(spacing: Spacing.sm) {
-                if validParsed.count == 1, let only = validParsed.first {
-                    singlePreviewRow(only)
-                } else {
-                    multiplePreviewRow
-                }
-                Spacer(minLength: 0)
-                // Hide save badge while recording — the card is non-interactive
-                // until the mic stops. Badge slides in with a bouncy transition
-                // when recording ends.
-                if !speech.isRecording {
-                    saveBadge
-                        .transition(.scale.combined(with: .opacity))
+        HStack(spacing: Spacing.sm) {
+            if let only = previewDraft {
+                editableSingleRow(only)
+            } else {
+                multiplePreviewRow
+            }
+            Spacer(minLength: 0)
+            Button(action: submit) { saveBadge }
+                .buttonStyle(PressableScaleStyle(scale: 0.96))
+                .transition(.scale.combined(with: .opacity))
+        }
+        .padding(.horizontal, Spacing.md)
+        .padding(.vertical, Spacing.sm + 4)
+        .background(
+            RoundedRectangle(cornerRadius: CornerRadius.medium, style: .continuous)
+                .fill(Color.tulaCardSurface)
+        )
+        .shimmering(active: isSmartParsing, tint: Color.tulaBrandFallback)
+    }
+
+    /// Single-expense preview with tappable category + account chips.
+    private func editableSingleRow(_ p: ExpenseDraft) -> some View {
+        HStack(spacing: Spacing.sm) {
+            categoryChip(p.category)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(Currency.format(p.amount, code: currencyCode))
+                    .font(.subheadline.weight(.bold))
+                    .monospacedDigit()
+                HStack(spacing: 6) {
+                    if let merchant = p.merchant, !merchant.isEmpty {
+                        Text(merchant)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    accountChip(p.account)
                 }
             }
-            .padding(.horizontal, Spacing.md)
-            .padding(.vertical, Spacing.sm + 4)
-            .background(
-                RoundedRectangle(cornerRadius: CornerRadius.medium, style: .continuous)
-                    .fill(justFinishedVoice
-                          ? Color.tulaBrandFallback.opacity(0.12)
-                          : Color.tulaCardSurface)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: CornerRadius.medium, style: .continuous)
-                    .strokeBorder(
-                        justFinishedVoice
-                            ? Color.tulaBrandFallback.opacity(0.35)
-                            : Color.clear,
-                        lineWidth: 1
-                    )
-            )
         }
-        .buttonStyle(PressableScaleStyle(scale: 0.98))
-        // Dim the card while recording to signal "still listening, not
-        // fully parsed yet." Button stays tappable — submit() already
-        // handles the recording-active case by calling speech.stop()
-        // before saving. No .disabled() — that grays out the button
-        // content and makes it look like the save button disappeared.
-        .opacity(speech.isRecording ? 0.65 : 1.0)
-        .animation(AppAnimation.snappy, value: speech.isRecording)
+    }
+
+    /// Tap-to-change category. Amber dot when the parser didn't resolve one.
+    private func categoryChip(_ current: Category?) -> some View {
+        let color = current.map { Color(hex: $0.colorHex) } ?? .secondary
+        return Menu {
+            ForEach(activeCategories, id: \.id) { category in
+                Button {
+                    Haptics.selection()
+                    categoryOverride = category
+                } label: {
+                    Label(category.name, systemImage: category.iconKey)
+                }
+            }
+        } label: {
+            ZStack {
+                Circle().fill(color.opacity(0.18)).frame(width: 28, height: 28)
+                Image(systemName: current?.iconKey ?? "tag")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(color)
+                if current == nil {
+                    Circle().fill(Color.orange).frame(width: 7, height: 7)
+                        .offset(x: 10, y: -10)
+                }
+            }
+        }
+    }
+
+    /// Tap-to-change account.
+    private func accountChip(_ current: Account?) -> some View {
+        Menu {
+            ForEach(activeAccounts, id: \.id) { account in
+                Button {
+                    Haptics.selection()
+                    accountOverride = account
+                } label: {
+                    Label(account.name, systemImage: EditableExpenseCard.icon(for: account))
+                }
+            }
+        } label: {
+            HStack(spacing: 2) {
+                Text(current?.name ?? "Set account")
+                    .font(.caption2)
+                    .foregroundStyle(current == nil ? Color.orange : .secondary)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 7, weight: .bold))
+                    .foregroundStyle(.tertiary)
+            }
+        }
     }
 
     private var saveBadge: some View {
@@ -3618,38 +3355,6 @@ private struct QuickLogBar: View {
         .foregroundStyle(.white)
     }
 
-    private func singlePreviewRow(_ p: ParsedExpense) -> some View {
-        HStack(spacing: Spacing.sm) {
-            if let category = p.category {
-                let color = Color(hex: category.colorHex)
-                ZStack {
-                    Circle().fill(color.opacity(0.18)).frame(width: 28, height: 28)
-                    Image(systemName: category.iconKey)
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(color)
-                }
-            }
-            VStack(alignment: .leading, spacing: 1) {
-                Text(Currency.format(p.amount, code: currencyCode))
-                    .font(.subheadline.weight(.bold))
-                    .monospacedDigit()
-                HStack(spacing: 4) {
-                    if let merchant = p.merchant {
-                        Text(merchant)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                    if let account = p.account {
-                        if p.merchant != nil { Text("·").foregroundStyle(.tertiary).font(.caption2) }
-                        Text(account.name)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-            }
-        }
-    }
-
     private var multiplePreviewRow: some View {
         HStack(spacing: Spacing.sm) {
             ZStack {
@@ -3659,9 +3364,9 @@ private struct QuickLogBar: View {
                     .foregroundStyle(Color.tulaBrandFallback)
             }
             VStack(alignment: .leading, spacing: 1) {
-                Text("\(validParsed.count) expenses")
+                Text("\(validDrafts.count) expenses")
                     .font(.subheadline.weight(.bold))
-                Text(Currency.format(validParsed.reduce(0) { $0 + $1.amount }, code: currencyCode))
+                Text(Currency.format(validDrafts.reduce(0) { $0 + $1.amount }, code: currencyCode))
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
@@ -3669,110 +3374,36 @@ private struct QuickLogBar: View {
         }
     }
 
-    // MARK: - Voice actions
-
-    private func startVoice() {
-        Task {
-            let ok = await speech.requestAuthorization()
-            if ok {
-                // Build vocabulary hints from the user's data so the speech
-                // recognizer biases toward known merchants, categories, and
-                // accounts. This fixes transcription at source — the single
-                // highest-impact improvement to voice parsing quality.
-                var phrases: [String] = []
-                phrases.append(contentsOf: accounts.filter { !$0.isArchived }.map(\.name))
-                phrases.append(contentsOf: categories.filter { !$0.isArchived }.map(\.name))
-                phrases.append(contentsOf: topMerchants)
-                // Learned merchant corrections — corrected spellings from
-                // previous user edits feed back into recognition so the
-                // same transcription error doesn't recur.
-                if let corrections = UserDefaults.standard.dictionary(
-                    forKey: "merchantCorrectionMap") as? [String: String] {
-                    phrases.append(contentsOf: corrections.values)
-                }
-                // Clear trigger phrases — telling the recognizer about these
-                // improves detection of correction intents mid-dictation.
-                phrases.append(contentsOf: [
-                    "scratch that", "never mind", "start over", "clear that"
-                ])
-                // Deduplicate and cap at Apple's 100-phrase limit.
-                speech.contextualPhrases = Array(Set(phrases)).prefix(100).map { $0 }
-
-                Haptics.impact()
-                speech.start()
-                justFinishedVoice = false
-            } else {
-                Haptics.error()
-                showingPermissionDenied = true
-            }
-        }
-    }
-
-    /// Stops recording WITHOUT auto-focusing the text field. The preview
-    /// card stays visible with an obvious "Save" CTA. User reads, taps to
-    /// save — they don't see a keyboard slide up and cover the preview.
-    private func stopVoice() {
-        Haptics.tap()
-        speech.stop()
-        justFinishedVoice = !validParsed.isEmpty
-        // Bouncier emphasis on the parsed preview
-        if !validParsed.isEmpty {
-            withAnimation(AppAnimation.bouncy) {
-                justFinishedVoice = true
-            }
-        }
-    }
+    // MARK: - Actions
 
     private func submit() {
-        let valid = validParsed
+        let ds = validDrafts
+        guard !ds.isEmpty else { return }
         let rawInput = input
-        let wasVoice = inputCameFromVoice
-        guard !valid.isEmpty else { return }
-        if speech.isRecording { speech.stop() }
-        onSubmit(valid, rawInput, wasVoice)
+        let expenses = ds.map { d -> Expense in
+            let e = Expense(
+                amount: d.amount, date: d.date,
+                merchant: d.merchant, note: d.note,
+                source: .smartParsed, category: d.category, account: d.account
+            )
+            e.rawInput = rawInput
+            e.items = d.items.map { LineItem(name: $0.capitalized) }
+            return e
+        }
+        onSaveDrafts(expenses)
+        clearInput()
+    }
+
+    /// Clears the field and any inline overrides — serves as both "clear" and
+    /// "discard" for the typed path.
+    private func clearInput() {
         input = ""
         focused = false
-        justFinishedVoice = false
-        inputCameFromVoice = false
+        categoryOverride = nil
+        accountOverride = nil
     }
 }
 
-// MARK: - Waveform Indicator
-
-/// Animated bars that pulse during voice recording. Purely decorative — the
-/// bars don't represent actual audio amplitude, but their continuous motion
-/// communicates "I'm actively listening" more reliably than a static icon.
-///
-/// Eight bars in brand-amber, each with its own randomized animation delay
-/// and duration so the pattern feels organic, not mechanical.
-private struct WaveformIndicator: View {
-    @State private var animate: Bool = false
-
-    private let barCount = 8
-    private let baseHeights: [CGFloat] = [0.4, 0.7, 0.5, 0.9, 0.6, 0.8, 0.5, 0.7]
-    private let delays: [Double] = [0, 0.15, 0.3, 0.05, 0.2, 0.35, 0.1, 0.25]
-
-    var body: some View {
-        HStack(spacing: 4) {
-            ForEach(0..<barCount, id: \.self) { i in
-                Capsule()
-                    .fill(Color.red.gradient)
-                    .frame(width: 3)
-                    .scaleEffect(
-                        y: animate ? baseHeights[i] : 0.2,
-                        anchor: .center
-                    )
-                    .animation(
-                        .easeInOut(duration: 0.6)
-                            .repeatForever(autoreverses: true)
-                            .delay(delays[i]),
-                        value: animate
-                    )
-            }
-        }
-        .onAppear { animate = true }
-    }
-}
 // MARK: - Shareable Spending Card
 
 /// Renders a visually appealing spending card image for sharing.

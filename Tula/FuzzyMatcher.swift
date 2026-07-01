@@ -77,28 +77,67 @@ enum FuzzyMatcher {
             .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
             .map(String.init)
 
+        // Stage 3: Multi-signal fuzzy matching.
+        // Composite score from edit-distance, Dice coefficient (bigram
+        // similarity), and phonetic key. A rule must score above threshold
+        // on at least ONE signal to match. This catches:
+        //   "swigy"→"swiggy" (edit + dice)
+        //   "ramchandra"→"ramachandra" (phonetic)
+        //   "dmonios"→"dominos" (dice, transposition)
+
+        var bestMatch: (category: Category?, score: Double)?
+
         for rule in rules {
             let pattern = rule.pattern
-            // Edit-distance only against single-word patterns to avoid
-            // matching "ice cream" against a single token "icecre". Multi-word
+            // Edit-distance only against single-word patterns — multi-word
             // patterns were already covered by stages 1-2.
             guard !pattern.contains(" "),
                   !pattern.contains("-") else { continue }
-
-            // Pattern must be long enough that edit distance is meaningful.
-            // For 3-char patterns, distance-1 means matching ~33% of chars,
-            // which produces too many false positives.
             guard pattern.count >= 4 else { continue }
 
-            let maxDistance = pattern.count < 6 ? 1 : 2
+            let maxDist = pattern.count < 6 ? 1 : 2
 
             for token in merchantTokens where token.count >= 4 {
-                // Tokens far from pattern length can't be in range; skip cheaply.
-                if abs(token.count - pattern.count) > maxDistance { continue }
+                // Skip if length difference is too large for any signal.
+                if abs(token.count - pattern.count) > 3 { continue }
 
-                if editDistance(token, pattern) <= maxDistance {
-                    return rule.category
+                var score = 0.0
+
+                // Signal 1: Edit distance (weight 0.4)
+                let dist = editDistance(token, pattern)
+                if dist <= maxDist {
+                    score += 0.4 * (1.0 - Double(dist) / Double(max(token.count, pattern.count)))
                 }
+
+                // Signal 2: Dice coefficient — bigram similarity (weight 0.35)
+                let dice = diceCoefficient(token, pattern)
+                if dice >= 0.6 {
+                    score += 0.35 * dice
+                }
+
+                // Signal 3: Phonetic match (weight 0.25)
+                if phoneticKey(token) == phoneticKey(pattern) {
+                    score += 0.25
+                }
+
+                // Composite must exceed 0.45 to match — prevents a single
+                // weak signal from producing false positives.
+                if score > 0.45, bestMatch == nil || score > bestMatch!.score {
+                    bestMatch = (rule.category, score)
+                }
+            }
+        }
+
+        if let best = bestMatch {
+            return best.category
+        }
+
+        // Stage 3b: Token-set ratio for multi-word patterns.
+        // Catches "Pizza Hut" vs "Hut Pizza" and word-reordering variations.
+        for rule in rules where rule.pattern.contains(" ") {
+            let ratio = tokenSetRatio(merchant, rule.pattern)
+            if ratio >= 0.8 {
+                return rule.category
             }
         }
 
@@ -114,6 +153,101 @@ enum FuzzyMatcher {
         s.unicodeScalars
             .filter { CharacterSet.alphanumerics.contains($0) }
             .reduce(into: "") { $0.append(Character($1)) }
+    }
+
+    // MARK: - Dice Coefficient (Bigram Similarity)
+
+    /// Dice coefficient using character bigrams. Returns 0.0–1.0 where
+    /// 1.0 = identical. More forgiving of transpositions and insertions
+    /// than edit distance alone.
+    ///
+    ///   diceCoefficient("swiggy", "swigy") ≈ 0.89
+    ///   diceCoefficient("dominos", "dmonios") ≈ 0.67
+    ///
+    /// Performance: O(n+m). Sub-microsecond for merchant names.
+    static func diceCoefficient(_ a: String, _ b: String) -> Double {
+        guard a.count >= 2, b.count >= 2 else {
+            return a == b ? 1.0 : 0.0
+        }
+        let aBigrams = bigrams(a)
+        let bBigrams = bigrams(b)
+        let intersection = aBigrams.intersection(bBigrams).count
+        let total = aBigrams.count + bBigrams.count
+        guard total > 0 else { return 0 }
+        return 2.0 * Double(intersection) / Double(total)
+    }
+
+    /// Extract character bigrams from a string.
+    private static func bigrams(_ s: String) -> Set<String> {
+        let chars = Array(s)
+        guard chars.count >= 2 else { return [] }
+        var result = Set<String>()
+        for i in 0..<(chars.count - 1) {
+            result.insert(String([chars[i], chars[i + 1]]))
+        }
+        return result
+    }
+
+    // MARK: - Phonetic Key (Indian English optimized)
+
+    /// Simplified Soundex-like phonetic key optimized for Indian English.
+    /// Maps phonetically similar consonants to the same code, drops vowels
+    /// after the first letter.
+    ///
+    ///   phoneticKey("ramachandra") → "R5253"
+    ///   phoneticKey("ramchandra")  → "R5253"  (same — vowel drop)
+    ///   phoneticKey("swiggy")      → "S200"
+    ///   phoneticKey("swigy")       → "S200"   (same — double-g merged)
+    ///
+    /// Performance: O(n) single pass. Negligible.
+    static func phoneticKey(_ s: String) -> String {
+        let lowered = s.lowercased()
+        guard let first = lowered.first else { return "" }
+
+        // Consonant → code. Soundex-inspired, tuned for Indian names.
+        // b/f/p/v → 1, c/g/j/k/q/s/x/z → 2, d/t → 3, l → 4, m/n → 5, r → 6
+        let codeMap: [Character: Character] = [
+            "b": "1", "f": "1", "p": "1", "v": "1",
+            "c": "2", "g": "2", "j": "2", "k": "2",
+            "q": "2", "s": "2", "x": "2", "z": "2",
+            "d": "3", "t": "3",
+            "l": "4",
+            "m": "5", "n": "5",
+            "r": "6"
+        ]
+
+        var result = String(first).uppercased()
+        var lastCode: Character = codeMap[first] ?? "0"
+
+        for char in lowered.dropFirst() {
+            let code = codeMap[char] ?? "0"
+            if code != "0" && code != lastCode {
+                result.append(code)
+                if result.count >= 5 { break }
+            }
+            lastCode = code
+        }
+
+        while result.count < 5 { result.append("0") }
+        return result
+    }
+
+    // MARK: - Token-Set Ratio
+
+    /// Handles word reordering: "Pizza Hut" vs "Hut Pizza" scores 1.0
+    /// because the token sets are identical.
+    ///
+    /// Score = |intersection| / max(|A|, |B|).
+    static func tokenSetRatio(_ a: String, _ b: String) -> Double {
+        let aTokens = Set(a.lowercased().split(whereSeparator: {
+            !$0.isLetter && !$0.isNumber
+        }).map(String.init))
+        let bTokens = Set(b.lowercased().split(whereSeparator: {
+            !$0.isLetter && !$0.isNumber
+        }).map(String.init))
+        guard !aTokens.isEmpty, !bTokens.isEmpty else { return 0 }
+        let common = aTokens.intersection(bTokens).count
+        return Double(common) / Double(max(aTokens.count, bTokens.count))
     }
 
     // MARK: - Levenshtein edit distance

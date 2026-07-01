@@ -106,16 +106,19 @@ extension View {
 
 // MARK: - Physics Animations
 
-/// Tuned per interaction context — same defaults always look generic.
+/// Built on the iOS system spring presets (`.snappy`/`.smooth`/`.bouncy`) so
+/// motion matches the platform's own feel — the same curves SwiftUI uses for
+/// navigation, sheets, and toolbars. We tune duration/bounce per interaction
+/// rather than hand-rolling response/damping, which is what drifts off-platform.
 enum AppAnimation {
-    /// Quick taps — chip selection, toggle. Fast, low overshoot.
-    static let snappy: Animation = .spring(response: 0.28, dampingFraction: 0.85)
+    /// Quick taps — chip selection, toggle. Crisp, near-zero overshoot.
+    static let snappy: Animation = .snappy(duration: 0.3, extraBounce: 0)
 
-    /// Layout transitions — sheet content, expansions.
-    static let gentle: Animation = .spring(response: 0.45, dampingFraction: 0.85)
+    /// Layout transitions — sheet content, expansions. No bounce, natural ease.
+    static let gentle: Animation = .smooth(duration: 0.4)
 
-    /// Playful — success confirmations, chart selection.
-    static let bouncy: Animation = .spring(response: 0.4, dampingFraction: 0.65)
+    /// Playful — success confirmations, reveals. Restrained, native-feeling bounce.
+    static let bouncy: Animation = .bouncy(duration: 0.5, extraBounce: 0.08)
 
     /// Card-physics: drag with momentum for swipeable surfaces.
     static let cardPhysics: Animation = .interpolatingSpring(
@@ -123,7 +126,7 @@ enum AppAnimation {
     )
 
     /// Press feedback — subtle scale + opacity on tap.
-    static let press: Animation = .spring(response: 0.18, dampingFraction: 0.7)
+    static let press: Animation = .snappy(duration: 0.18, extraBounce: 0)
 
     /// True when the user has enabled Settings → Accessibility → Reduce Motion.
     /// Cached per process — the value doesn't change while the app is running.
