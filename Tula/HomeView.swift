@@ -1,6 +1,6 @@
-import SwiftUI
-import SwiftData
 import Charts
+import SwiftData
+import SwiftUI
 
 // MARK: - Navigation
 
@@ -37,7 +37,11 @@ struct LogConfirmationItem: Identifiable {
     /// Predicted amount from SmartAmountPredictor (may differ from rule.amount).
     let predictionHint: String
 
-    init(rule: RecurringRule, date: Date, prediction: SmartAmountPredictor.Prediction? = nil) {
+    init(
+        rule: RecurringRule,
+        date: Date,
+        prediction: SmartAmountPredictor.Prediction? = nil
+    ) {
         self.rule = rule
         self.date = date
         self.ruleName = rule.name
@@ -59,15 +63,19 @@ struct LogConfirmationItem: Identifiable {
 struct HomeView: View {
     @Environment(\.modelContext) private var context
     @Environment(\.scenePhase) private var scenePhase
-    @Query(sort: \Expense.date, order: .reverse) private var allExpenses: [Expense]
+    @Environment(\.colorScheme) private var colorScheme
+    @Query(sort: \Expense.date, order: .reverse) private var allExpenses:
+        [Expense]
     @Query(sort: \Account.sortOrder) private var allAccounts: [Account]
     @Query(sort: \Category.sortOrder) private var allCategories: [Category]
     @Query private var allMerchantRules: [MerchantRule]
     @Query private var allRecurringRules: [RecurringRule]
-    @Query(filter: #Predicate<Budget> { $0.isActive == true }) private var activeBudgets: [Budget]
+    @Query(filter: #Predicate<Budget> { $0.isActive == true }) private
+        var activeBudgets: [Budget]
     @PrimaryCurrency private var currencyCode
     @AppStorage("themePresetID") private var themePresetID: String = "saffron"
-    @AppStorage("launchAnimationEnabled") private var launchAnimationEnabled: Bool = true
+    @AppStorage("launchAnimationEnabled") private var launchAnimationEnabled:
+        Bool = true
 
     @State private var editingExpense: Expense?
     @State private var showingVoiceOverlay = false
@@ -90,7 +98,8 @@ struct HomeView: View {
     /// Counter (not bool) handles concurrent multi-entry parses correctly.
     @State private var smartParseInFlight: Int = 0
     @State private var heroTapPulse: Bool = false
-    @AppStorage("dismissedInsightIDs") private var dismissedInsightIDsRaw: String = ""
+    @AppStorage("dismissedInsightIDs") private var dismissedInsightIDsRaw:
+        String = ""
     @State private var dismissedUpcomingKeys: Set<String> = []
     @State private var recurringSuggestionToCreate: RecurringSuggestion?
     @State private var merchantRuleConfirmInsight: Insight?
@@ -98,12 +107,6 @@ struct HomeView: View {
     @State private var showingAPIKeyPrompt = false
     @State private var showingTransfer = false
     @State private var showingReceiptGallery = false
-    /// Three independent drift phases at incommensurate periods (8s, 11s, 14s).
-    /// Their compound motion creates fluid, organic glow movement that never
-    /// visually repeats — similar to Apple Music's ambient background effect.
-    @State private var drift1: Bool = false
-    @State private var drift2: Bool = false
-    @State private var drift3: Bool = false
     /// Explicit state-driven accent color for the glow. Updated via
     /// withAnimation so SwiftUI interpolates the RGB values smoothly.
     @State private var glowColor: Color = .tulaBrandFallback
@@ -121,21 +124,26 @@ struct HomeView: View {
     /// (isPaused, isRuleFulfilled, dismissedKeys) still runs per-render.
     @State private var cachedNextDueDates: [UUID: Date] = [:]
     @State private var cachedOverdueDates: [UUID: [Date]] = [:]
-    @State private var cachedPredictions: [UUID: SmartAmountPredictor.Prediction] = [:]
+    @State private var cachedPredictions:
+        [UUID: SmartAmountPredictor.Prediction] = [:]
     private var networkMonitor = NetworkMonitor.shared
 
     @AppStorage("lastUsedAccountID") private var lastUsedAccountID: String = ""
-    @AppStorage("budgetAlertsEnabled") private var budgetAlertsEnabled: Bool = false
-    @AppStorage("smartParsingEnabled") private var smartParsingEnabled: Bool = true
-    @AppStorage("lastAPIKeyPromptDate") private var lastAPIKeyPromptDate: Double = 0
+    @AppStorage("budgetAlertsEnabled") private var budgetAlertsEnabled: Bool =
+        false
+    @AppStorage("smartParsingEnabled") private var smartParsingEnabled: Bool =
+        true
+    @AppStorage("lastAPIKeyPromptDate") private var lastAPIKeyPromptDate:
+        Double = 0
 
-    init() { }
+    init() {}
 
     // MARK: - Derived
 
     private var thisMonthExpenses: [Expense] {
         let cal = Calendar.current
-        guard let monthStart = cal.dateInterval(of: .month, for: .now)?.start else { return [] }
+        guard let monthStart = cal.dateInterval(of: .month, for: .now)?.start
+        else { return [] }
         return allExpenses.filter { $0.date >= monthStart }
     }
 
@@ -155,9 +163,15 @@ struct HomeView: View {
     /// Drift speed multiplier — heavy spending days feel energetic (faster
     /// glow drift), quiet days feel calmer (slower drift).
     private var driftSpeedMultiplier: Double {
-        let dayOfMonth = max(1, Double(Calendar.current.component(.day, from: .now)))
+        let dayOfMonth = max(
+            1,
+            Double(Calendar.current.component(.day, from: .now))
+        )
         let avgPerDay = totalThisMonth / dayOfMonth
-        return SpendingVelocity.driftMultiplier(todayTotal: totalToday, monthAvgPerDay: avgPerDay)
+        return SpendingVelocity.driftMultiplier(
+            todayTotal: totalToday,
+            monthAvgPerDay: avgPerDay
+        )
     }
 
     /// Accent color for the page gradient — top-spending category this month,
@@ -175,13 +189,38 @@ struct HomeView: View {
         let withCategory = thisMonthExpenses.filter { $0.category != nil }
         // Group by category ID, not colorHex — two categories can share
         // the same color, inflating one group's total incorrectly.
-        let grouped = Dictionary(grouping: withCategory, by: { $0.category!.id })
-        guard let top = grouped.max(by: {
-            $0.value.reduce(0) { $0 + $1.amount } < $1.value.reduce(0) { $0 + $1.amount }
-        }) else {
+        let grouped = Dictionary(
+            grouping: withCategory,
+            by: { $0.category!.id }
+        )
+        guard
+            let top = grouped.max(by: {
+                $0.value.reduce(0) { $0 + $1.amount }
+                    < $1.value.reduce(0) { $0 + $1.amount }
+            })
+        else {
             return ""
         }
         return top.value.first?.category?.colorHex ?? ""
+    }
+
+    /// The top-spending category this month with its amount and share of total
+    /// spend — surfaced as an explicit, legible line in the hero (replacing the
+    /// ambiguous category-tinted background as the "where's my money going" cue).
+    private var topCategoryInsight: (category: Category, amount: Double, fraction: Double)? {
+        let withCategory = thisMonthExpenses.filter { $0.category != nil }
+        guard !withCategory.isEmpty else { return nil }
+        let grouped = Dictionary(grouping: withCategory, by: { $0.category!.id })
+        guard
+            let topGroup = grouped.max(by: {
+                $0.value.reduce(0) { $0 + $1.amount }
+                    < $1.value.reduce(0) { $0 + $1.amount }
+            }),
+            let category = topGroup.value.first?.category
+        else { return nil }
+        let amount = topGroup.value.reduce(0) { $0 + $1.amount }
+        let total = totalThisMonth
+        return (category, amount, total > 0 ? amount / total : 0)
     }
 
     /// Persisted set of insight IDs the user has dismissed. Stored as a
@@ -191,7 +230,9 @@ struct HomeView: View {
     /// and the InsightEngine produces fresh IDs.
     private var dismissedInsightIDs: Set<String> {
         guard !dismissedInsightIDsRaw.isEmpty else { return [] }
-        return Set(dismissedInsightIDsRaw.split(separator: ",").map(String.init))
+        return Set(
+            dismissedInsightIDsRaw.split(separator: ",").map(String.init)
+        )
     }
 
     private func dismissInsight(_ id: String) {
@@ -228,13 +269,20 @@ struct HomeView: View {
     private var upcomingRecurring: [(rule: RecurringRule, date: Date)] {
         let calendar = Calendar.current
         let now = Date.now
-        let tomorrow = calendar.date(byAdding: .day, value: 2, to: calendar.startOfDay(for: now)) ?? now
+        let tomorrow =
+            calendar.date(
+                byAdding: .day,
+                value: 2,
+                to: calendar.startOfDay(for: now)
+            ) ?? now
 
-        return allRecurringRules
+        return
+            allRecurringRules
             .filter { !$0.isPaused }
             .compactMap { rule -> (RecurringRule, Date)? in
                 guard let next = cachedNextDueDates[rule.id],
-                      next < tomorrow else { return nil }
+                    next < tomorrow
+                else { return nil }
                 if isRuleFulfilled(rule, forDueDate: next, calendar: calendar) {
                     return nil
                 }
@@ -251,13 +299,20 @@ struct HomeView: View {
     /// avoid flooding the home screen if a rule was ignored for weeks.
     private var overdueRecurring: [(rule: RecurringRule, date: Date)] {
         let calendar = Calendar.current
-        let yesterday = calendar.date(byAdding: .day, value: -1, to: calendar.startOfDay(for: .now)) ?? .now
+        let yesterday =
+            calendar.date(
+                byAdding: .day,
+                value: -1,
+                to: calendar.startOfDay(for: .now)
+            ) ?? .now
         var result: [(RecurringRule, Date)] = []
-        for rule in allRecurringRules where !rule.isPaused && rule.kind == .expense {
+        for rule in allRecurringRules
+        where !rule.isPaused && rule.kind == .expense {
             let dates = cachedOverdueDates[rule.id] ?? []
             for date in dates {
                 guard date >= yesterday else { continue }
-                if !isRuleFulfilled(rule, forDueDate: date, calendar: calendar) {
+                if !isRuleFulfilled(rule, forDueDate: date, calendar: calendar)
+                {
                     result.append((rule, date))
                 }
             }
@@ -277,10 +332,13 @@ struct HomeView: View {
     /// against rule named "Breakfast", or "Office Lunch" against "Lunch".
     /// Conservative: better to leave an item visible (annoying nudge) than
     /// hide a real upcoming (missed expense).
-    private func isRuleFulfilled(_ rule: RecurringRule,
-                                  forDueDate dueDate: Date,
-                                  calendar: Calendar) -> Bool {
-        guard let dayInterval = calendar.dateInterval(of: .day, for: dueDate) else {
+    private func isRuleFulfilled(
+        _ rule: RecurringRule,
+        forDueDate dueDate: Date,
+        calendar: Calendar
+    ) -> Bool {
+        guard let dayInterval = calendar.dateInterval(of: .day, for: dueDate)
+        else {
             return false
         }
         let ruleName = rule.name.lowercased()
@@ -290,7 +348,8 @@ struct HomeView: View {
         return allExpenses.contains { expense in
             // Same day
             guard expense.date >= dayInterval.start,
-                  expense.date < dayInterval.end else { return false }
+                expense.date < dayInterval.end
+            else { return false }
             // Same category
             guard expense.category?.id == ruleCategoryID else { return false }
             // Same account
@@ -358,8 +417,11 @@ struct HomeView: View {
     /// Returns nil when no overall budget is set.
     private var dailyBudget: Double? {
         guard let overall = activeBudgets.first(where: { $0.category == nil }),
-              overall.amount > 0 else { return nil }
-        let daysInMonth = Double(Calendar.current.range(of: .day, in: .month, for: .now)?.count ?? 30)
+            overall.amount > 0
+        else { return nil }
+        let daysInMonth = Double(
+            Calendar.current.range(of: .day, in: .month, for: .now)?.count ?? 30
+        )
         return overall.amount / daysInMonth
     }
 
@@ -387,9 +449,19 @@ struct HomeView: View {
         let cal = Calendar.current
         let dayOfMonth = cal.component(.day, from: .now)
         guard let thisStart = cal.dateInterval(of: .month, for: .now)?.start,
-              let lastStart = cal.date(byAdding: .month, value: -1, to: thisStart),
-              let comparablePoint = cal.date(byAdding: .day, value: dayOfMonth, to: lastStart) else { return nil }
-        let lastSameWindow = allExpenses
+            let lastStart = cal.date(
+                byAdding: .month,
+                value: -1,
+                to: thisStart
+            ),
+            let comparablePoint = cal.date(
+                byAdding: .day,
+                value: dayOfMonth,
+                to: lastStart
+            )
+        else { return nil }
+        let lastSameWindow =
+            allExpenses
             .filter { $0.date >= lastStart && $0.date < comparablePoint }
             .reduce(0) { $0 + $1.amount }
         guard lastSameWindow > 0 else { return nil }
@@ -412,9 +484,11 @@ struct HomeView: View {
         let endOffset = includeToday ? 0 : 1
         let startOffset = endOffset + 6
         return (endOffset...startOffset).reversed().compactMap { offset in
-            guard let day = cal.date(byAdding: .day, value: -offset, to: today) else { return nil }
+            guard let day = cal.date(byAdding: .day, value: -offset, to: today)
+            else { return nil }
             let next = cal.date(byAdding: .day, value: 1, to: day) ?? day
-            let total = allExpenses
+            let total =
+                allExpenses
                 .filter { $0.date >= day && $0.date < next }
                 .reduce(0) { $0 + $1.amount }
             return (day, total)
@@ -423,8 +497,11 @@ struct HomeView: View {
 
     private var defaultAccount: Account? {
         if !lastUsedAccountID.isEmpty,
-           let uuid = UUID(uuidString: lastUsedAccountID),
-           let match = allAccounts.first(where: { $0.id == uuid && !$0.isArchived }) {
+            let uuid = UUID(uuidString: lastUsedAccountID),
+            let match = allAccounts.first(where: {
+                $0.id == uuid && !$0.isArchived
+            })
+        {
             return match
         }
         return allAccounts.first(where: { !$0.isArchived })
@@ -437,9 +514,11 @@ struct HomeView: View {
     private var frequentMerchantNames: [String] {
         var counts: [String: Int] = [:]
         for expense in allExpenses {
-            guard let merchant = expense.merchant?
-                .trimmingCharacters(in: .whitespacesAndNewlines),
-                  !merchant.isEmpty else { continue }
+            guard
+                let merchant = expense.merchant?
+                    .trimmingCharacters(in: .whitespacesAndNewlines),
+                !merchant.isEmpty
+            else { continue }
             counts[merchant, default: 0] += 1
         }
         return counts.sorted { $0.value > $1.value }
@@ -450,74 +529,12 @@ struct HomeView: View {
     // MARK: - Body
 
     private var scrollBackground: some View {
-        GeometryReader { geometry in
-            let w = geometry.size.width
-            let h = geometry.size.height
-
-            ZStack {
-                Color.tulaBackground
-
-                // Primary glow — compound drift from three independent phases
-                // creates fluid, organic motion. Each drift bool oscillates
-                // at a different period, so the combined path never repeats.
-                Circle()
-                    .fill(glowColor)
-                    .frame(width: w * 0.85, height: w * 0.85)
-                    .blur(radius: w * 0.32)
-                    .opacity((glowPulse ? 0.42 : 0.28) * ambientTint.opacityMultiplier)
-                    .scaleEffect(drift3 ? 1.05 : 0.96)
-                    .position(
-                        x: w * 0.5 + (drift1 ? 16 : -16) + (drift2 ? -7 : 7),
-                        y: h * 0.14 + (drift1 ? -8 : 8) + (drift3 ? 5 : -5)
-                    )
-
-                // Secondary glow — same three drifts wired differently so the
-                // two blobs orbit each other in a lava-lamp style.
-                Circle()
-                    .fill(glowColor)
-                    .frame(width: w * 0.5, height: w * 0.5)
-                    .blur(radius: w * 0.2)
-                    .opacity((glowPulse ? 0.22 : 0.14) * ambientTint.opacityMultiplier)
-                    .scaleEffect(drift1 ? 1.04 : 0.94)
-                    .position(
-                        x: w * 0.32 + (drift2 ? 10 : -10) + (drift3 ? -5 : 5),
-                        y: h * 0.09 + (drift3 ? 7 : -7) + (drift1 ? -4 : 4)
-                    )
-            }
-        }
-        .ignoresSafeArea()
-        .accessibilityHidden(true)
-        .onTapGesture { hideKeyboard() }
-        .onAppear {
-            ambientTint = TimeAmbience.current()
-            glowColor = TimeAmbience.apply(ambientTint, to: pageAccentColor)
-            let m = driftSpeedMultiplier
-            withAnimation(.easeInOut(duration: 8 * m).repeatForever(autoreverses: true)) {
-                drift1 = true
-            }
-            withAnimation(.easeInOut(duration: 11 * m).repeatForever(autoreverses: true)) {
-                drift2 = true
-            }
-            withAnimation(.easeInOut(duration: 14 * m).repeatForever(autoreverses: true)) {
-                drift3 = true
-            }
-        }
-        .onChange(of: topCategoryHex) { _, _ in
-            // 1. Flash brighter — glow inhales
-            withAnimation(.easeOut(duration: 0.4)) {
-                glowPulse = true
-            }
-            // 2. Slowly shift to the new color (with time-of-day tint)
-            withAnimation(.spring(duration: 2.5, bounce: 0.05)) {
-                glowColor = TimeAmbience.apply(ambientTint, to: pageAccentColor)
-            }
-            // 3. Settle brightness — glow exhales
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                withAnimation(.easeInOut(duration: 1.5)) {
-                    glowPulse = false
-                }
-            }
-        }
+        // Clean, flat canvas. Premium/airy comes from the cards, spacing, and
+        // typography — not a background wash (which reads uneven and heavy).
+        Color.tulaBackground
+            .ignoresSafeArea()
+            .accessibilityHidden(true)
+            .onTapGesture { hideKeyboard() }
     }
 
     var body: some View {
@@ -528,10 +545,15 @@ struct HomeView: View {
 
     private var mainScrollView: some View {
         mainScrollViewCore
-            .onReceive(NotificationCenter.default.publisher(for: .tulaExpenseSaved)) { _ in
+            .onReceive(
+                NotificationCenter.default.publisher(for: .tulaExpenseSaved)
+            ) { _ in
                 showToast("Expense saved")
             }
-            .sensoryFeedback(.impact(flexibility: .solid, intensity: 0.6), trigger: editingExpense)
+            .sensoryFeedback(
+                .impact(flexibility: .solid, intensity: 0.6),
+                trigger: editingExpense
+            )
             .sheet(item: $editingExpense) { expense in
                 AddExpenseView(existingExpense: expense)
             }
@@ -549,7 +571,10 @@ struct HomeView: View {
                             merchant: expense.merchant,
                             category: expense.category?.name,
                             amount: expense.amount,
-                            hour: Calendar.current.component(.hour, from: expense.date)
+                            hour: Calendar.current.component(
+                                .hour,
+                                from: expense.date
+                            )
                         )
                         try? context.save()
                         WidgetRefresh.refresh(using: context)
@@ -580,7 +605,10 @@ struct HomeView: View {
                                 merchant: expense.merchant,
                                 category: expense.category?.name,
                                 amount: expense.amount,
-                                hour: Calendar.current.component(.hour, from: expense.date)
+                                hour: Calendar.current.component(
+                                    .hour,
+                                    from: expense.date
+                                )
                             )
                         }
                         try? context.save()
@@ -594,7 +622,7 @@ struct HomeView: View {
                         showToast("\(expenses.count) expenses saved · Voice")
                         evaluateBudgetAlerts()
                     },
-                    onDismiss: { }
+                    onDismiss: {}
                 )
             }
             .sheet(isPresented: $showingSettings) {
@@ -627,21 +655,29 @@ struct HomeView: View {
                     item: item,
                     currencyCode: currencyCode,
                     onLog: { rule, date, amount in
-                        logUpcoming(rule: rule, date: date, customAmount: amount)
+                        logUpcoming(
+                            rule: rule,
+                            date: date,
+                            customAmount: amount
+                        )
                     },
                     onMarkPaid: { rule, date in
                         markAlreadyPaid(rule: rule, date: date)
                     }
                 )
             }
-            .alert("Enhance with AI",
-                   isPresented: $showingAPIKeyPrompt) {
+            .alert(
+                "Enhance with AI",
+                isPresented: $showingAPIKeyPrompt
+            ) {
                 Button("Set Up Now") {
                     showingSettings = true
                 }
-                Button("Not Now", role: .cancel) { }
+                Button("Not Now", role: .cancel) {}
             } message: {
-                Text("Tula works great without AI. For smarter category suggestions and receipt parsing, add a free Google Gemini API key in Settings.")
+                Text(
+                    "Tula works great without AI. For smarter category suggestions and receipt parsing, add a free Google Gemini API key in Settings."
+                )
             }
             .sheet(item: $merchantRuleConfirmInsight) { insight in
                 MerchantRuleConfirmSheet(
@@ -656,14 +692,20 @@ struct HomeView: View {
             }
             .overlay(alignment: .top) {
                 if let toast = toastMessage {
-                    Toast(message: toast, onUndo: toastUndoAction != nil ? { performUndo() } : nil)
-                        .padding(.top, Spacing.sm)
-                        .transition(.move(edge: .top).combined(with: .opacity))
+                    Toast(
+                        message: toast,
+                        onUndo: toastUndoAction != nil ? { performUndo() } : nil
+                    )
+                    .padding(.top, Spacing.sm)
+                    .transition(.move(edge: .top).combined(with: .opacity))
                 }
             }
             .onChange(of: toastMessage) { _, newValue in
                 if let message = newValue {
-                    UIAccessibility.post(notification: .announcement, argument: message)
+                    UIAccessibility.post(
+                        notification: .announcement,
+                        argument: message
+                    )
                 }
             }
     }
@@ -705,11 +747,23 @@ struct HomeView: View {
         }
         .navigationTitle("Tula")
         .navigationBarTitleDisplayMode(.large)
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) { toolbarMenu }
-        }
+        .toolbar { homeToolbarContent }
         .navigationDestination(for: HomeDestination.self) { dest in
             destinationView(for: dest)
+        }
+    }
+
+    @ToolbarContentBuilder
+    private var homeToolbarContent: some ToolbarContent {
+        // Balance the bar: search on the leading side, actions on the trailing.
+        ToolbarItem(placement: .topBarLeading) {
+            toolbarSearchButton
+        }
+
+        // More menu + Settings, grouped together on the right.
+        ToolbarItemGroup(placement: .topBarTrailing) {
+            toolbarMoreMenu
+            toolbarSettingsButton
         }
     }
 
@@ -734,11 +788,13 @@ struct HomeView: View {
             }
             if smartParseInFlight > 0 {
                 smartParsingPill
-                    .transition(.asymmetric(
-                        insertion: .move(edge: .top)
-                            .combined(with: .opacity),
-                        removal: .opacity
-                    ))
+                    .transition(
+                        .asymmetric(
+                            insertion: .move(edge: .top)
+                                .combined(with: .opacity),
+                            removal: .opacity
+                        )
+                    )
             }
             contextSections
                 .offset(y: appeared ? 0 : 16)
@@ -795,15 +851,20 @@ struct HomeView: View {
                 Capsule().fill(Color(.systemGray6))
             )
             .overlay(
-                Capsule().strokeBorder(Color.secondary.opacity(0.2), lineWidth: 0.5)
+                Capsule().strokeBorder(
+                    Color.secondary.opacity(0.2),
+                    lineWidth: 0.5
+                )
             )
 
             if showOfflineInfo {
-                Text("Smart parsing uses a cloud connection. Basic receipt scanning and expense entry work offline.")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .transition(.opacity.combined(with: .move(edge: .top)))
+                Text(
+                    "Smart parsing uses a cloud connection. Basic receipt scanning and expense entry work offline."
+                )
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
         .frame(maxWidth: .infinity)
@@ -819,11 +880,13 @@ struct HomeView: View {
                 .foregroundStyle(Color.tulaBrandFallback)
                 .symbolEffect(.pulse, options: .repeating)
 
-            Text(smartParseInFlight == 1
-                 ? "Smart parsing…"
-                 : "Smart parsing \(smartParseInFlight) entries…")
-                .font(.subheadline.weight(.medium))
-                .foregroundStyle(.primary)
+            Text(
+                smartParseInFlight == 1
+                    ? "Smart parsing…"
+                    : "Smart parsing \(smartParseInFlight) entries…"
+            )
+            .font(.subheadline.weight(.medium))
+            .foregroundStyle(.primary)
 
             Spacer()
 
@@ -857,46 +920,61 @@ struct HomeView: View {
         switch dest {
         case .reviewQueue: ReviewQueueView()
         case .allExpenses(let filter, let searchFocused):
-            AllExpensesView(presetFilter: filter, startSearchFocused: searchFocused)
+            AllExpensesView(
+                presetFilter: filter,
+                startSearchFocused: searchFocused
+            )
         }
     }
 
     // MARK: - Toolbar
 
-    /// Trailing toolbar — Transfer and Receipts grouped in a menu,
-    /// Settings as a standalone gear icon.
-    private var toolbarMenu: some View {
-        HStack(spacing: 12) {
-            Menu {
-                Button {
-                    Haptics.tap()
-                    showingTransfer = true
-                } label: {
-                    Label("Transfer", systemImage: "arrow.left.arrow.right")
-                }
-                Button {
-                    Haptics.tap()
-                    showingReceiptGallery = true
-                } label: {
-                    Label("Receipts", systemImage: "doc.text.viewfinder")
-                }
-            } label: {
-                Image(systemName: "ellipsis.circle")
-                    .font(.body.weight(.medium))
-            }
-            .tint(.primary)
-            .accessibilityLabel("More actions")
+    /// Trailing toolbar — search icon as a standalone item, menu and
+    /// settings grouped together in a separate container.
+    private var toolbarSearchButton: some View {
+        Button {
+            Haptics.tap()
+            navPath.append(
+                HomeDestination.allExpenses(filter: nil, searchFocused: true)
+            )
+        } label: {
+            Image(systemName: "magnifyingglass")
+        }
+        .tint(.primary)
+        .accessibilityLabel("Search expenses")
+    }
 
+    /// Overflow menu — Transfer + Receipts.
+    private var toolbarMoreMenu: some View {
+        Menu {
             Button {
                 Haptics.tap()
-                showingSettings = true
+                showingTransfer = true
             } label: {
-                Image(systemName: "gearshape")
-                    .font(.body.weight(.medium))
+                Label("Transfer", systemImage: "arrow.left.arrow.right")
             }
-            .tint(.primary)
-            .accessibilityLabel("Settings")
+            Button {
+                Haptics.tap()
+                showingReceiptGallery = true
+            } label: {
+                Label("Receipts", systemImage: "doc.text.viewfinder")
+            }
+        } label: {
+            Image(systemName: "ellipsis.circle")
         }
+        .tint(.primary)
+        .accessibilityLabel("More actions")
+    }
+
+    private var toolbarSettingsButton: some View {
+        Button {
+            Haptics.tap()
+            showingSettings = true
+        } label: {
+            Image(systemName: "gearshape")
+        }
+        .tint(.primary)
+        .accessibilityLabel("Settings")
     }
 
     // MARK: - Hero
@@ -943,6 +1021,11 @@ struct HomeView: View {
                         todayInline
                     }
 
+                    if let top = topCategoryInsight {
+                        topCategoryLine(top)
+                            .padding(.top, 1)
+                    }
+
                     if !last7DaysData.allSatisfy({ $0.total == 0 }) {
                         sparkline
                             .frame(height: 32)
@@ -955,25 +1038,67 @@ struct HomeView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .compositingGroup()
             .tulaHeroSurface(cornerRadius: CornerRadius.large)
-            .clipShape(RoundedRectangle(cornerRadius: CornerRadius.large, style: .continuous))
+            .clipShape(
+                RoundedRectangle(
+                    cornerRadius: CornerRadius.large,
+                    style: .continuous
+                )
+            )
             .scaleEffect(heroTapPulse ? 1.02 : 1.0)
-            .animation(.spring(response: 0.35, dampingFraction: 0.6), value: heroTapPulse)
+            .animation(
+                .spring(response: 0.35, dampingFraction: 0.6),
+                value: heroTapPulse
+            )
             .foregroundStyle(.primary)
             .accessibilityElement(children: .combine)
             .accessibilityLabel("Total spent this month")
-            .accessibilityValue(Currency.format(totalThisMonth, code: currencyCode))
+            .accessibilityValue(
+                Currency.format(totalThisMonth, code: currencyCode)
+            )
             .accessibilityHint("Double tap to view stats")
         }
         .buttonStyle(.plain)
     }
 
+    /// Explicit "top category" line for the hero: category icon + name + its
+    /// share of this month's spend, tinted with the category color. Legible and
+    /// accessible — the honest version of "see where you're spending most".
+    private func topCategoryLine(
+        _ top: (category: Category, amount: Double, fraction: Double)
+    ) -> some View {
+        let color = Color(hex: top.category.colorHex)
+        let percent = Int((top.fraction * 100).rounded())
+        return HStack(spacing: 6) {
+            Image(systemName: top.category.iconKey)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(color)
+                .frame(width: 14)
+            Text("Top · \(top.category.name)")
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.secondary)
+            Text("\(percent)%")
+                .font(.caption.weight(.bold))
+                .foregroundStyle(color)
+                .monospacedDigit()
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(
+            "Top category \(top.category.name), \(percent) percent of spending, "
+                + Currency.format(top.amount, code: currencyCode)
+        )
+    }
+
     private func tapHero() {
         Haptics.tap()
         heroTapPulse = true
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { heroTapPulse = false }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
+            heroTapPulse = false
+        }
         // Navigate to all expenses for this month
         let filter = ExpenseFilter(dateRange: .thisMonth)
-        navPath.append(HomeDestination.allExpenses(filter: filter, searchFocused: false))
+        navPath.append(
+            HomeDestination.allExpenses(filter: filter, searchFocused: false)
+        )
     }
 
     private func deltaBadge(_ change: Double) -> some View {
@@ -1031,7 +1156,9 @@ struct HomeView: View {
             Text("\(todaysExpenses.count) tx")
                 .font(.caption.weight(.medium))
                 .foregroundStyle(.secondary)
-                .contentTransition(.numericText(value: Double(todaysExpenses.count)))
+                .contentTransition(
+                    .numericText(value: Double(todaysExpenses.count))
+                )
                 .animation(.snappy(duration: 0.35), value: todaysExpenses.count)
         }
     }
@@ -1054,11 +1181,15 @@ struct HomeView: View {
         .chartYAxis(.hidden)
         .accessibilityElement()
         .accessibilityLabel("7-day spending trend")
-        .accessibilityValue({
-            let total = last7DaysData.reduce(0) { $0 + $1.total }
-            let peak = last7DaysData.max(by: { $0.total < $1.total })?.total ?? 0
-            return "Total \(Currency.format(total, code: currencyCode)), peak day \(Currency.format(peak, code: currencyCode))"
-        }())
+        .accessibilityValue(
+            {
+                let total = last7DaysData.reduce(0) { $0 + $1.total }
+                let peak =
+                    last7DaysData.max(by: { $0.total < $1.total })?.total ?? 0
+                return
+                    "Total \(Currency.format(total, code: currencyCode)), peak day \(Currency.format(peak, code: currencyCode))"
+            }()
+        )
     }
 
     // MARK: - Quick Log
@@ -1078,7 +1209,10 @@ struct HomeView: View {
                         merchant: expense.merchant,
                         category: expense.category?.name,
                         amount: expense.amount,
-                        hour: Calendar.current.component(.hour, from: expense.date)
+                        hour: Calendar.current.component(
+                            .hour,
+                            from: expense.date
+                        )
                     )
                 }
                 try? context.save()
@@ -1089,7 +1223,10 @@ struct HomeView: View {
                 }
                 Haptics.success()
                 triggerSavePulse()
-                showToast(expenses.count > 1 ? "\(expenses.count) expenses saved" : "Expense saved")
+                showToast(
+                    expenses.count > 1
+                        ? "\(expenses.count) expenses saved" : "Expense saved"
+                )
                 evaluateBudgetAlerts()
             },
             isSmartParsing: smartParseInFlight > 0,
@@ -1128,12 +1265,15 @@ struct HomeView: View {
             lastAccount = account
             savedExpenses.append(expense)
         }
-        try? context.save(); WidgetRefresh.refresh(using: context)
+        try? context.save()
+        WidgetRefresh.refresh(using: context)
         if let last = lastAccount { lastUsedAccountID = last.id.uuidString }
         Haptics.success()
         triggerSavePulse()
         let undoTargets = savedExpenses
-        showToast(valid.count == 1 ? "Expense saved" : "\(valid.count) expenses saved") {
+        showToast(
+            valid.count == 1 ? "Expense saved" : "\(valid.count) expenses saved"
+        ) {
             for expense in undoTargets {
                 context.delete(expense)
             }
@@ -1163,93 +1303,98 @@ struct HomeView: View {
     /// category appear a beat later.
     private func enrichWithSmartParser(_ expenses: [Expense]) {
         guard smartParsingEnabled,
-              SmartExpenseParser.isAvailable else { return }
+            SmartExpenseParser.isAvailable
+        else { return }
 
-            // Only enrich expenses where category is missing AND raw input
-            // looks complex enough to benefit (rules already handled the
-            // simple cases). "Complex enough" is a soft heuristic: more
-            // than two whitespace-separated tokens, or longer than 18 chars.
-            // For "ola 250" we skip — rules clearly saw it and decided.
-            let candidates = expenses.filter { expense in
-                expense.category == nil
-                    && (expense.rawInput?.count ?? 0) > 8
-                    && shouldAskLLM(expense.rawInput ?? "")
+        // Only enrich expenses where category is missing AND raw input
+        // looks complex enough to benefit (rules already handled the
+        // simple cases). "Complex enough" is a soft heuristic: more
+        // than two whitespace-separated tokens, or longer than 18 chars.
+        // For "ola 250" we skip — rules clearly saw it and decided.
+        let candidates = expenses.filter { expense in
+            expense.category == nil
+                && (expense.rawInput?.count ?? 0) > 8
+                && shouldAskLLM(expense.rawInput ?? "")
+        }
+        guard !candidates.isEmpty else { return }
+
+        let usableCategories = allCategories.filter { !$0.isArchived }
+        let categoryEntries = usableCategories.map {
+            CategoryEntry(name: $0.name, iconKey: $0.iconKey)
+        }
+
+        // Capture the data we need from the SwiftData models on the
+        // main actor BEFORE spawning the detached task. Reading model
+        // properties from off-main can trigger SwiftData warnings;
+        // pairing each id with its raw input lets us do the async
+        // FM work cleanly and apply results back on main.
+        let workItems: [(expense: Expense, rawInput: String)] =
+            candidates
+            .compactMap { exp in
+                guard let input = exp.rawInput else { return nil }
+                return (exp, input)
             }
-            guard !candidates.isEmpty else { return }
 
-            let usableCategories = allCategories.filter { !$0.isArchived }
-            let categoryEntries = usableCategories.map {
-                CategoryEntry(name: $0.name, iconKey: $0.iconKey)
-            }
+        // Bump the in-flight counter so the "Smart parsing..." pill
+        // appears. We bump by workItems.count up-front (one for each
+        // expense being enriched) and decrement individually as each
+        // FM call completes — so the pill shows during the entire
+        // batch and disappears the moment the last one resolves.
+        smartParseInFlight += workItems.count
+        // Record the start time so each decrement can enforce a
+        // minimum-visibility window. A bare FM call can complete in
+        // 100-200ms, which is faster than the human eye reliably
+        // registers — without this floor, the pill would flicker
+        // and the user wouldn't know AI ran at all.
+        let pillStartedAt = Date()
+        let minPillVisible: TimeInterval = 1.2
 
-            // Capture the data we need from the SwiftData models on the
-            // main actor BEFORE spawning the detached task. Reading model
-            // properties from off-main can trigger SwiftData warnings;
-            // pairing each id with its raw input lets us do the async
-            // FM work cleanly and apply results back on main.
-            let workItems: [(expense: Expense, rawInput: String)] = candidates
-                .compactMap { exp in
-                    guard let input = exp.rawInput else { return nil }
-                    return (exp, input)
-                }
+        Task(priority: .userInitiated) { @MainActor in
+            for item in workItems {
+                let result = await SmartExpenseParser.parse(
+                    item.rawInput,
+                    categories: categoryEntries
+                )
 
-            // Bump the in-flight counter so the "Smart parsing..." pill
-            // appears. We bump by workItems.count up-front (one for each
-            // expense being enriched) and decrement individually as each
-            // FM call completes — so the pill shows during the entire
-            // batch and disappears the moment the last one resolves.
-            smartParseInFlight += workItems.count
-            // Record the start time so each decrement can enforce a
-            // minimum-visibility window. A bare FM call can complete in
-            // 100-200ms, which is faster than the human eye reliably
-            // registers — without this floor, the pill would flicker
-            // and the user wouldn't know AI ran at all.
-            let pillStartedAt = Date()
-            let minPillVisible: TimeInterval = 1.2
-
-            Task(priority: .userInitiated) { @MainActor in
-                for item in workItems {
-                    let result = await SmartExpenseParser.parse(
-                        item.rawInput,
-                        categories: categoryEntries
-                    )
-
-                    if let result {
-                        // Category: MerchantRuleResolver first (deterministic),
-                        // then FM suggestion with fuzzy name resolution.
-                        let enrichedCategory = MerchantRuleResolver.category(
+                if let result {
+                    // Category: MerchantRuleResolver first (deterministic),
+                    // then FM suggestion with fuzzy name resolution.
+                    let enrichedCategory =
+                        MerchantRuleResolver.category(
                             for: result.merchant ?? item.expense.merchant,
                             in: context
                         ) ?? resolveCategory(named: result.category)
-                        if let enrichedCategory {
-                            item.expense.category = enrichedCategory
-                        }
-                        // Improve merchant if rules left it nil and FM
-                        // identified one (don't overwrite — rules might
-                        // have caught the precise merchant the user typed).
-                        if item.expense.merchant == nil,
-                           let m = result.merchant,
-                           !m.isEmpty {
-                            item.expense.merchant = m
-                        }
-                        try? context.save(); WidgetRefresh.refresh(using: context)
+                    if let enrichedCategory {
+                        item.expense.category = enrichedCategory
                     }
-
-                    // Enforce minimum pill visibility before decrementing.
-                    // If FM was fast, we wait out the remainder of the
-                    // visibility window; if it was slow, this is a no-op.
-                    let elapsed = Date().timeIntervalSince(pillStartedAt)
-                    let remaining = minPillVisible - elapsed
-                    if remaining > 0 {
-                        try? await Task.sleep(for: .seconds(remaining))
+                    // Improve merchant if rules left it nil and FM
+                    // identified one (don't overwrite — rules might
+                    // have caught the precise merchant the user typed).
+                    if item.expense.merchant == nil,
+                        let m = result.merchant,
+                        !m.isEmpty
+                    {
+                        item.expense.merchant = m
                     }
-
-                    // Always decrement, whether parse succeeded or
-                    // not — otherwise a failed parse would leave the
-                    // pill stuck visible forever.
-                    smartParseInFlight = max(0, smartParseInFlight - 1)
+                    try? context.save()
+                    WidgetRefresh.refresh(using: context)
                 }
+
+                // Enforce minimum pill visibility before decrementing.
+                // If FM was fast, we wait out the remainder of the
+                // visibility window; if it was slow, this is a no-op.
+                let elapsed = Date().timeIntervalSince(pillStartedAt)
+                let remaining = minPillVisible - elapsed
+                if remaining > 0 {
+                    try? await Task.sleep(for: .seconds(remaining))
+                }
+
+                // Always decrement, whether parse succeeded or
+                // not — otherwise a failed parse would leave the
+                // pill stuck visible forever.
+                smartParseInFlight = max(0, smartParseInFlight - 1)
             }
+        }
     }
 
     /// Soft heuristic for whether an input is "complex" enough to warrant
@@ -1259,12 +1404,15 @@ struct HomeView: View {
     /// - It contains a verb-like word ("spent", "paid", "bought", etc.)
     private func shouldAskLLM(_ input: String) -> Bool {
         let lower = input.lowercased()
-        let tokens = lower
+        let tokens =
+            lower
             .split(whereSeparator: { $0.isWhitespace })
             .count
         if tokens >= 3 { return true }
-        let verbs = ["spent", "paid", "bought", "got", "ate", "had",
-                     "ordered", "rode", "took", "drank", "purchased"]
+        let verbs = [
+            "spent", "paid", "bought", "got", "ate", "had",
+            "ordered", "rode", "took", "drank", "purchased",
+        ]
         return verbs.contains { lower.contains($0) }
     }
 
@@ -1287,7 +1435,9 @@ struct HomeView: View {
     /// in AddExpenseView.resolveCategory(named:).
     private func resolveCategory(named name: String?) -> Category? {
         guard let name, !name.isEmpty else { return nil }
-        let target = name.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        let target = name.lowercased().trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
         let active = allCategories.filter { !$0.isArchived }
 
         // Pass 1: exact case-insensitive match
@@ -1295,7 +1445,8 @@ struct HomeView: View {
             return exact
         }
         // Pass 2: substring overlap — "Food" ↔ "Food & Drinks"
-        let overlaps = active
+        let overlaps =
+            active
             .filter { cat in
                 let catLower = cat.name.lowercased()
                 return target.contains(catLower) || catLower.contains(target)
@@ -1350,7 +1501,9 @@ struct HomeView: View {
 
     private func triggerSavePulse() {
         savePulse = true
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { savePulse = false }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+            savePulse = false
+        }
     }
 
     private func showToast(_ message: String, undoAction: (() -> Void)? = nil) {
@@ -1405,9 +1558,11 @@ struct HomeView: View {
             case .review(let count):
                 return "review-\(count)"
             case .upcoming(let rule, let date):
-                return "upcoming-\(rule.id.uuidString)-\(Int(date.timeIntervalSince1970))"
+                return
+                    "upcoming-\(rule.id.uuidString)-\(Int(date.timeIntervalSince1970))"
             case .overdue(let rule, let date):
-                return "overdue-\(rule.id.uuidString)-\(Int(date.timeIntervalSince1970))"
+                return
+                    "overdue-\(rule.id.uuidString)-\(Int(date.timeIntervalSince1970))"
             case .recurringOverflow(let count):
                 return "overflow-\(count)"
             case .overdueOverflow(let count):
@@ -1454,34 +1609,51 @@ struct HomeView: View {
 
         // Available width for text = screen - scroll padding - card padding - icon - spacings - dismiss button
         let screenW = UIScreen.main.bounds.width
-        let textWidth = screenW
-            - Spacing.xl * 2       // scroll content horizontal padding
-            - Spacing.md * 2       // card horizontal padding
-            - 38                   // icon circle
-            - Spacing.md * 2       // HStack spacings
-            - 28                   // dismiss/chevron area
-            - Spacing.md           // outer HStack gap
+        let textWidth =
+            screenW
+            - Spacing.xl * 2  // scroll content horizontal padding
+            - Spacing.md * 2  // card horizontal padding
+            - 38  // icon circle
+            - Spacing.md * 2  // HStack spacings
+            - 28  // dismiss/chevron area
+            - Spacing.md  // outer HStack gap
 
         // Use semibold to match .subheadline.weight(.semibold) in the view
         let baseTitleFont = UIFont.preferredFont(forTextStyle: .subheadline)
-        let titleFont = UIFont.systemFont(ofSize: baseTitleFont.pointSize, weight: .semibold)
+        let titleFont = UIFont.systemFont(
+            ofSize: baseTitleFont.pointSize,
+            weight: .semibold
+        )
         let detailFont = UIFont.preferredFont(forTextStyle: .caption1)
 
-        let rawTitleH = ceil((titleText as NSString).boundingRect(
-            with: CGSize(width: textWidth, height: .greatestFiniteMagnitude),
-            options: .usesLineFragmentOrigin,
-            attributes: [.font: titleFont],
-            context: nil
-        ).height)
+        let rawTitleH = ceil(
+            (titleText as NSString).boundingRect(
+                with: CGSize(
+                    width: textWidth,
+                    height: .greatestFiniteMagnitude
+                ),
+                options: .usesLineFragmentOrigin,
+                attributes: [.font: titleFont],
+                context: nil
+            ).height
+        )
         let titleH = min(rawTitleH, ceil(titleFont.lineHeight * maxTitleLines))
 
-        let rawDetailH = ceil((detailText as NSString).boundingRect(
-            with: CGSize(width: textWidth, height: .greatestFiniteMagnitude),
-            options: .usesLineFragmentOrigin,
-            attributes: [.font: detailFont],
-            context: nil
-        ).height)
-        let detailH = min(rawDetailH, ceil(detailFont.lineHeight * maxDetailLines))
+        let rawDetailH = ceil(
+            (detailText as NSString).boundingRect(
+                with: CGSize(
+                    width: textWidth,
+                    height: .greatestFiniteMagnitude
+                ),
+                options: .usesLineFragmentOrigin,
+                attributes: [.font: detailFont],
+                context: nil
+            ).height
+        )
+        let detailH = min(
+            rawDetailH,
+            ceil(detailFont.lineHeight * maxDetailLines)
+        )
 
         // .padding(.vertical, Spacing.md) = Spacing.md * 2, plus buffer
         // for SwiftUI text layout differences vs UIKit boundingRect
@@ -1516,13 +1688,22 @@ struct HomeView: View {
         let baseH: CGFloat = 64
         let gap: CGFloat = Spacing.md
         let peekGap: CGFloat = 14
-        let stackSpring = Animation.spring(response: 0.42, dampingFraction: 0.72)
+        let stackSpring = Animation.spring(
+            response: 0.42,
+            dampingFraction: 0.72
+        )
 
         let useCompact = shouldStack && !isExpanded
-        let heights = all.map { useCompact ? baseH : measuredCardHeight(for: $0) }
-        let expandedTotal = heights.reduce(0, +) + CGFloat(max(all.count - 1, 0)) * gap
-        let visibleCount = shouldStack ? min(all.count, 3) : (all.isEmpty ? 0 : 1)
-        let collapsedHeight: CGFloat = (0..<visibleCount).reduce(0) { result, i in
+        let heights = all.map {
+            useCompact ? baseH : measuredCardHeight(for: $0)
+        }
+        let expandedTotal =
+            heights.reduce(0, +) + CGFloat(max(all.count - 1, 0)) * gap
+        let visibleCount =
+            shouldStack ? min(all.count, 3) : (all.isEmpty ? 0 : 1)
+        let collapsedHeight: CGFloat = (0..<visibleCount).reduce(0) {
+            result,
+            i in
             let offsetY = CGFloat(min(i, 2)) * peekGap
             return max(result, offsetY + heights[i])
         }
@@ -1549,10 +1730,17 @@ struct HomeView: View {
                         .background {
                             Capsule()
                                 .fill(.thinMaterial)
-                                .background(Capsule().fill(Color(.systemBackground).opacity(0.4)))
+                                .background(
+                                    Capsule().fill(
+                                        Color(.systemBackground).opacity(0.4)
+                                    )
+                                )
                                 .overlay {
                                     Capsule()
-                                        .strokeBorder(.primary.opacity(0.15), lineWidth: 0.75)
+                                        .strokeBorder(
+                                            .primary.opacity(0.15),
+                                            lineWidth: 0.75
+                                        )
                                 }
                         }
                         .frame(maxWidth: .infinity, alignment: .trailing)
@@ -1564,26 +1752,50 @@ struct HomeView: View {
 
                 // Card stack
                 ZStack(alignment: .top) {
-                    ForEach(Array(all.enumerated()).reversed(), id: \.element.identifier) { index, context in
-                        let yExpanded = heights.prefix(index).reduce(0, +) + CGFloat(index) * gap
+                    ForEach(
+                        Array(all.enumerated()).reversed(),
+                        id: \.element.identifier
+                    ) { index, context in
+                        let yExpanded =
+                            heights.prefix(index).reduce(0, +) + CGFloat(index)
+                            * gap
                         let yCollapsed = CGFloat(min(index, 2)) * peekGap
 
                         contextRow(for: context, compactMode: useCompact)
                             .frame(height: heights[index], alignment: .top)
                             .clipShape(cardShape)
-                            .shadow(color: Color(.label).opacity(isExpanded ? 0 : 0.06),
-                                    radius: 4, y: 2)
-                            .modifier(CardSlideEffect(yOffset: isExpanded ? yExpanded : yCollapsed))
-                            .scaleEffect(isExpanded ? 1.0 : max(1.0 - CGFloat(index) * 0.025, 0.93),
-                                         anchor: .top)
-                            .opacity(isExpanded ? 1.0 : (index <= 2 ? 1.0 : 0.0))
+                            .shadow(
+                                color: Color(.label).opacity(
+                                    isExpanded ? 0 : 0.06
+                                ),
+                                radius: 4,
+                                y: 2
+                            )
+                            .modifier(
+                                CardSlideEffect(
+                                    yOffset: isExpanded ? yExpanded : yCollapsed
+                                )
+                            )
+                            .scaleEffect(
+                                isExpanded
+                                    ? 1.0
+                                    : max(1.0 - CGFloat(index) * 0.025, 0.93),
+                                anchor: .top
+                            )
+                            .opacity(
+                                isExpanded ? 1.0 : (index <= 2 ? 1.0 : 0.0)
+                            )
                             .zIndex(Double(all.count - index))
                             .allowsHitTesting(isExpanded || !shouldStack)
                     }
                 }
                 // Expanded: extra breathing room absorbs spring overshoot
                 // so the last card doesn't get clipped mid-animation.
-                .frame(height: isExpanded ? expandedTotal + 8 : collapsedHeight + 2, alignment: .top)
+                .frame(
+                    height: isExpanded
+                        ? expandedTotal + 8 : collapsedHeight + 2,
+                    alignment: .top
+                )
                 .clipped()
                 .overlay(alignment: .topTrailing) {
                     if shouldStack && !isExpanded {
@@ -1595,9 +1807,26 @@ struct HomeView: View {
                             .padding(.bottom, 1)
                             .background(
                                 Circle()
-                                    .fill(all[0].isOverdue ? Color.red : Color.tulaBrandFallback)
-                                    .overlay(Circle().strokeBorder(Color.tulaCardSurface, lineWidth: 1))
-                                    .shadow(color: (all[0].isOverdue ? Color.red : Color.tulaBrandFallback).opacity(0.2), radius: 2, y: 1)
+                                    .fill(
+                                        all[0].isOverdue
+                                            ? Color.red
+                                            : Color.tulaBrandFallback
+                                    )
+                                    .overlay(
+                                        Circle().strokeBorder(
+                                            Color.tulaCardSurface,
+                                            lineWidth: 1
+                                        )
+                                    )
+                                    .shadow(
+                                        color: (all[0].isOverdue
+                                            ? Color.red
+                                            : Color.tulaBrandFallback).opacity(
+                                                0.2
+                                            ),
+                                        radius: 2,
+                                        y: 1
+                                    )
                             )
                             .offset(x: 6, y: -6)
                             .transition(.scale.combined(with: .opacity))
@@ -1635,7 +1864,9 @@ struct HomeView: View {
         let grouped = groupedUpcoming
         var contexts: [HomeContext] = []
         if let scheduled = grouped.scheduled {
-            contexts.append(.upcoming(rule: scheduled.rule, date: scheduled.date))
+            contexts.append(
+                .upcoming(rule: scheduled.rule, date: scheduled.date)
+            )
         }
         for item in grouped.general {
             contexts.append(.upcoming(rule: item.rule, date: item.date))
@@ -1651,7 +1882,9 @@ struct HomeView: View {
         if reviewCount > 0 {
             contexts.append(.review(count: reviewCount))
         }
-        if let topInsight = insights.first(where: { !dismissedInsightIDs.contains($0.id) }) {
+        if let topInsight = insights.first(where: {
+            !dismissedInsightIDs.contains($0.id)
+        }) {
             contexts.append(.insight(topInsight))
         }
         return contexts
@@ -1678,13 +1911,17 @@ struct HomeView: View {
             contexts.append(.overdue(rule: item.rule, date: item.date))
         }
         if overdue.count > visibleOverdue.count {
-            contexts.append(.overdueOverflow(count: overdue.count - visibleOverdue.count))
+            contexts.append(
+                .overdueOverflow(count: overdue.count - visibleOverdue.count)
+            )
         }
 
         // 2. Upcoming items.
         let grouped = groupedUpcoming
         if let scheduled = grouped.scheduled {
-            contexts.append(.upcoming(rule: scheduled.rule, date: scheduled.date))
+            contexts.append(
+                .upcoming(rule: scheduled.rule, date: scheduled.date)
+            )
         }
         for item in grouped.general {
             contexts.append(.upcoming(rule: item.rule, date: item.date))
@@ -1697,7 +1934,9 @@ struct HomeView: View {
         if reviewCount > 0 {
             contexts.append(.review(count: reviewCount))
         }
-        if let topInsight = insights.first(where: { !dismissedInsightIDs.contains($0.id) }) {
+        if let topInsight = insights.first(where: {
+            !dismissedInsightIDs.contains($0.id)
+        }) {
             contexts.append(.insight(topInsight))
         }
         return contexts
@@ -1724,7 +1963,9 @@ struct HomeView: View {
     /// - `.review` / `.insight`: a single tap target with chevron. No
     ///   swipe actions because there isn't a one-click resolution.
     @ViewBuilder
-    private func contextRow(for context: HomeContext, compactMode: Bool = false) -> some View {
+    private func contextRow(for context: HomeContext, compactMode: Bool = false)
+        -> some View
+    {
         switch context {
         case .upcoming(let rule, let date):
             SwipeableContextRow(
@@ -1747,7 +1988,8 @@ struct HomeView: View {
                     compactMode: compactMode,
                     onDismiss: {
                         Haptics.tap()
-                        let key = "\(rule.id)_\(Int(date.timeIntervalSince1970))"
+                        let key =
+                            "\(rule.id)_\(Int(date.timeIntervalSince1970))"
                         withAnimation(AppAnimation.snappy) {
                             _ = dismissedUpcomingKeys.insert(key)
                         }
@@ -1757,15 +1999,22 @@ struct HomeView: View {
             .confirmationDialog(
                 "Skip \(rule.name)?",
                 isPresented: Binding(
-                    get: { confirmSkipRule?.id == rule.id && showingSkipConfirm },
-                    set: { if !$0 { confirmSkipRule = nil; showingSkipConfirm = false } }
+                    get: {
+                        confirmSkipRule?.id == rule.id && showingSkipConfirm
+                    },
+                    set: {
+                        if !$0 {
+                            confirmSkipRule = nil
+                            showingSkipConfirm = false
+                        }
+                    }
                 ),
                 titleVisibility: .visible
             ) {
                 Button("Skip", role: .destructive) {
                     skipUpcoming(rule: rule, date: date)
                 }
-                Button("Cancel", role: .cancel) { }
+                Button("Cancel", role: .cancel) {}
             } message: {
                 Text("This occurrence will be marked as skipped.")
             }
@@ -1784,20 +2033,31 @@ struct HomeView: View {
                     confirmLog(rule: rule, date: date)
                 }
             ) {
-                contextRowBody(for: context, showHint: true, compactMode: compactMode)
+                contextRowBody(
+                    for: context,
+                    showHint: true,
+                    compactMode: compactMode
+                )
             }
             .confirmationDialog(
                 "Skip \(rule.name)?",
                 isPresented: Binding(
-                    get: { confirmSkipRule?.id == rule.id && showingSkipConfirm },
-                    set: { if !$0 { confirmSkipRule = nil; showingSkipConfirm = false } }
+                    get: {
+                        confirmSkipRule?.id == rule.id && showingSkipConfirm
+                    },
+                    set: {
+                        if !$0 {
+                            confirmSkipRule = nil
+                            showingSkipConfirm = false
+                        }
+                    }
                 ),
                 titleVisibility: .visible
             ) {
                 Button("Skip", role: .destructive) {
                     skipUpcoming(rule: rule, date: date)
                 }
-                Button("Cancel", role: .cancel) { }
+                Button("Cancel", role: .cancel) {}
             } message: {
                 Text("This occurrence will be marked as skipped.")
             }
@@ -1824,7 +2084,11 @@ struct HomeView: View {
                 Haptics.tap()
                 handleContextTap(context)
             } label: {
-                contextRowBody(for: context, showHint: false, compactMode: compactMode)
+                contextRowBody(
+                    for: context,
+                    showHint: false,
+                    compactMode: compactMode
+                )
             }
             .buttonStyle(.plain)
         }
@@ -1834,13 +2098,23 @@ struct HomeView: View {
     /// `showHint` adds a faint "swipe" affordance on the trailing edge to
     /// hint that the row is swipeable (since swipe is non-discoverable by
     /// default). For non-swipeable contexts, shows a chevron instead.
-    private func contextRowBody(for context: HomeContext, showHint: Bool, compactMode: Bool = false, onDismiss: (() -> Void)? = nil, onTap: (() -> Void)? = nil) -> some View {
+    private func contextRowBody(
+        for context: HomeContext,
+        showHint: Bool,
+        compactMode: Bool = false,
+        onDismiss: (() -> Void)? = nil,
+        onTap: (() -> Void)? = nil
+    ) -> some View {
         let icon = contextIcon(for: context)
         let color = contextColor(for: context)
         let title = contextTitle(for: context)
         let detail = contextDetail(for: context)
         let isInsight: Bool
-        if case .insight = context { isInsight = true } else { isInsight = false }
+        if case .insight = context {
+            isInsight = true
+        } else {
+            isInsight = false
+        }
         let expandedInsight = isInsight && !compactMode
 
         return HStack(spacing: Spacing.md) {
@@ -1888,7 +2162,9 @@ struct HomeView: View {
                             .font(.caption2.weight(.semibold))
                             .foregroundStyle(.tertiary)
                             .frame(width: 28, height: 28)
-                            .background(Circle().fill(Color.secondary.opacity(0.1)))
+                            .background(
+                                Circle().fill(Color.secondary.opacity(0.1))
+                            )
                     }
                     .buttonStyle(.plain)
                 }
@@ -1933,7 +2209,8 @@ struct HomeView: View {
     @ViewBuilder
     private func contextTrailingActions(for context: HomeContext) -> some View {
         switch context {
-        case .upcoming, .review, .insight, .recurringOverflow, .overdue, .overdueOverflow:
+        case .upcoming, .review, .insight, .recurringOverflow, .overdue,
+            .overdueOverflow:
             EmptyView()
         }
     }
@@ -1949,7 +2226,10 @@ struct HomeView: View {
         for rule in allRecurringRules where !rule.isPaused {
             if let next = RecurringEngine.nextDueDate(for: rule) {
                 nextDates[rule.id] = next
-                predictions[rule.id] = SmartAmountPredictor.predict(for: rule, on: next)
+                predictions[rule.id] = SmartAmountPredictor.predict(
+                    for: rule,
+                    on: next
+                )
             }
             if rule.kind == .expense {
                 overdueDates[rule.id] = RecurringEngine.overdueDates(for: rule)
@@ -1966,13 +2246,18 @@ struct HomeView: View {
         // Compute prediction for the given date (not the cached next-due
         // prediction) so overdue items get the correct day-of-week amount.
         let prediction = SmartAmountPredictor.predict(for: rule, on: date)
-        logConfirmation = LogConfirmationItem(rule: rule, date: date, prediction: prediction)
+        logConfirmation = LogConfirmationItem(
+            rule: rule,
+            date: date,
+            prediction: prediction
+        )
     }
 
     /// One-click log at the predicted amount. Used by the swipe-right action
     /// so the user can log without opening the amount sheet.
     private func quickLog(rule: RecurringRule, date: Date) {
-        let prediction = cachedPredictions[rule.id]
+        let prediction =
+            cachedPredictions[rule.id]
             ?? SmartAmountPredictor.predict(for: rule, on: date)
         logUpcoming(rule: rule, date: date, customAmount: prediction.amount)
     }
@@ -1990,7 +2275,8 @@ struct HomeView: View {
             if rule.isBill {
                 rule.lastPaidDate = .now
             }
-            try? context.save(); WidgetRefresh.refresh(using: context)
+            try? context.save()
+            WidgetRefresh.refresh(using: context)
         }
         NotificationManager.cancelConfirmation(ruleID: rule.id, dueDate: date)
         refreshRecurringCaches()
@@ -2007,7 +2293,8 @@ struct HomeView: View {
             if rule.isBill {
                 rule.lastPaidDate = .now
             }
-            try? context.save(); WidgetRefresh.refresh(using: context)
+            try? context.save()
+            WidgetRefresh.refresh(using: context)
         }
         NotificationManager.cancelConfirmation(ruleID: rule.id, dueDate: date)
         refreshRecurringCaches()
@@ -2017,10 +2304,19 @@ struct HomeView: View {
     /// Log a single upcoming/overdue occurrence from the home row.
     /// Uses the amount the user entered in the amount sheet. Cancels
     /// any pending notification for this date so the user isn't asked twice.
-    private func logUpcoming(rule: RecurringRule, date: Date, customAmount: Double? = nil) {
+    private func logUpcoming(
+        rule: RecurringRule,
+        date: Date,
+        customAmount: Double? = nil
+    ) {
         Haptics.success()
         withAnimation(AppAnimation.snappy) {
-            RecurringEngine.createTransaction(rule: rule, date: date, in: context, customAmount: customAmount)
+            RecurringEngine.createTransaction(
+                rule: rule,
+                date: date,
+                in: context,
+                customAmount: customAmount
+            )
             // Advance the boundary so the engine treats this occurrence
             // as handled — prevents the overdue card from persisting.
             if rule.lastGeneratedDate == nil || rule.lastGeneratedDate! < date {
@@ -2029,7 +2325,8 @@ struct HomeView: View {
             if rule.isBill {
                 rule.lastPaidDate = .now
             }
-            try? context.save(); WidgetRefresh.refresh(using: context)
+            try? context.save()
+            WidgetRefresh.refresh(using: context)
         }
         NotificationManager.cancelConfirmation(ruleID: rule.id, dueDate: date)
         refreshRecurringCaches()
@@ -2039,36 +2336,41 @@ struct HomeView: View {
 
     private func contextIcon(for context: HomeContext) -> String {
         switch context {
-        case .review:                return "tag.slash"
-        case .upcoming(let rule, _): return rule.category?.iconKey ?? "arrow.clockwise.circle.fill"
-        case .overdue(let rule, _):  return rule.category?.iconKey ?? "exclamationmark.circle.fill"
-        case .recurringOverflow:     return "ellipsis.circle.fill"
-        case .overdueOverflow:       return "exclamationmark.circle.fill"
-        case .insight(let i):        return i.icon
+        case .review: return "tag.slash"
+        case .upcoming(let rule, _):
+            return rule.category?.iconKey ?? "arrow.clockwise.circle.fill"
+        case .overdue(let rule, _):
+            return rule.category?.iconKey ?? "exclamationmark.circle.fill"
+        case .recurringOverflow: return "ellipsis.circle.fill"
+        case .overdueOverflow: return "exclamationmark.circle.fill"
+        case .insight(let i): return i.icon
         }
     }
 
     private func contextColor(for context: HomeContext) -> Color {
         switch context {
-        case .review:                return Color.tulaBrandFallback
-        case .upcoming(let rule, _): return Color(hex: rule.category?.colorHex ?? "#D97706")
-        case .overdue:               return .red
-        case .recurringOverflow:     return .secondary
-        case .overdueOverflow:       return .red
-        case .insight(let i):        return i.color
+        case .review: return Color.tulaBrandFallback
+        case .upcoming(let rule, _):
+            return Color(hex: rule.category?.colorHex ?? "#D97706")
+        case .overdue: return .red
+        case .recurringOverflow: return .secondary
+        case .overdueOverflow: return .red
+        case .insight(let i): return i.color
         }
     }
 
     private func contextTitle(for context: HomeContext) -> String {
         switch context {
         case .review(let count):
-            return count == 1 ? "1 expense to review" : "\(count) expenses to review"
+            return count == 1
+                ? "1 expense to review" : "\(count) expenses to review"
         case .upcoming(let rule, _):
             return rule.name
         case .overdue(let rule, _):
             return rule.name
         case .recurringOverflow(let count):
-            return count == 1 ? "1 more recurring due" : "\(count) more recurring due"
+            return count == 1
+                ? "1 more recurring due" : "\(count) more recurring due"
         case .overdueOverflow(let count):
             return count == 1 ? "1 more overdue" : "\(count) more overdue"
         case .insight(let i):
@@ -2083,8 +2385,13 @@ struct HomeView: View {
         case .upcoming(let rule, let date):
             let dueLabel = upcomingRelativeLabel(for: date)
             if let prediction = cachedPredictions[rule.id] {
-                let amountStr = Currency.format(prediction.amount, code: currencyCode)
-                let isApprox = prediction.basis != .ruleAmount && abs(prediction.amount - rule.amount) >= 0.01
+                let amountStr = Currency.format(
+                    prediction.amount,
+                    code: currencyCode
+                )
+                let isApprox =
+                    prediction.basis != .ruleAmount
+                    && abs(prediction.amount - rule.amount) >= 0.01
                 let prefix = isApprox ? "~" : ""
                 let hint = prediction.hint(ruleAmount: rule.amount)
                 if hint.isEmpty {
@@ -2102,8 +2409,13 @@ struct HomeView: View {
             // Day-of-week patterns differ — "Based on your Tuesdays" vs
             // "Based on your Wednesdays".
             let prediction = SmartAmountPredictor.predict(for: rule, on: date)
-            let amountStr = Currency.format(prediction.amount, code: currencyCode)
-            let isApprox = prediction.basis != .ruleAmount && abs(prediction.amount - rule.amount) >= 0.01
+            let amountStr = Currency.format(
+                prediction.amount,
+                code: currencyCode
+            )
+            let isApprox =
+                prediction.basis != .ruleAmount
+                && abs(prediction.amount - rule.amount) >= 0.01
             let prefix = isApprox ? "~" : ""
             let hint = prediction.hint(ruleAmount: rule.amount)
             if hint.isEmpty {
@@ -2136,7 +2448,8 @@ struct HomeView: View {
         if cal.isDateInToday(date) { return "Overdue · earlier today" }
         let days = cal.dateComponents([.day], from: date, to: .now).day ?? 0
         if days <= 7 { return "Overdue · \(days) days ago" }
-        return "Overdue · \(date.formatted(.dateTime.day().month(.abbreviated)))"
+        return
+            "Overdue · \(date.formatted(.dateTime.day().month(.abbreviated)))"
     }
 
     private func handleContextTap(_ context: HomeContext) {
@@ -2156,33 +2469,79 @@ struct HomeView: View {
             case .todayTotal, .biggestToday, .quietToday:
                 let cal = Calendar.current
                 let start = cal.startOfDay(for: .now)
-                let end = cal.date(bySettingHour: 23, minute: 59, second: 59, of: .now) ?? .now
-                let filter = ExpenseFilter(dateRange: .custom(start: start, end: end))
-                navPath.append(HomeDestination.allExpenses(filter: filter, searchFocused: false))
+                let end =
+                    cal.date(
+                        bySettingHour: 23,
+                        minute: 59,
+                        second: 59,
+                        of: .now
+                    ) ?? .now
+                let filter = ExpenseFilter(
+                    dateRange: .custom(start: start, end: end)
+                )
+                navPath.append(
+                    HomeDestination.allExpenses(
+                        filter: filter,
+                        searchFocused: false
+                    )
+                )
             case .categoryAlert:
                 var filter = ExpenseFilter(dateRange: .thisMonth)
                 if let catID = insight.categoryID {
                     filter.categoryIDs = [catID]
                 }
-                navPath.append(HomeDestination.allExpenses(filter: filter, searchFocused: false))
+                navPath.append(
+                    HomeDestination.allExpenses(
+                        filter: filter,
+                        searchFocused: false
+                    )
+                )
             case .monthPace, .bigSpender:
                 let filter = ExpenseFilter(dateRange: .thisMonth)
-                navPath.append(HomeDestination.allExpenses(filter: filter, searchFocused: false))
+                navPath.append(
+                    HomeDestination.allExpenses(
+                        filter: filter,
+                        searchFocused: false
+                    )
+                )
             case .budgetPacing:
                 var filter = ExpenseFilter(dateRange: .thisMonth)
                 if let catID = insight.categoryID {
                     filter.categoryIDs = [catID]
                 }
-                navPath.append(HomeDestination.allExpenses(filter: filter, searchFocused: false))
+                navPath.append(
+                    HomeDestination.allExpenses(
+                        filter: filter,
+                        searchFocused: false
+                    )
+                )
             case .youSaved:
                 let filter = ExpenseFilter(dateRange: .thisMonth)
-                navPath.append(HomeDestination.allExpenses(filter: filter, searchFocused: false))
+                navPath.append(
+                    HomeDestination.allExpenses(
+                        filter: filter,
+                        searchFocused: false
+                    )
+                )
             case .anomaly:
                 let cal = Calendar.current
                 let start = cal.startOfDay(for: .now)
-                let end = cal.date(bySettingHour: 23, minute: 59, second: 59, of: .now) ?? .now
-                let filter = ExpenseFilter(dateRange: .custom(start: start, end: end))
-                navPath.append(HomeDestination.allExpenses(filter: filter, searchFocused: false))
+                let end =
+                    cal.date(
+                        bySettingHour: 23,
+                        minute: 59,
+                        second: 59,
+                        of: .now
+                    ) ?? .now
+                let filter = ExpenseFilter(
+                    dateRange: .custom(start: start, end: end)
+                )
+                navPath.append(
+                    HomeDestination.allExpenses(
+                        filter: filter,
+                        searchFocused: false
+                    )
+                )
             case .merchantAutoRule:
                 merchantRuleConfirmInsight = insight
             default:
@@ -2195,12 +2554,18 @@ struct HomeView: View {
     private func applyMerchantAutoRule(_ insight: Insight) {
         let modelCtx = self.context
         guard let catID = insight.categoryID,
-              let merchant = insight.merchantName,
-              let category = allCategories.first(where: { $0.id == catID }) else { return }
+            let merchant = insight.merchantName,
+            let category = allCategories.first(where: { $0.id == catID })
+        else { return }
         let account = insight.accountID.flatMap { accID in
             allAccounts.first { $0.id == accID }
         }
-        let rule = MerchantRule(pattern: merchant, category: category, account: account, isUserDefined: true)
+        let rule = MerchantRule(
+            pattern: merchant,
+            category: category,
+            account: account,
+            isUserDefined: true
+        )
         modelCtx.insert(rule)
         try? modelCtx.save()
         withAnimation(AppAnimation.snappy) {
@@ -2225,14 +2590,19 @@ struct HomeView: View {
         VStack(alignment: .leading, spacing: Spacing.md) {
             SectionHeader(
                 title: "Upcoming",
-                trailing: AnyView(SeeAllLink {
-                    Haptics.tap()
-                    showingRecurring = true
-                })
+                trailing: AnyView(
+                    SeeAllLink {
+                        Haptics.tap()
+                        showingRecurring = true
+                    }
+                )
             )
 
             VStack(spacing: 0) {
-                ForEach(Array(upcomingRecurring.enumerated()), id: \.element.rule.id) { idx, entry in
+                ForEach(
+                    Array(upcomingRecurring.enumerated()),
+                    id: \.element.rule.id
+                ) { idx, entry in
                     Button {
                         Haptics.tap()
                         showingRecurring = true
@@ -2248,7 +2618,10 @@ struct HomeView: View {
                     .buttonStyle(.plain)
 
                     if idx < upcomingRecurring.count - 1 {
-                        Divider().padding(.leading, Spacing.lg + 38 + Spacing.md)
+                        Divider().padding(
+                            .leading,
+                            Spacing.lg + 38 + Spacing.md
+                        )
                     }
                 }
             }
@@ -2273,14 +2646,19 @@ struct HomeView: View {
                     .font(.body.weight(.semibold))
                     .foregroundStyle(Color.tulaBrandFallback)
                     .frame(width: 36, height: 36)
-                    .background(Color.tulaBrandFallback.opacity(0.15), in: Circle())
+                    .background(
+                        Color.tulaBrandFallback.opacity(0.15),
+                        in: Circle()
+                    )
 
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(reviewCount == 1
-                         ? "1 expense to review"
-                         : "\(reviewCount) expenses to review")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.primary)
+                    Text(
+                        reviewCount == 1
+                            ? "1 expense to review"
+                            : "\(reviewCount) expenses to review"
+                    )
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.primary)
                     Text("Tap to categorize")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -2312,28 +2690,18 @@ struct HomeView: View {
         VStack(alignment: .leading, spacing: Spacing.md) {
             SectionHeader(
                 title: "Recent",
-                trailing: recentExpenses.isEmpty ? nil : AnyView(
-                    HStack(spacing: 2) {
-                        Button {
-                            Haptics.tap()
-                            navPath.append(HomeDestination.allExpenses(filter: nil, searchFocused: true))
-                        } label: {
-                            Image(systemName: "magnifyingglass")
-                                .font(.system(size: 13, weight: .medium))
-                                .foregroundStyle(.gray)
-                                .frame(width: 28, height: 28)
-                                .background(
-                                    Circle().fill(Color(.systemGray6))
-                                )
-                                .frame(width: 44, height: 44)
-                                .contentShape(Circle())
-                        }
-                        .accessibilityLabel("Search expenses")
+                trailing: recentExpenses.isEmpty
+                    ? nil
+                    : AnyView(
                         SeeAllLink {
-                            navPath.append(HomeDestination.allExpenses(filter: nil, searchFocused: false))
+                            navPath.append(
+                                HomeDestination.allExpenses(
+                                    filter: nil,
+                                    searchFocused: false
+                                )
+                            )
                         }
-                    }
-                )
+                    )
             )
 
             if recentExpenses.isEmpty {
@@ -2348,7 +2716,9 @@ struct HomeView: View {
 
     private var recentList: some View {
         List {
-            ForEach(Array(recentExpenses.enumerated()), id: \.element.id) { index, expense in
+            ForEach(Array(recentExpenses.enumerated()), id: \.element.id) {
+                index,
+                expense in
                 Button {
                     Haptics.tap()
                     editingExpense = expense
@@ -2365,7 +2735,10 @@ struct HomeView: View {
                 // also hide the top edge of the last row, which is shared
                 // with the bottom edge of the row before it, accidentally
                 // erasing the line between them.
-                .listRowSeparator(index == recentExpenses.count - 1 ? .hidden : .visible, edges: .bottom)
+                .listRowSeparator(
+                    index == recentExpenses.count - 1 ? .hidden : .visible,
+                    edges: .bottom
+                )
                 .alignmentGuide(.listRowSeparatorLeading) { _ in 64 }
                 .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                     Button {
@@ -2415,7 +2788,12 @@ struct HomeView: View {
         .scrollDisabled(true)
         .frame(height: CGFloat(recentExpenses.count) * rowHeight)  // now exact, no scale math
         .background(Color.tulaCardSurface)
-        .clipShape(RoundedRectangle(cornerRadius: CornerRadius.medium, style: .continuous))
+        .clipShape(
+            RoundedRectangle(
+                cornerRadius: CornerRadius.medium,
+                style: .continuous
+            )
+        )
     }
 
     @State private var shareableImage: UIImage?
@@ -2423,24 +2801,43 @@ struct HomeView: View {
 
     @ViewBuilder
     private func expenseContextMenu(for expense: Expense) -> some View {
-        Button { editingExpense = expense } label: { Label("Edit", systemImage: "pencil") }
-        Button { duplicate(expense) } label: { Label("Duplicate", systemImage: "plus.square.on.square") }
+        Button {
+            editingExpense = expense
+        } label: {
+            Label("Edit", systemImage: "pencil")
+        }
+        Button {
+            duplicate(expense)
+        } label: {
+            Label("Duplicate", systemImage: "plus.square.on.square")
+        }
         if let merchant = expense.merchant, !merchant.isEmpty {
-            Button { logSimilar(to: expense) } label: {
+            Button {
+                logSimilar(to: expense)
+            } label: {
                 Label("Log Another \(merchant)", systemImage: "arrow.clockwise")
             }
         }
-        Button { shareExpenseCard(expense) } label: {
+        Button {
+            shareExpenseCard(expense)
+        } label: {
             Label("Share", systemImage: "square.and.arrow.up")
         }
         Divider()
-        Button(role: .destructive) { expenseToDelete = expense } label: {
+        Button(role: .destructive) {
+            expenseToDelete = expense
+        } label: {
             Label("Delete", systemImage: "trash")
         }
     }
 
     private func shareExpenseCard(_ expense: Expense) {
-        let renderer = ImageRenderer(content: SpendingCardView(expense: expense, currencyCode: currencyCode))
+        let renderer = ImageRenderer(
+            content: SpendingCardView(
+                expense: expense,
+                currencyCode: currencyCode
+            )
+        )
         renderer.scale = UIScreen.main.scale
         if let image = renderer.uiImage {
             shareableImage = image
@@ -2450,12 +2847,17 @@ struct HomeView: View {
 
     private func duplicate(_ expense: Expense) {
         let copy = Expense(
-            amount: expense.amount, date: .now,
-            merchant: expense.merchant, note: expense.note,
-            source: .manual, category: expense.category, account: expense.account
+            amount: expense.amount,
+            date: .now,
+            merchant: expense.merchant,
+            note: expense.note,
+            source: .manual,
+            category: expense.category,
+            account: expense.account
         )
         context.insert(copy)
-        try? context.save(); WidgetRefresh.refresh(using: context)
+        try? context.save()
+        WidgetRefresh.refresh(using: context)
         Haptics.success()
         showToast("Duplicated")
         triggerSavePulse()
@@ -2463,12 +2865,17 @@ struct HomeView: View {
 
     private func logSimilar(to expense: Expense) {
         let template = Expense(
-            amount: 0, date: .now,
-            merchant: expense.merchant, note: nil,
-            source: .manual, category: expense.category, account: expense.account
+            amount: 0,
+            date: .now,
+            merchant: expense.merchant,
+            note: nil,
+            source: .manual,
+            category: expense.category,
+            account: expense.account
         )
         context.insert(template)
-        try? context.save(); WidgetRefresh.refresh(using: context)
+        try? context.save()
+        WidgetRefresh.refresh(using: context)
         editingExpense = template
     }
 
@@ -2503,7 +2910,9 @@ struct HomeView: View {
                 Circle()
                     .fill(Color.tulaBrandFallback.opacity(0.10))
                     .frame(width: 56, height: 56)
-                Image(systemName: "tray").font(.title2).foregroundStyle(Color.tulaBrandFallback)
+                Image(systemName: "tray").font(.title2).foregroundStyle(
+                    Color.tulaBrandFallback
+                )
             }
             VStack(spacing: Spacing.xs) {
                 Text("Nothing logged yet").font(.subheadline.weight(.semibold))
@@ -2514,8 +2923,11 @@ struct HomeView: View {
         .frame(maxWidth: .infinity)
         .padding(.vertical, Spacing.xxl)
         .background(
-            RoundedRectangle(cornerRadius: CornerRadius.medium, style: .continuous)
-                .fill(Color.tulaCardSurface)
+            RoundedRectangle(
+                cornerRadius: CornerRadius.medium,
+                style: .continuous
+            )
+            .fill(Color.tulaCardSurface)
         )
     }
 }
@@ -2538,8 +2950,9 @@ private struct UpcomingRecurringRow: View {
 
     private var iconKey: String {
         switch rule.kind {
-        case .expense:     return rule.category?.iconKey ?? "arrow.triangle.2.circlepath"
-        case .transfer:    return "arrow.left.arrow.right"
+        case .expense:
+            return rule.category?.iconKey ?? "arrow.triangle.2.circlepath"
+        case .transfer: return "arrow.left.arrow.right"
         case .cardPayment: return "creditcard"
         }
     }
@@ -2548,8 +2961,12 @@ private struct UpcomingRecurringRow: View {
         let cal = Calendar.current
         if cal.isDateInToday(dueDate) { return "Today" }
         if cal.isDateInTomorrow(dueDate) { return "Tomorrow" }
-        let days = cal.dateComponents([.day], from: cal.startOfDay(for: .now),
-                                       to: cal.startOfDay(for: dueDate)).day ?? 0
+        let days =
+            cal.dateComponents(
+                [.day],
+                from: cal.startOfDay(for: .now),
+                to: cal.startOfDay(for: dueDate)
+            ).day ?? 0
         if days <= 7 { return "In \(days) days" }
         return dueDate.formatted(.dateTime.day().month(.abbreviated))
     }
@@ -2711,8 +3128,12 @@ private struct SwipeableContextRow<Content: View>: View {
             }
     }
 
-    private func actionBackground(label: String, icon: String,
-                                   color: Color, alignment: Alignment) -> some View {
+    private func actionBackground(
+        label: String,
+        icon: String,
+        color: Color,
+        alignment: Alignment
+    ) -> some View {
         HStack(spacing: 8) {
             if alignment == .trailing { Spacer(minLength: 0) }
 
@@ -2751,9 +3172,12 @@ private struct LogAmountSheetView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var amountValue: Double
 
-    init(item: LogConfirmationItem, currencyCode: String,
-         onLog: @escaping (RecurringRule, Date, Double) -> Void,
-         onMarkPaid: @escaping (RecurringRule, Date) -> Void) {
+    init(
+        item: LogConfirmationItem,
+        currencyCode: String,
+        onLog: @escaping (RecurringRule, Date, Double) -> Void,
+        onMarkPaid: @escaping (RecurringRule, Date) -> Void
+    ) {
         self.item = item
         self.currencyCode = currencyCode
         self.onLog = onLog
@@ -2819,9 +3243,11 @@ private struct LogAmountSheetView: View {
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             } else if item.amount > 0, item.isVariable {
-                Text("Usually \(Currency.format(item.amount, code: currencyCode))")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                Text(
+                    "Usually \(Currency.format(item.amount, code: currencyCode))"
+                )
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
             }
         }
         .padding(.horizontal, 20)
@@ -2832,16 +3258,28 @@ private struct LogAmountSheetView: View {
     private var detailSection: some View {
         VStack(spacing: 0) {
             if let catName = item.categoryName,
-               let catIcon = item.categoryIcon,
-               let catColor = item.categoryColor {
-                detailRow(icon: catIcon, color: catColor, title: "Category", value: catName)
+                let catIcon = item.categoryIcon,
+                let catColor = item.categoryColor
+            {
+                detailRow(
+                    icon: catIcon,
+                    color: catColor,
+                    title: "Category",
+                    value: catName
+                )
                 Divider().padding(.leading, 56)
             }
 
             if let accName = item.accountName,
-               let accIcon = item.accountIcon,
-               let accColor = item.accountColor {
-                detailRow(icon: accIcon, color: accColor, title: "Account", value: accName)
+                let accIcon = item.accountIcon,
+                let accColor = item.accountColor
+            {
+                detailRow(
+                    icon: accIcon,
+                    color: accColor,
+                    title: "Account",
+                    value: accName
+                )
                 Divider().padding(.leading, 56)
             }
 
@@ -2849,7 +3287,9 @@ private struct LogAmountSheetView: View {
                 icon: "calendar",
                 color: .blue,
                 title: "Date",
-                value: item.date.formatted(.dateTime.weekday(.abbreviated).day().month(.abbreviated))
+                value: item.date.formatted(
+                    .dateTime.weekday(.abbreviated).day().month(.abbreviated)
+                )
             )
             Divider().padding(.leading, 56)
 
@@ -2867,13 +3307,21 @@ private struct LogAmountSheetView: View {
         .padding(.horizontal, 16)
     }
 
-    private func detailRow(icon: String, color: Color, title: String, value: String) -> some View {
+    private func detailRow(
+        icon: String,
+        color: Color,
+        title: String,
+        value: String
+    ) -> some View {
         HStack(spacing: 12) {
             Image(systemName: icon)
                 .font(.subheadline.weight(.medium))
                 .foregroundStyle(color)
                 .frame(width: 28, height: 28)
-                .background(color.opacity(0.12), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .background(
+                    color.opacity(0.12),
+                    in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+                )
                 .padding(.leading, 16)
 
             Text(title)
@@ -2945,7 +3393,9 @@ extension View {
     func hideKeyboard() {
         UIApplication.shared.sendAction(
             #selector(UIResponder.resignFirstResponder),
-            to: nil, from: nil, for: nil
+            to: nil,
+            from: nil,
+            for: nil
         )
     }
 }
@@ -3044,13 +3494,18 @@ private struct QuickLogBar: View {
     private func scheduleParse(for text: String) {
         parseTask?.cancel()
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { parsedDrafts = []; return }
+        guard !trimmed.isEmpty else {
+            parsedDrafts = []
+            return
+        }
         parseTask = Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(180))
             guard !Task.isCancelled else { return }
             parsedDrafts = ExpenseInterpreter(
-                accounts: accounts, categories: categories,
-                merchantRules: merchantRules, defaultAccount: defaultAccount
+                accounts: accounts,
+                categories: categories,
+                merchantRules: merchantRules,
+                defaultAccount: defaultAccount
             ).interpret(text)
         }
     }
@@ -3065,7 +3520,9 @@ private struct QuickLogBar: View {
     }
 
     private var activeAccounts: [Account] { accounts.filter { !$0.isArchived } }
-    private var activeCategories: [Category] { categories.filter { !$0.isArchived } }
+    private var activeCategories: [Category] {
+        categories.filter { !$0.isArchived }
+    }
 
     var body: some View {
         VStack(spacing: Spacing.sm) {
@@ -3082,7 +3539,9 @@ private struct QuickLogBar: View {
         }
         // Voice deep-link from the Quick Actions widget — trigger the
         // full-screen voice overlay.
-        .onReceive(NotificationCenter.default.publisher(for: .tulaStartVoiceCapture)) { _ in
+        .onReceive(
+            NotificationCenter.default.publisher(for: .tulaStartVoiceCapture)
+        ) { _ in
             onMicTap()
         }
     }
@@ -3221,7 +3680,11 @@ private struct QuickLogBar: View {
                 Circle()
                     .fill(trailingButtonFill)
                     .frame(width: 44, height: 44)
-                    .shadow(color: trailingButtonFill.opacity(0.22), radius: 4, y: 2)
+                    .shadow(
+                        color: trailingButtonFill.opacity(0.22),
+                        radius: 4,
+                        y: 2
+                    )
 
                 Image(systemName: trailingIconName)
                     .font(.subheadline.weight(.bold))
@@ -3304,8 +3767,11 @@ private struct QuickLogBar: View {
         }
         .padding(Spacing.md)
         .background(
-            RoundedRectangle(cornerRadius: CornerRadius.large, style: .continuous)
-                .fill(Color.tulaCardSurface)
+            RoundedRectangle(
+                cornerRadius: CornerRadius.large,
+                style: .continuous
+            )
+            .fill(Color.tulaCardSurface)
         )
         .shimmering(active: isSmartParsing, tint: Color.tulaBrandFallback)
     }
@@ -3313,7 +3779,9 @@ private struct QuickLogBar: View {
     /// Merchant + items summary line under the amount.
     private func previewSubtitle(_ p: ExpenseDraft) -> String {
         var parts: [String] = []
-        if let merchant = p.merchant, !merchant.isEmpty { parts.append(merchant) }
+        if let merchant = p.merchant, !merchant.isEmpty {
+            parts.append(merchant)
+        }
         if !p.items.isEmpty {
             parts.append(p.items.map { $0.capitalized }.joined(separator: ", "))
         }
@@ -3327,13 +3795,17 @@ private struct QuickLogBar: View {
                 Button {
                     Haptics.selection()
                     categoryOverride = category
-                } label: { Label(category.name, systemImage: category.iconKey) }
+                } label: {
+                    Label(category.name, systemImage: category.iconKey)
+                }
             }
         } label: {
-            pillLabel(icon: current?.iconKey ?? "tag",
-                      text: current?.name ?? "Category",
-                      tint: current.map { Color(hex: $0.colorHex) } ?? .orange,
-                      muted: current == nil)
+            pillLabel(
+                icon: current?.iconKey ?? "tag",
+                text: current?.name ?? "Category",
+                tint: current.map { Color(hex: $0.colorHex) } ?? .orange,
+                muted: current == nil
+            )
         }
     }
 
@@ -3344,24 +3816,36 @@ private struct QuickLogBar: View {
                 Button {
                     Haptics.selection()
                     accountOverride = account
-                } label: { Label(account.name, systemImage: EditableExpenseCard.icon(for: account)) }
+                } label: {
+                    Label(
+                        account.name,
+                        systemImage: EditableExpenseCard.icon(for: account)
+                    )
+                }
             }
         } label: {
-            pillLabel(icon: current.map(EditableExpenseCard.icon(for:)) ?? "creditcard",
-                      text: current?.name ?? "Account",
-                      tint: current.map { Color(hex: $0.colorHex) } ?? .orange,
-                      muted: current == nil)
+            pillLabel(
+                icon: current.map(EditableExpenseCard.icon(for:))
+                    ?? "creditcard",
+                text: current?.name ?? "Account",
+                tint: current.map { Color(hex: $0.colorHex) } ?? .orange,
+                muted: current == nil
+            )
         }
     }
 
     /// Shared pill look: icon + label + chevron, tinted, soft fill — reads as
     /// an editable control, not static text.
-    private func pillLabel(icon: String, text: String, tint: Color, muted: Bool) -> some View {
+    private func pillLabel(icon: String, text: String, tint: Color, muted: Bool)
+        -> some View
+    {
         let color = muted ? Color.orange : tint
         return HStack(spacing: 5) {
             Image(systemName: icon).font(.caption2.weight(.semibold))
             Text(text).font(.caption.weight(.semibold)).lineLimit(1)
-            Image(systemName: "chevron.down").font(.system(size: 8, weight: .bold)).opacity(0.5)
+            Image(systemName: "chevron.down").font(
+                .system(size: 8, weight: .bold)
+            ).opacity(0.5)
         }
         .foregroundStyle(color)
         .padding(.horizontal, 10)
@@ -3387,7 +3871,10 @@ private struct QuickLogBar: View {
     private var multiplePreviewRow: some View {
         HStack(spacing: Spacing.sm) {
             ZStack {
-                Circle().fill(Color.tulaBrandFallback.opacity(0.18)).frame(width: 28, height: 28)
+                Circle().fill(Color.tulaBrandFallback.opacity(0.18)).frame(
+                    width: 28,
+                    height: 28
+                )
                 Image(systemName: "checklist")
                     .font(.caption.weight(.medium))
                     .foregroundStyle(Color.tulaBrandFallback)
@@ -3395,10 +3882,15 @@ private struct QuickLogBar: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text("\(validDrafts.count) expenses")
                     .font(.subheadline.weight(.bold))
-                Text(Currency.format(validDrafts.reduce(0) { $0 + $1.amount }, code: currencyCode))
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .monospacedDigit()
+                Text(
+                    Currency.format(
+                        validDrafts.reduce(0) { $0 + $1.amount },
+                        code: currencyCode
+                    )
+                )
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .monospacedDigit()
             }
         }
     }
@@ -3410,8 +3902,10 @@ private struct QuickLogBar: View {
         // so a fast Return/tap could arrive before it refreshed.
         parseTask?.cancel()
         var ds = ExpenseInterpreter(
-            accounts: accounts, categories: categories,
-            merchantRules: merchantRules, defaultAccount: defaultAccount
+            accounts: accounts,
+            categories: categories,
+            merchantRules: merchantRules,
+            defaultAccount: defaultAccount
         ).interpret(input).filter { $0.isValid }
         if ds.count == 1 {
             if let categoryOverride { ds[0].category = categoryOverride }
@@ -3421,9 +3915,13 @@ private struct QuickLogBar: View {
         let rawInput = input
         let expenses = ds.map { d -> Expense in
             let e = Expense(
-                amount: d.amount, date: d.date,
-                merchant: d.merchant, note: d.note,
-                source: .smartParsed, category: d.category, account: d.account
+                amount: d.amount,
+                date: d.date,
+                merchant: d.merchant,
+                note: d.note,
+                source: .smartParsed,
+                category: d.category,
+                account: d.account
             )
             e.rawInput = rawInput
             e.items = d.items.map { LineItem(name: $0.capitalized) }
@@ -3461,12 +3959,19 @@ private struct SpendingCardView: View {
                         .font(.title3.weight(.medium))
                         .foregroundStyle(.white)
                         .frame(width: 40, height: 40)
-                        .background(Color(hex: cat.colorHex).opacity(0.9), in: Circle())
+                        .background(
+                            Color(hex: cat.colorHex).opacity(0.9),
+                            in: Circle()
+                        )
                 }
                 Spacer()
-                Text(expense.date.formatted(.dateTime.day().month(.abbreviated).year()))
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(.white.opacity(0.7))
+                Text(
+                    expense.date.formatted(
+                        .dateTime.day().month(.abbreviated).year()
+                    )
+                )
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.white.opacity(0.7))
             }
 
             Text(Currency.format(expense.amount, code: currencyCode))
@@ -3496,7 +4001,12 @@ private struct SpendingCardView: View {
         .frame(width: 320)
         .background(
             LinearGradient(
-                colors: [Color(hex: expense.category?.colorHex ?? "#D97706"), Color(hex: expense.category?.colorHex ?? "#D97706").opacity(0.7)],
+                colors: [
+                    Color(hex: expense.category?.colorHex ?? "#D97706"),
+                    Color(hex: expense.category?.colorHex ?? "#D97706").opacity(
+                        0.7
+                    ),
+                ],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
             )
@@ -3569,11 +4079,13 @@ private struct MerchantRuleConfirmSheet: View {
                     .font(.headline)
                     .multilineTextAlignment(.center)
 
-                Text("Create a rule so future expenses from **\(merchantName)** are automatically categorized.")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal, Spacing.xl)
+                Text(
+                    "Create a rule so future expenses from **\(merchantName)** are automatically categorized."
+                )
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, Spacing.xl)
             }
 
             // Rule details
@@ -3646,7 +4158,13 @@ private struct MerchantRuleConfirmSheet: View {
                         .font(.body.weight(.semibold))
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 14)
-                        .background(categoryColor, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        .background(
+                            categoryColor,
+                            in: RoundedRectangle(
+                                cornerRadius: 14,
+                                style: .continuous
+                            )
+                        )
                         .foregroundStyle(.white)
                 }
 
