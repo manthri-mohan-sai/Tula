@@ -105,14 +105,33 @@ struct ExpenseInterpreter {
         return (nil, .low)
     }
 
-    /// Match a user account by name. Delegates to the battle-tested two-tier
-    /// matcher: (1) whole account name as a substring — "flipkart axis" hits
-    /// "Flipkart Axis" — longest name winning; (2) word-level best-score, so a
-    /// multi-word account beats a single shared word (e.g. "Flipkart Axis"
-    /// outscores a plain "Axis" when both flipkart+axis are present). This is
-    /// why multi-word cards like "Flipkart Axis" now resolve reliably.
+    /// Match a user account by name, resolving prefix collisions deterministically.
+    ///
+    /// Scores each account by how many of ITS name words appear in the text. The
+    /// account with the MOST matched words wins; ties break toward the *fewer*
+    /// total words (the more exact name). So with both "IndusInd" and "IndusInd
+    /// Rupay":
+    ///   - "…indusind rupay" → IndusInd Rupay (2 matched > 1)
+    ///   - "…indusind"       → IndusInd (both match 1, but IndusInd is exact)
+    /// And "flipkart axis card" → "Flipkart Axis" (2 matched) over a plain "Axis".
+    /// Falls back to the substring/phonetic matcher when no name word matches.
     private func matchAccountName(in text: String) -> Account? {
-        ExpenseParser.matchAccount(in: text.lowercased(), candidates: activeAccounts)?.account
+        let words = Set(Self.tokens(text))
+        var best: (account: Account, matched: Int, total: Int)?
+        for account in activeAccounts {
+            let nameWords = account.name.lowercased()
+                .split(separator: " ").map(String.init).filter { $0.count >= 2 }
+            guard !nameWords.isEmpty else { continue }
+            let matched = nameWords.filter { words.contains($0) }.count
+            guard matched > 0 else { continue }
+            let better = best == nil
+                || matched > best!.matched
+                || (matched == best!.matched && nameWords.count < best!.total)
+            if better { best = (account, matched, nameWords.count) }
+        }
+        if let best { return best.account }
+        // Fallback for substring/phonetic hits (e.g. account name written solid).
+        return ExpenseParser.matchAccount(in: text.lowercased(), candidates: activeAccounts)?.account
     }
 
     /// Match by payment-type keyword when no name matched ("credit card", "cash").
@@ -237,30 +256,58 @@ struct ExpenseInterpreter {
         return result?.capitalized
     }
 
-    /// Item list: the span after `on` (or after a spend verb), split on commas
-    /// and "and", fillers removed. "on milk and curd at X" → ["milk", "curd"].
+    /// Words that end an ITEM span. Note "on"/"for" are NOT here — they *start*
+    /// item spans ("for chicken biryani", "on milk"), so they mustn't also
+    /// terminate one.
+    private static let itemStopWords: Set<String> =
+        ["at", "using", "paid", "via", "with", "from"]
+
+    /// Number words to strip from item text so "three fifty for chicken biryani"
+    /// never yields an item like "three".
+    private static let numberWords: Set<String> = [
+        "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
+        "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen",
+        "seventeen", "eighteen", "nineteen", "twenty", "thirty", "forty", "fifty",
+        "sixty", "seventy", "eighty", "ninety", "hundred", "thousand", "lakh", "crore"
+    ]
+
+    /// Item list: the span after `for`/`on` (or a spend verb), split on commas
+    /// and "and", with fillers, number words, digits, and stray brackets/quotes
+    /// removed. "for chicken biryani at X" → ["chicken biryani"];
+    /// "on milk and curd at X" → ["milk", "curd"].
     private static func extractItems(_ text: String) -> [String] {
-        let pattern = text.range(of: #"\bon\s+(.+)"#, options: [.regularExpression, .caseInsensitive])
-            ?? text.range(of: #"\b(?:bought|spent|paid|got)\s+(.+)"#,
-                          options: [.regularExpression, .caseInsensitive])
-        guard let pattern else { return [] }
-        let after = text[pattern].split(separator: " ").dropFirst().map(String.init)
+        // "for"/"on" mark items — but only when NOT followed by a number
+        // ("for 55" is a price, not an item). Fall back to a spend verb.
+        let markerRange = text.range(
+            of: #"\b(?:on|for)\s+(?![\d₹])(.+)"#, options: [.regularExpression, .caseInsensitive]
+        ) ?? text.range(
+            of: #"\b(?:bought|spent|ordered|purchased|got|ate|had|drank|took)\s+(.+)"#,
+            options: [.regularExpression, .caseInsensitive]
+        )
+        guard let markerRange else { return [] }
+
+        let after = text[markerRange].split(separator: " ").dropFirst().map(String.init)
         var span: [String] = []
         for w in after {
-            if stopWords.contains(w.lowercased().trimmingCharacters(in: .punctuationCharacters)) { break }
+            if itemStopWords.contains(w.lowercased().trimmingCharacters(in: .punctuationCharacters)) { break }
             span.append(w)
         }
+        // Strip currency, digits and stray array-literal punctuation ([, ], ").
         let joined = span.joined(separator: " ")
-            .replacingOccurrences(of: #"\d+"#, with: "", options: .regularExpression)
+            .replacingOccurrences(of: #"[₹\d\[\]\""']"#, with: "", options: .regularExpression)
+
         return joined
             .components(separatedBy: CharacterSet(charactersIn: ","))
             .flatMap { $0.components(separatedBy: " and ") }
             .map { part in
                 part.split(separator: " ")
                     .map(String.init)
-                    .filter { !fillers.contains($0.lowercased().trimmingCharacters(in: .punctuationCharacters)) }
+                    .filter {
+                        let bare = $0.lowercased().trimmingCharacters(in: .punctuationCharacters)
+                        return !fillers.contains(bare) && !numberWords.contains(bare)
+                    }
                     .joined(separator: " ")
-                    .trimmingCharacters(in: CharacterSet(charactersIn: " .,₹"))
+                    .trimmingCharacters(in: CharacterSet(charactersIn: " .,₹\"'[]"))
                     .lowercased()
             }
             .filter { !$0.isEmpty }

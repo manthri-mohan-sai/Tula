@@ -71,9 +71,8 @@ struct EditableExpenseCard: View {
             amountField
             itemsSection
             detailsSection
-            divider(.white.opacity(0.05), inset: Spacing.lg)
-            rawInputFooter
         }
+        .padding(.bottom, Spacing.md)
         .background(cardBackground)
     }
 
@@ -355,25 +354,6 @@ struct EditableExpenseCard: View {
                 }
         }
         .presentationDetents([.medium])
-    }
-
-    // MARK: Footer
-
-    private var rawInputFooter: some View {
-        VStack(spacing: Spacing.xs) {
-            HStack(spacing: 4) {
-                Image(systemName: "text.quote").font(.caption2)
-                Text("Parsed from").font(.caption2.weight(.medium))
-            }
-            .foregroundStyle(.white.opacity(0.15))
-            Text("\"\(draft.rawInput)\"")
-                .font(.caption)
-                .foregroundStyle(.white.opacity(0.12))
-                .multilineTextAlignment(.center)
-                .lineLimit(2)
-        }
-        .padding(.vertical, Spacing.md)
-        .padding(.horizontal, Spacing.lg)
     }
 
     // MARK: Building blocks

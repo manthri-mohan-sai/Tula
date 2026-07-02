@@ -61,17 +61,78 @@ enum CategoryClassifier {
                 "icecream", "kulfi", "falooda", "lassi", "milkshake", "smoothie",
                 "restaurant", "cafe", "dhaba", "swiggy", "zomato", "domino",
                 "mcdonald", "kfc", "pizzahut", "burgerking", "starbucks",
-                "chai", "tea", "coffee"
+                "chai", "tea", "coffee", "chocolate", "waffle", "pancake", "maggi",
+                "noodle", "pasta", "omelette", "fries", "pakora", "jalebi", "gulab",
+                "rasgulla", "barfi", "ladoo", "halwa", "mithai", "cutlet", "sushi",
+                "ramen", "taco",
+                // Chaat family + street food
+                "chaat", "chat", "papdi", "papadi", "bhel", "sev", "panipuri",
+                "golgappa", "dhokla", "poori", "pakoda", "bhajji",
+                // Drinks
+                "juice", "sugarcane", "cane", "shake", "soda", "buttermilk", "chaas",
+                "lemonade", "sherbet", "mojito", "cola", "beer", "wine"
             ]
         ),
         Lexicon(
+            canonical: "Fuel",
+            synonyms: ["fuel", "petrol", "diesel"],
+            tokens: ["petrol", "diesel", "fuel", "cng", "petrolpump", "gas"]
+        ),
+        Lexicon(
             canonical: "Transport",
-            synonyms: ["transport", "commute", "fuel", "cab", "travel"],
+            synonyms: ["transport", "commute", "cab"],
             tokens: [
                 "cab", "auto", "ola", "uber", "rapido", "taxi", "metro", "bus",
-                "train", "rickshaw", "petrol", "diesel", "fuel", "cng", "parking",
-                "toll", "flight"
+                "train", "rickshaw", "parking", "toll"
             ]
+        ),
+        Lexicon(
+            canonical: "Travel",
+            synonyms: ["travel", "trip", "tour", "holiday", "vacation"],
+            tokens: [
+                "flight", "hotel", "resort", "airbnb", "trip", "tour", "vacation",
+                "holiday", "oyo", "makemytrip", "goibibo", "irctc", "visa", "luggage"
+            ]
+        ),
+        Lexicon(
+            canonical: "Education",
+            synonyms: ["education", "school", "tuition", "course"],
+            tokens: [
+                "tuition", "school", "college", "coaching", "course", "class",
+                "exam", "stationery", "semester", "admission", "udemy", "coursera",
+                "byjus", "unacademy"
+            ]
+        ),
+        Lexicon(
+            canonical: "Investments",
+            synonyms: ["investment", "invest", "mutual", "stock", "saving"],
+            tokens: [
+                "sip", "mutualfund", "mutual", "fund", "stock", "shares", "equity",
+                "gold", "crypto", "bitcoin", "zerodha", "groww", "nps", "ppf"
+            ]
+        ),
+        Lexicon(
+            canonical: "Loan Repayments",
+            synonyms: ["loan", "repayment", "emi", "debt"],
+            tokens: ["loan", "emi", "repayment", "installment", "instalment", "mortgage"]
+        ),
+        Lexicon(
+            canonical: "Home",
+            synonyms: ["home", "house", "rent", "household"],
+            tokens: [
+                "rent", "maintenance", "plumber", "electrician", "carpenter",
+                "furniture", "renovation", "maid", "househelp"
+            ]
+        ),
+        Lexicon(
+            canonical: "Brother",
+            synonyms: ["brother"],
+            tokens: ["brother", "bro"]
+        ),
+        Lexicon(
+            canonical: "Parents",
+            synonyms: ["parent", "mother", "father", "mom", "dad"],
+            tokens: ["parents", "mother", "father", "amma", "nanna", "mummy", "papa"]
         ),
         Lexicon(
             canonical: "Health",
@@ -137,9 +198,26 @@ enum CategoryClassifier {
 
     // MARK: - Helpers
 
-    /// Lowercased alphanumeric tokens of length ≥ 3.
+    /// Two-word items that must collapse to a single token before tokenizing —
+    /// otherwise "sugar cane" splits into "sugar" (Groceries) + "cane", and
+    /// "pani puri" into two unknowns. Extend as multi-word items surface.
+    private static let phraseAliases: [String: String] = [
+        "sugar cane": "sugarcane",
+        "pani puri": "panipuri",
+        "gol gappa": "golgappa",
+        "pav bhaji": "pavbhaji",
+        "vada pav": "vadapav",
+        "ice cream": "icecream"
+    ]
+
+    /// Lowercased alphanumeric tokens of length ≥ 3, after collapsing known
+    /// multi-word phrases.
     private static func tokens(in text: String) -> [String] {
-        text.lowercased()
+        var lowered = text.lowercased()
+        for (phrase, alias) in phraseAliases {
+            lowered = lowered.replacingOccurrences(of: phrase, with: alias)
+        }
+        return lowered
             .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
             .map(String.init)
             .filter { $0.count >= 3 }

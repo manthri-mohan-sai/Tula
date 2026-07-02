@@ -45,8 +45,13 @@ struct ExpenseRow: View {
     }
 
     /// Comma-joined item names from the structured `items` relationship.
+    /// Strips stray array-literal punctuation from any older/mislabelled data
+    /// (e.g. a name saved as `["Chicken Biryani"]`).
     private var itemsSummary: String {
-        expense.items.map { $0.name.capitalized }.joined(separator: ", ")
+        expense.items
+            .map { $0.name.trimmingCharacters(in: CharacterSet(charactersIn: "[]\"' ")).capitalized }
+            .filter { !$0.isEmpty }
+            .joined(separator: ", ")
     }
 
     /// Subtitle stack. When the title is the merchant, the subtitle leads

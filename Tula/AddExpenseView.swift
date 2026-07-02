@@ -113,7 +113,16 @@ struct AddExpenseView: View {
             _selectedCategory = State(initialValue: e.category)
             _selectedAccount = State(initialValue: e.account)
             _merchant = State(initialValue: e.merchant ?? "")
-            _note = State(initialValue: e.note ?? "")
+            // Show captured items in the Item field. Voice/quick-log/Siri store
+            // them in the `items` relationship (note is nil); surface them here
+            // as a comma list so editing an entry shows what was logged.
+            if let note = e.note, !note.isEmpty {
+                _note = State(initialValue: note)
+            } else if !e.items.isEmpty {
+                _note = State(initialValue: e.items.map { $0.name.capitalized }.joined(separator: ", "))
+            } else {
+                _note = State(initialValue: "")
+            }
             _date = State(initialValue: e.date)
             _tax = State(initialValue: e.tax ?? 0)
             _discount = State(initialValue: e.discount ?? 0)
@@ -2088,6 +2097,17 @@ struct AddExpenseView: View {
             existingExpense.date = date
             existingExpense.merchant = merchant.isEmpty ? nil : merchant
             existingExpense.note = note.isEmpty ? nil : note
+            // Keep the structured item list in sync when editing a parsed entry
+            // (one that already had items). The Item field was prefilled with a
+            // comma list; re-derive the relationship from it so the saved
+            // expense matches what the user just edited.
+            if !existingExpense.items.isEmpty {
+                let names = note
+                    .split(separator: ",")
+                    .map { $0.trimmingCharacters(in: .whitespaces) }
+                    .filter { !$0.isEmpty }
+                existingExpense.items = names.map { LineItem(name: $0) }
+            }
             existingExpense.category = selectedCategory
             existingExpense.account = account
             existingExpense.tax = tax > 0 ? tax : nil

@@ -3022,21 +3022,37 @@ private struct QuickLogBar: View {
     @State private var categoryOverride: Category?
     @State private var accountOverride: Account?
 
-    /// Live interpretation via the shared deterministic pipeline. Recomputed as
-    /// the user types; fast (on-device, no network).
+    /// Interpreter output, cached in state and refreshed on a short debounce
+    /// after typing pauses — NOT on every keystroke. The interpreter runs
+    /// NLTagger NER + regex, so recomputing it per character (and per view
+    /// render) made typing lag. Debouncing keeps the field buttery.
+    @State private var parsedDrafts: [ExpenseDraft] = []
+    @State private var parseTask: Task<Void, Never>?
+
+    /// The cached drafts with inline chip overrides applied (cheap).
     private var drafts: [ExpenseDraft] {
-        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return [] }
-        var produced = ExpenseInterpreter(
-            accounts: accounts, categories: categories,
-            merchantRules: merchantRules, defaultAccount: defaultAccount
-        ).interpret(input)
-        // Inline chip overrides apply to the single-expense case.
-        if produced.count == 1 {
-            if let categoryOverride { produced[0].category = categoryOverride }
-            if let accountOverride { produced[0].account = accountOverride }
-        }
+        guard parsedDrafts.count == 1 else { return parsedDrafts }
+        var produced = parsedDrafts
+        if let categoryOverride { produced[0].category = categoryOverride }
+        if let accountOverride { produced[0].account = accountOverride }
         return produced
+    }
+
+    /// Debounced parse. Cancels any in-flight parse and runs once ~180ms after
+    /// the last keystroke, on the main actor (the interpreter is synchronous
+    /// and cheap once, just not once-per-character).
+    private func scheduleParse(for text: String) {
+        parseTask?.cancel()
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { parsedDrafts = []; return }
+        parseTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(180))
+            guard !Task.isCancelled else { return }
+            parsedDrafts = ExpenseInterpreter(
+                accounts: accounts, categories: categories,
+                merchantRules: merchantRules, defaultAccount: defaultAccount
+            ).interpret(text)
+        }
     }
 
     private var validDrafts: [ExpenseDraft] { drafts.filter { $0.isValid } }
@@ -3060,6 +3076,10 @@ private struct QuickLogBar: View {
             }
         }
         .animation(AppAnimation.bouncy, value: showPreview)
+        // Re-parse only after typing pauses — keeps the field responsive.
+        .onChange(of: input) { _, newValue in
+            scheduleParse(for: newValue)
+        }
         // Voice deep-link from the Quick Actions widget — trigger the
         // full-screen voice overlay.
         .onReceive(NotificationCenter.default.publisher(for: .tulaStartVoiceCapture)) { _ in
@@ -3246,113 +3266,122 @@ private struct QuickLogBar: View {
         }
     }
 
-    /// Compact summary of what will be saved. Category and account are inline-
-    /// editable chips; the trailing badge submits. Shimmers while on-device AI
-    /// is enriching a recent submission.
+    /// Preview of what will be saved. Amount + summary read at a glance;
+    /// Category and Account are explicit, labeled, tappable pills so it's
+    /// obvious they can be changed; a clear Save button commits. Shimmers
+    /// while on-device AI is enriching.
     private var previewCard: some View {
-        HStack(spacing: Spacing.sm) {
+        VStack(alignment: .leading, spacing: Spacing.md) {
             if let only = previewDraft {
-                editableSingleRow(only)
+                HStack(alignment: .top, spacing: Spacing.md) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(Currency.format(only.amount, code: currencyCode))
+                            .font(.title3.weight(.heavy))
+                            .monospacedDigit()
+                        let sub = previewSubtitle(only)
+                        if !sub.isEmpty {
+                            Text(sub)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                    }
+                    Spacer(minLength: 0)
+                    saveButton
+                }
+                HStack(spacing: Spacing.sm) {
+                    categoryPill(only.category)
+                    accountPill(only.account)
+                    Spacer(minLength: 0)
+                }
             } else {
-                multiplePreviewRow
+                HStack(spacing: Spacing.sm) {
+                    multiplePreviewRow
+                    Spacer(minLength: 0)
+                    saveButton
+                }
             }
-            Spacer(minLength: 0)
-            Button(action: submit) { saveBadge }
-                .buttonStyle(PressableScaleStyle(scale: 0.96))
-                .transition(.scale.combined(with: .opacity))
         }
-        .padding(.horizontal, Spacing.md)
-        .padding(.vertical, Spacing.sm + 4)
+        .padding(Spacing.md)
         .background(
-            RoundedRectangle(cornerRadius: CornerRadius.medium, style: .continuous)
+            RoundedRectangle(cornerRadius: CornerRadius.large, style: .continuous)
                 .fill(Color.tulaCardSurface)
         )
         .shimmering(active: isSmartParsing, tint: Color.tulaBrandFallback)
     }
 
-    /// Single-expense preview with tappable category + account chips.
-    private func editableSingleRow(_ p: ExpenseDraft) -> some View {
-        HStack(spacing: Spacing.sm) {
-            categoryChip(p.category)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(Currency.format(p.amount, code: currencyCode))
-                    .font(.subheadline.weight(.bold))
-                    .monospacedDigit()
-                HStack(spacing: 6) {
-                    if let merchant = p.merchant, !merchant.isEmpty {
-                        Text(merchant)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
-                    accountChip(p.account)
-                }
-            }
+    /// Merchant + items summary line under the amount.
+    private func previewSubtitle(_ p: ExpenseDraft) -> String {
+        var parts: [String] = []
+        if let merchant = p.merchant, !merchant.isEmpty { parts.append(merchant) }
+        if !p.items.isEmpty {
+            parts.append(p.items.map { $0.capitalized }.joined(separator: ", "))
         }
+        return parts.joined(separator: " · ")
     }
 
-    /// Tap-to-change category. Amber dot when the parser didn't resolve one.
-    private func categoryChip(_ current: Category?) -> some View {
-        let color = current.map { Color(hex: $0.colorHex) } ?? .secondary
-        return Menu {
+    /// Tappable, labeled category pill. Amber when the parser didn't resolve one.
+    private func categoryPill(_ current: Category?) -> some View {
+        Menu {
             ForEach(activeCategories, id: \.id) { category in
                 Button {
                     Haptics.selection()
                     categoryOverride = category
-                } label: {
-                    Label(category.name, systemImage: category.iconKey)
-                }
+                } label: { Label(category.name, systemImage: category.iconKey) }
             }
         } label: {
-            ZStack {
-                Circle().fill(color.opacity(0.18)).frame(width: 28, height: 28)
-                Image(systemName: current?.iconKey ?? "tag")
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(color)
-                if current == nil {
-                    Circle().fill(Color.orange).frame(width: 7, height: 7)
-                        .offset(x: 10, y: -10)
-                }
-            }
+            pillLabel(icon: current?.iconKey ?? "tag",
+                      text: current?.name ?? "Category",
+                      tint: current.map { Color(hex: $0.colorHex) } ?? .orange,
+                      muted: current == nil)
         }
     }
 
-    /// Tap-to-change account.
-    private func accountChip(_ current: Account?) -> some View {
+    /// Tappable, labeled account pill.
+    private func accountPill(_ current: Account?) -> some View {
         Menu {
             ForEach(activeAccounts, id: \.id) { account in
                 Button {
                     Haptics.selection()
                     accountOverride = account
-                } label: {
-                    Label(account.name, systemImage: EditableExpenseCard.icon(for: account))
-                }
+                } label: { Label(account.name, systemImage: EditableExpenseCard.icon(for: account)) }
             }
         } label: {
-            HStack(spacing: 2) {
-                Text(current?.name ?? "Set account")
-                    .font(.caption2)
-                    .foregroundStyle(current == nil ? Color.orange : .secondary)
-                Image(systemName: "chevron.down")
-                    .font(.system(size: 7, weight: .bold))
-                    .foregroundStyle(.tertiary)
-            }
+            pillLabel(icon: current.map(EditableExpenseCard.icon(for:)) ?? "creditcard",
+                      text: current?.name ?? "Account",
+                      tint: current.map { Color(hex: $0.colorHex) } ?? .orange,
+                      muted: current == nil)
         }
     }
 
-    private var saveBadge: some View {
-        HStack(spacing: 4) {
-            Text("Save")
-                .font(.caption.weight(.bold))
-            Image(systemName: "arrow.right")
-                .font(.caption2.weight(.bold))
+    /// Shared pill look: icon + label + chevron, tinted, soft fill — reads as
+    /// an editable control, not static text.
+    private func pillLabel(icon: String, text: String, tint: Color, muted: Bool) -> some View {
+        let color = muted ? Color.orange : tint
+        return HStack(spacing: 5) {
+            Image(systemName: icon).font(.caption2.weight(.semibold))
+            Text(text).font(.caption.weight(.semibold)).lineLimit(1)
+            Image(systemName: "chevron.down").font(.system(size: 8, weight: .bold)).opacity(0.5)
         }
-        .padding(.horizontal, Spacing.sm)
-        .padding(.vertical, 5)
-        .background(
-            Capsule().fill(Color.tulaBrandFallback)
-        )
-        .foregroundStyle(.white)
+        .foregroundStyle(color)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(Capsule().fill(color.opacity(0.15)))
+    }
+
+    private var saveButton: some View {
+        Button(action: submit) {
+            HStack(spacing: 5) {
+                Text("Save").font(.subheadline.weight(.bold))
+                Image(systemName: "arrow.up").font(.caption2.weight(.bold))
+            }
+            .foregroundStyle(.white)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 9)
+            .background(Capsule().fill(Color.tulaBrandFallback))
+        }
+        .buttonStyle(PressableScaleStyle(scale: 0.96))
+        .transition(.scale.combined(with: .opacity))
     }
 
     private var multiplePreviewRow: some View {
@@ -3377,7 +3406,17 @@ private struct QuickLogBar: View {
     // MARK: - Actions
 
     private func submit() {
-        let ds = validDrafts
+        // Parse the current text synchronously — the live preview is debounced,
+        // so a fast Return/tap could arrive before it refreshed.
+        parseTask?.cancel()
+        var ds = ExpenseInterpreter(
+            accounts: accounts, categories: categories,
+            merchantRules: merchantRules, defaultAccount: defaultAccount
+        ).interpret(input).filter { $0.isValid }
+        if ds.count == 1 {
+            if let categoryOverride { ds[0].category = categoryOverride }
+            if let accountOverride { ds[0].account = accountOverride }
+        }
         guard !ds.isEmpty else { return }
         let rawInput = input
         let expenses = ds.map { d -> Expense in
@@ -3397,8 +3436,10 @@ private struct QuickLogBar: View {
     /// Clears the field and any inline overrides — serves as both "clear" and
     /// "discard" for the typed path.
     private func clearInput() {
+        parseTask?.cancel()
         input = ""
         focused = false
+        parsedDrafts = []
         categoryOverride = nil
         accountOverride = nil
     }

@@ -1201,14 +1201,17 @@ struct VoiceInputOverlay: View {
 
     // MARK: - Colors
 
+    /// Cohesive palette: the amount gets the brand accent (it's the hero
+    /// fact); entities share a single desaturated cool family so the transcript
+    /// reads intentional rather than a saturated rainbow; fillers recede.
     private func colorForRole(_ role: WordRole) -> Color {
         switch role {
         case .amount:    return Color.tulaBrandFallback
-        case .merchant:  return .blue
-        case .category:  return .purple
-        case .account:   return .cyan
-        case .filler:    return .white.opacity(0.3)
-        case .unmatched: return .white.opacity(0.5)
+        case .merchant:  return Color(red: 0.46, green: 0.64, blue: 0.94)  // soft blue
+        case .category:  return Color(red: 0.53, green: 0.78, blue: 0.73)  // soft teal
+        case .account:   return Color(red: 0.60, green: 0.80, blue: 0.56)  // soft green
+        case .filler:    return .white.opacity(0.28)
+        case .unmatched: return .white.opacity(0.55)
         }
     }
 }
