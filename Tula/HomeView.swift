@@ -63,7 +63,6 @@ struct LogConfirmationItem: Identifiable {
 struct HomeView: View {
     @Environment(\.modelContext) private var context
     @Environment(\.scenePhase) private var scenePhase
-    @Environment(\.colorScheme) private var colorScheme
     @Query(sort: \Expense.date, order: .reverse) private var allExpenses:
         [Expense]
     @Query(sort: \Account.sortOrder) private var allAccounts: [Account]
@@ -768,7 +767,7 @@ struct HomeView: View {
     }
 
     private var scrollContent: some View {
-        VStack(alignment: .leading, spacing: Spacing.xl) {
+        VStack(alignment: .leading, spacing: Spacing.xxl) {
             heroSection
                 .shadow(color: .black.opacity(0.05), radius: 8, y: 4)
                 .shadow(color: pageAccentColor.opacity(0.18), radius: 28, y: 6)
@@ -1088,6 +1087,10 @@ struct HomeView: View {
         )
     }
 
+    /// The hero's card face — a soft warm brand gradient over the card surface.
+    /// This is where the app's "life" lives: one deliberate, premium, branded
+    /// surface, while the page canvas stays calm and flat. Consistent (brand,
+    /// not category) so it looks intentional on every screen.
     private func tapHero() {
         Haptics.tap()
         heroTapPulse = true
@@ -2794,6 +2797,8 @@ struct HomeView: View {
                 style: .continuous
             )
         )
+        // Soft neutral elevation, matching the hero — cards float consistently.
+        .shadow(color: .black.opacity(0.05), radius: 10, y: 4)
     }
 
     @State private var shareableImage: UIImage?
@@ -3566,7 +3571,10 @@ private struct QuickLogBar: View {
             // own iconography (waveform, red stop button). Doubling up the
             // red on the background made the capsule feel alarmed; calmer
             // base + sharper ring reads as "engaged" without "warning".
-            Capsule().fill(Color.tulaCardSurface)
+            Capsule()
+                .fill(Color.tulaCardSurface)
+                // Soft neutral float, consistent with the hero and Recent cards.
+                .shadow(color: .black.opacity(0.05), radius: 8, y: 3)
         )
         .overlay(
             Capsule()
@@ -3624,9 +3632,10 @@ private struct QuickLogBar: View {
     /// that signals "alive" without distracting from the user's reading.
     @State private var glowPulse: CGFloat = 1.0
 
-    /// Stroke color for the amber glow when smart parsing is active.
+    /// Stroke color: amber ring while smart parsing; otherwise a faint hairline
+    /// so the field reads as a crisp, defined control rather than a flat blob.
     private var capsuleStrokeColor: Color {
-        isSmartParsing ? Color.tulaBrandFallback.opacity(0.55) : .clear
+        isSmartParsing ? Color.tulaBrandFallback.opacity(0.55) : Color.primary.opacity(0.06)
     }
 
     /// Glow color for the shadow ring. Always amber when AI is active —
