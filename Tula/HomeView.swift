@@ -528,12 +528,22 @@ struct HomeView: View {
     // MARK: - Body
 
     private var scrollBackground: some View {
-        // Clean, flat canvas. Premium/airy comes from the cards, spacing, and
-        // typography — not a background wash (which reads uneven and heavy).
-        Color.tulaBackground
-            .ignoresSafeArea()
-            .accessibilityHidden(true)
-            .onTapGesture { hideKeyboard() }
+        // Mostly-flat canvas with a *very* subtle warm tint at the very top that
+        // fades into the background within the header — a whisper of depth, not
+        // a wash.
+        LinearGradient(
+            colors: [
+                Color.tulaBrandFallback.opacity(0.18),
+                Color.tulaBrandFallback.opacity(0.06),
+                Color.tulaBackground
+            ],
+            startPoint: .top,
+            endPoint: UnitPoint(x: 0.5, y: 0.45)
+        )
+        .background(Color.tulaBackground)
+        .ignoresSafeArea()
+        .accessibilityHidden(true)
+        .onTapGesture { hideKeyboard() }
     }
 
     var body: some View {
@@ -769,8 +779,9 @@ struct HomeView: View {
     private var scrollContent: some View {
         VStack(alignment: .leading, spacing: Spacing.xxl) {
             heroSection
-                .shadow(color: .black.opacity(0.05), radius: 8, y: 4)
-                .shadow(color: pageAccentColor.opacity(0.18), radius: 28, y: 6)
+                // Neutral drop shadow only — the category-colored glow was
+                // mixing with the top background gradient.
+                .shadow(color: .black.opacity(0.08), radius: 12, y: 6)
             if !networkMonitor.isConnected {
                 offlineBanner
                     .transition(.move(edge: .top).combined(with: .opacity))
