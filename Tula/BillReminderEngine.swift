@@ -181,7 +181,7 @@ enum BillReminderEngine {
             }
         }
 
-        try? context.save()
+        context.safeSave()
         WidgetRefresh.refresh(using: context)
         NotificationManager.refreshDailyReminder(using: context)
     }

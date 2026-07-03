@@ -113,7 +113,7 @@ struct UpdateBalanceView: View {
             source: .manual,
             in: context
         )
-        try? context.save(); WidgetRefresh.refresh(using: context)
+        context.safeSave(); WidgetRefresh.refresh(using: context)
         Haptics.success()
         dismiss()
     }

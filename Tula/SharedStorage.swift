@@ -179,3 +179,23 @@ final class DarwinNotificationObserver {
         self.observer = nil
     }
 }
+
+// MARK: - Safe Save
+
+import SwiftData
+
+extension ModelContext {
+    /// Save with error visibility in debug builds. Replaces bare
+    /// `try? context.save()` — same silent behavior in release,
+    /// but crashes in debug so data-loss bugs surface early.
+    func safeSave(file: String = #file, line: Int = #line) {
+        do {
+            try save()
+        } catch {
+            #if DEBUG
+            let location = URL(fileURLWithPath: file).lastPathComponent
+            assertionFailure("ModelContext.save() failed at \(location):\(line) — \(error)")
+            #endif
+        }
+    }
+}

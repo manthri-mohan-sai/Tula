@@ -82,7 +82,7 @@ enum RecurringEngine {
         }
 
         if didGenerateAnything {
-            try? context.save()
+            context.safeSave()
         }
     }
 

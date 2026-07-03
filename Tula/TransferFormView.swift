@@ -134,7 +134,7 @@ struct TransferFormView: View {
                             Button("Delete", role: .destructive) {
                                 if let transfer = existingTransfer {
                                     context.delete(transfer)
-                                    try? context.save(); WidgetRefresh.refresh(using: context)
+                                    context.safeSave(); WidgetRefresh.refresh(using: context)
                                     Haptics.warning()
                                 }
                                 dismiss()
@@ -477,7 +477,7 @@ struct TransferFormView: View {
                 )
             }
         }
-        try? context.save(); WidgetRefresh.refresh(using: context)
+        context.safeSave(); WidgetRefresh.refresh(using: context)
         Haptics.success()
         dismiss()
     }

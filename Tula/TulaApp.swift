@@ -148,6 +148,7 @@ struct TulaApp: App {
                             let bgContext = ModelContext(container)
                             SeedData.installMissingDefaultMerchantRules(into: bgContext)
                             RecurringEngine.generateMissing(in: bgContext)
+                            cleanupOldReceipts(in: bgContext)
                             await MainActor.run {
                                 let ctx = ModelContext(container)
                                 WidgetRefresh.refresh(using: ctx)
@@ -269,6 +270,28 @@ struct TulaApp: App {
     }
 }
 
+
+// MARK: - Receipt Auto-Delete
+
+/// Strips receipt images from expenses older than the configured threshold.
+/// Only removes the image data — the expense record itself is preserved.
+/// Called on app launch in a background context so it never blocks UI.
+nonisolated func cleanupOldReceipts(in context: ModelContext) {
+    let days = UserDefaults.standard.integer(forKey: "receiptAutoDeleteDays")
+    guard days > 0 else { return }
+
+    let cutoff = Calendar.current.date(byAdding: .day, value: -days, to: .now) ?? .distantPast
+    var descriptor = FetchDescriptor<Expense>(
+        predicate: #Predicate { $0.date < cutoff && $0.receiptImageData != nil }
+    )
+    descriptor.fetchLimit = 500  // batch to avoid memory spikes
+
+    guard let stale = try? context.fetch(descriptor), !stale.isEmpty else { return }
+    for expense in stale {
+        expense.receiptImageData = nil
+    }
+    context.safeSave()
+}
 
 // MARK: - Upcoming Recurrings Builder
 

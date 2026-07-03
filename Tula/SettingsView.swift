@@ -779,6 +779,17 @@ struct SettingsView: View {
             settingsLinkRow(title: "Receipt Gallery", icon: "photo.on.rectangle", color: .orange) {
                 showingReceiptGallery = true
             }
+            Picker(selection: $receiptAutoDeleteDays) {
+                Text("Never").tag(0)
+                Text("After 30 Days").tag(30)
+                Text("After 90 Days").tag(90)
+                Text("After 6 Months").tag(180)
+                Text("After 1 Year").tag(365)
+            } label: {
+                settingsLabel("Auto-Delete Receipts",
+                              icon: "clock.badge.xmark",
+                              color: .orange)
+            }
             settingsLinkRow(title: "Transfer", icon: "arrow.left.arrow.right", color: .blue) {
                 showingTransfer = true
             }
@@ -791,12 +802,31 @@ struct SettingsView: View {
         } header: {
             Text("Tools")
         } footer: {
-            Text("Save your expenses as a CSV spreadsheet or PDF report.")
+            if receiptAutoDeleteDays > 0 {
+                Text("Receipt images will be removed from expenses older than \(receiptAutoDeleteLabel.lowercased()). The expense record itself is kept.")
+            } else {
+                Text("Save your expenses as a CSV spreadsheet or PDF report.")
+            }
         }
     }
 
     @AppStorage("appLockEnabled") private var appLockEnabled: Bool = false
     @AppStorage("appLockDelay") private var appLockDelay: Int = 0
+
+    /// How many days to keep receipt images before auto-deleting.
+    /// 0 = never delete (default).
+    @AppStorage("receiptAutoDeleteDays") private var receiptAutoDeleteDays: Int = 0
+
+    private var receiptAutoDeleteLabel: String {
+        switch receiptAutoDeleteDays {
+        case 0:   return "Never"
+        case 30:  return "30 Days"
+        case 90:  return "90 Days"
+        case 180: return "6 Months"
+        case 365: return "1 Year"
+        default:  return "Never"
+        }
+    }
 
     private var lockDelayLabel: String {
         switch appLockDelay {
@@ -860,6 +890,7 @@ struct SettingsView: View {
                     settingsLabel("Reset to Default Location", icon: "arrow.counterclockwise", color: .red)
                 }
             }
+
         } header: {
             Text("Privacy")
         } footer: {

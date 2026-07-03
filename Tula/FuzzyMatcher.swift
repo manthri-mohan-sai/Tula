@@ -149,10 +149,25 @@ enum FuzzyMatcher {
     /// Strips spaces, hyphens, apostrophes, and other non-alphanumeric
     /// characters. Useful for matching "icecream" against "ice cream"
     /// or "levis" against "levi's". Lowercased input expected.
-    private static func normalize(_ s: String) -> String {
+    /// Strip everything except letters and digits. "D Mart" → "dmart",
+    /// "ice-cream" → "icecream", "levi's" → "levis".
+    static func normalize(_ s: String) -> String {
         s.unicodeScalars
             .filter { CharacterSet.alphanumerics.contains($0) }
             .reduce(into: "") { $0.append(Character($1)) }
+    }
+
+    /// Search-friendly containment. Returns true if `target` contains
+    /// `query` either literally or after stripping spaces/punctuation.
+    /// Both inputs should be lowercased by the caller.
+    ///
+    ///     searchContains("d mart", query: "dmart")  // true
+    ///     searchContains("d mart", query: "mart")   // true
+    static func searchContains(_ target: String, query: String) -> Bool {
+        if target.contains(query) { return true }
+        let nq = normalize(query)
+        guard !nq.isEmpty else { return false }
+        return normalize(target).contains(nq)
     }
 
     // MARK: - Dice Coefficient (Bigram Similarity)

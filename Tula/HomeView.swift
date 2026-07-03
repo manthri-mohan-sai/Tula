@@ -585,7 +585,7 @@ struct HomeView: View {
                                 from: expense.date
                             )
                         )
-                        try? context.save()
+                        context.safeSave()
                         WidgetRefresh.refresh(using: context)
                         NotificationManager.refreshDailyReminder(using: context)
                         if let acct = expense.account {
@@ -598,7 +598,7 @@ struct HomeView: View {
                     },
                     onEdit: { expense in
                         context.insert(expense)
-                        try? context.save()
+                        context.safeSave()
                         // Slight delay so fullScreenCover dismisses before
                         // the edit sheet appears — avoids SwiftUI sheet
                         // conflicts.
@@ -620,7 +620,7 @@ struct HomeView: View {
                                 )
                             )
                         }
-                        try? context.save()
+                        context.safeSave()
                         WidgetRefresh.refresh(using: context)
                         NotificationManager.refreshDailyReminder(using: context)
                         if let last = expenses.last?.account {
@@ -1229,7 +1229,7 @@ struct HomeView: View {
                         )
                     )
                 }
-                try? context.save()
+                context.safeSave()
                 WidgetRefresh.refresh(using: context)
                 NotificationManager.refreshDailyReminder(using: context)
                 if let last = expenses.last?.account {
@@ -1279,7 +1279,7 @@ struct HomeView: View {
             lastAccount = account
             savedExpenses.append(expense)
         }
-        try? context.save()
+        context.safeSave()
         WidgetRefresh.refresh(using: context)
         if let last = lastAccount { lastUsedAccountID = last.id.uuidString }
         Haptics.success()
@@ -1291,7 +1291,7 @@ struct HomeView: View {
             for expense in undoTargets {
                 context.delete(expense)
             }
-            try? context.save()
+            context.safeSave()
             WidgetRefresh.refresh(using: context)
             Haptics.warning()
         }
@@ -1390,7 +1390,7 @@ struct HomeView: View {
                     {
                         item.expense.merchant = m
                     }
-                    try? context.save()
+                    context.safeSave()
                     WidgetRefresh.refresh(using: context)
                 }
 
@@ -2289,7 +2289,7 @@ struct HomeView: View {
             if rule.isBill {
                 rule.lastPaidDate = .now
             }
-            try? context.save()
+            context.safeSave()
             WidgetRefresh.refresh(using: context)
         }
         NotificationManager.cancelConfirmation(ruleID: rule.id, dueDate: date)
@@ -2307,7 +2307,7 @@ struct HomeView: View {
             if rule.isBill {
                 rule.lastPaidDate = .now
             }
-            try? context.save()
+            context.safeSave()
             WidgetRefresh.refresh(using: context)
         }
         NotificationManager.cancelConfirmation(ruleID: rule.id, dueDate: date)
@@ -2339,7 +2339,7 @@ struct HomeView: View {
             if rule.isBill {
                 rule.lastPaidDate = .now
             }
-            try? context.save()
+            context.safeSave()
             WidgetRefresh.refresh(using: context)
         }
         NotificationManager.cancelConfirmation(ruleID: rule.id, dueDate: date)
@@ -2872,7 +2872,7 @@ struct HomeView: View {
             account: expense.account
         )
         context.insert(copy)
-        try? context.save()
+        context.safeSave()
         WidgetRefresh.refresh(using: context)
         Haptics.success()
         showToast("Duplicated")
@@ -2890,7 +2890,7 @@ struct HomeView: View {
             account: expense.account
         )
         context.insert(template)
-        try? context.save()
+        context.safeSave()
         WidgetRefresh.refresh(using: context)
         editingExpense = template
     }
@@ -2898,7 +2898,7 @@ struct HomeView: View {
     private func delete(_ expense: Expense) {
         Haptics.warning()
         context.delete(expense)
-        try? context.save()
+        context.safeSave()
         WidgetRefresh.refresh(using: context)
         NotificationManager.refreshDailyReminder(using: context)
         showToast("Deleted")

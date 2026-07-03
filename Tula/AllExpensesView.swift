@@ -59,10 +59,10 @@ struct AllExpensesView: View {
         let trimmed = searchText.trimmingCharacters(in: .whitespaces).lowercased()
         guard !trimmed.isEmpty else { return afterFilters }
         return afterFilters.filter { expense in
-            if let m = expense.merchant?.lowercased(), m.contains(trimmed) { return true }
-            if let n = expense.note?.lowercased(), n.contains(trimmed) { return true }
-            if let c = expense.category?.name.lowercased(), c.contains(trimmed) { return true }
-            if let a = expense.account?.name.lowercased(), a.contains(trimmed) { return true }
+            if let m = expense.merchant?.lowercased(), FuzzyMatcher.searchContains(m, query: trimmed) { return true }
+            if let n = expense.note?.lowercased(), FuzzyMatcher.searchContains(n, query: trimmed) { return true }
+            if let c = expense.category?.name.lowercased(), FuzzyMatcher.searchContains(c, query: trimmed) { return true }
+            if let a = expense.account?.name.lowercased(), FuzzyMatcher.searchContains(a, query: trimmed) { return true }
             if let queryAmount = Double(trimmed), abs(expense.amount - queryAmount) < 0.01 {
                 return true
             }
@@ -368,7 +368,7 @@ struct AllExpensesView: View {
             account: expense.account
         )
         context.insert(copy)
-        try? context.save(); WidgetRefresh.refresh(using: context)
+        context.safeSave(); WidgetRefresh.refresh(using: context)
         NotificationManager.refreshDailyReminder(using: context)
         Haptics.success()
     }
@@ -376,7 +376,7 @@ struct AllExpensesView: View {
     private func delete(_ expense: Expense) {
         Haptics.warning()
         context.delete(expense)
-        try? context.save()
+        context.safeSave()
         WidgetRefresh.refresh(using: context)
         NotificationManager.refreshDailyReminder(using: context)
     }

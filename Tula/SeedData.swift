@@ -24,7 +24,7 @@ enum SeedData {
         // so we no longer seed defaults here to avoid duplicates.
         installMerchantRules(into: context, categories: categories)
 
-        try? context.save()
+        context.safeSave()
     }
 
     /// Idempotent installer that adds any default rules missing from the DB.
@@ -57,7 +57,7 @@ enum SeedData {
         }
 
         if inserted > 0 {
-            try? context.save()
+            context.safeSave()
         }
     }
 

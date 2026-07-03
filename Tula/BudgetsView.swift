@@ -275,7 +275,7 @@ struct BudgetsView: View {
     private func delete(_ budget: Budget) {
         Haptics.warning()
         context.delete(budget)
-        try? context.save()
+        context.safeSave()
     }
 }
 
@@ -742,6 +742,10 @@ struct BudgetCard: View {
         if remaining <= 0 {
             return "Fully used · \(daysLeftLabel)"
         }
+        if daysLeft > 0 {
+            let daily = remaining / Double(daysLeft)
+            return "\(Currency.format(daily, code: currencyCode))/day · \(daysLeftLabel)"
+        }
         return "\(Currency.format(remaining, code: currencyCode)) left · \(daysLeftLabel)"
     }
 
@@ -1145,7 +1149,7 @@ struct BudgetTransactionsView: View {
         Haptics.warning()
         withAnimation(.easeInOut(duration: 0.3)) {
             context.delete(expense)
-            try? context.save()
+            context.safeSave()
         }
     }
 }

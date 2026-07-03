@@ -126,13 +126,13 @@ struct CategoriesView: View {
         for (index, cat) in items.enumerated() {
             cat.sortOrder = index * 10
         }
-        try? context.save()
+        context.safeSave()
         Haptics.tap()
     }
 
     private func unarchive(_ cat: Category) {
         cat.isArchived = false
-        try? context.save()
+        context.safeSave()
         Haptics.success()
     }
 }
@@ -477,7 +477,7 @@ struct CategoryFormView: View {
             )
             context.insert(cat)
         }
-        try? context.save()
+        context.safeSave()
         Haptics.success()
         dismiss()
     }
@@ -493,14 +493,14 @@ struct CategoryFormView: View {
 
     private func archive() {
         existingCategory?.isArchived = true
-        try? context.save()
+        context.safeSave()
         dismiss()
     }
 
     private func delete() {
         guard let cat = existingCategory else { return }
         context.delete(cat)
-        try? context.save()
+        context.safeSave()
         dismiss()
     }
 }

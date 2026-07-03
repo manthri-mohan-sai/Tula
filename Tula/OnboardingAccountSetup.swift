@@ -96,7 +96,7 @@ struct OnboardingAccountSetup: View {
             sortOrder: createdKinds.count
         )
         context.insert(account)
-        try? context.save()
+        context.safeSave()
 
         Haptics.success()
         _ = withAnimation(AppAnimation.bouncy) {

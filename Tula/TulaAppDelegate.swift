@@ -79,7 +79,7 @@ final class TulaAppDelegate: NSObject, UIApplicationDelegate, UNUserNotification
             }
             let context = ModelContext(container)
             RecurringEngine.generateMissing(in: context)
-            try? context.save()
+            context.safeSave()
             WidgetRefresh.refresh(
                 using: context,
                 upcomingRecurrings: buildUpcomingRecurrings(in: context)
@@ -260,7 +260,7 @@ enum RecurringConfirmationHandler {
         if rule.lastGeneratedDate == nil || rule.lastGeneratedDate! < dueDate {
             rule.lastGeneratedDate = dueDate
         }
-        try? context.save(); WidgetRefresh.refresh(using: context)
+        context.safeSave(); WidgetRefresh.refresh(using: context)
         NotificationManager.refreshDailyReminder(using: context)
     }
 
@@ -276,7 +276,7 @@ enum RecurringConfirmationHandler {
         guard let rule = (try? context.fetch(descriptor))?.first else { return }
 
         RecurringEngine.skipOccurrence(rule: rule, dueDate: dueDate)
-        try? context.save(); WidgetRefresh.refresh(using: context)
+        context.safeSave(); WidgetRefresh.refresh(using: context)
     }
 
     /// Re-runs the confirmation scheduling logic for all active rules.
@@ -286,7 +286,7 @@ enum RecurringConfirmationHandler {
         guard let container = makeContainer() else { return }
         let context = ModelContext(container)
         RecurringEngine.generateMissing(in: context)
-        try? context.save()
+        context.safeSave()
         WidgetRefresh.refresh(using: context)
     }
 }

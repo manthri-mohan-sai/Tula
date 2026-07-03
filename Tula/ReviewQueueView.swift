@@ -141,7 +141,7 @@ struct ReviewQueueView: View {
         withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) {
             expense.category = category
         }
-        try? context.save()
+        context.safeSave()
 
         // Only prompt to create a rule if there's a clean merchant string
         // and no existing rule covers it. Avoids dialog fatigue on common
@@ -169,7 +169,7 @@ struct ReviewQueueView: View {
             isUserDefined: true
         )
         context.insert(rule)
-        try? context.save()
+        context.safeSave()
         Haptics.success()
     }
 }

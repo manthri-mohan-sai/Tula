@@ -107,7 +107,7 @@ struct AccountsView: View {
         withAnimation(AppAnimation.gentle) {
             account.isArchived = false
         }
-        try? context.save()
+        context.safeSave()
     }
 }
 
@@ -518,20 +518,20 @@ struct AccountFormView: View {
             )
             context.insert(account)
         }
-        try? context.save()
+        context.safeSave()
         dismiss()
     }
 
     private func archive() {
         existingAccount?.isArchived = true
-        try? context.save()
+        context.safeSave()
         dismiss()
     }
 
     private func delete() {
         guard let existingAccount else { return }
         context.delete(existingAccount)
-        try? context.save()
+        context.safeSave()
         dismiss()
     }
 }

@@ -2,7 +2,7 @@ import SwiftUI
 import SwiftData
 
 /// Gallery view showing all expenses that have receipt images attached.
-/// Displays a grid of receipt thumbnails; tapping opens the full receipt
+/// Organized by month with search. Tapping a thumbnail opens the expense
 /// in AddExpenseView for viewing/editing.
 struct ReceiptGalleryView: View {
     @Environment(\.modelContext) private var context
@@ -10,11 +10,39 @@ struct ReceiptGalleryView: View {
     @Query(sort: \Expense.date, order: .reverse) private var allExpenses: [Expense]
     @PrimaryCurrency private var currencyCode
 
+    @State private var searchText: String = ""
+    @State private var editingExpense: Expense?
+
     private var receipts: [Expense] {
-        allExpenses.filter { $0.receiptImageData != nil }
+        let withReceipts = allExpenses.filter { $0.receiptImageData != nil }
+        let trimmed = searchText.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !trimmed.isEmpty else { return withReceipts }
+        return withReceipts.filter { expense in
+            if let m = expense.merchant?.lowercased(), FuzzyMatcher.searchContains(m, query: trimmed) { return true }
+            if let n = expense.note?.lowercased(), FuzzyMatcher.searchContains(n, query: trimmed) { return true }
+            if let c = expense.category?.name.lowercased(), FuzzyMatcher.searchContains(c, query: trimmed) { return true }
+            return false
+        }
     }
 
-    @State private var editingExpense: Expense?
+    private struct MonthSection: Identifiable {
+        let id: Date          // first day of month (stable identity)
+        let label: String     // "July 2026"
+        let receipts: [Expense]
+    }
+
+    private var sections: [MonthSection] {
+        let cal = Calendar.current
+        let grouped = Dictionary(grouping: receipts) { expense in
+            cal.dateInterval(of: .month, for: expense.date)?.start ?? expense.date
+        }
+        return grouped
+            .sorted { $0.key > $1.key }
+            .map { (monthStart, expenses) in
+                let label = monthStart.formatted(.dateTime.month(.wide).year())
+                return MonthSection(id: monthStart, label: label, receipts: expenses)
+            }
+    }
 
     private let columns = [
         GridItem(.flexible(), spacing: Spacing.sm),
@@ -25,12 +53,33 @@ struct ReceiptGalleryView: View {
     var body: some View {
         Group {
             if receipts.isEmpty {
-                emptyState
+                if searchText.isEmpty {
+                    emptyState
+                } else {
+                    ContentUnavailableView.search(text: searchText)
+                }
             } else {
                 ScrollView {
-                    LazyVGrid(columns: columns, spacing: Spacing.sm) {
-                        ForEach(receipts) { expense in
-                            receiptThumbnail(expense)
+                    LazyVStack(alignment: .leading, spacing: Spacing.lg) {
+                        ForEach(sections) { section in
+                            VStack(alignment: .leading, spacing: Spacing.sm) {
+                                HStack {
+                                    Text(section.label)
+                                        .font(.subheadline.weight(.semibold))
+                                        .foregroundStyle(.secondary)
+                                    Spacer()
+                                    Text("\(section.receipts.count)")
+                                        .font(.caption.weight(.medium))
+                                        .foregroundStyle(.tertiary)
+                                }
+                                .padding(.horizontal, Spacing.xs)
+
+                                LazyVGrid(columns: columns, spacing: Spacing.sm) {
+                                    ForEach(section.receipts) { expense in
+                                        receiptThumbnail(expense)
+                                    }
+                                }
+                            }
                         }
                     }
                     .padding(Spacing.md)
@@ -39,6 +88,11 @@ struct ReceiptGalleryView: View {
         }
         .navigationTitle("Receipts")
         .navigationBarTitleDisplayMode(.inline)
+        .searchable(
+            text: $searchText,
+            placement: .navigationBarDrawer(displayMode: .automatic),
+            prompt: "Search by merchant, note, or category"
+        )
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button("Done") { dismiss() }

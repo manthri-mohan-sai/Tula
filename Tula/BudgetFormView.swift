@@ -317,7 +317,7 @@ struct BudgetFormView: View {
             context.insert(new)
         }
 
-        try? context.save()
+        context.safeSave()
         Haptics.success()
         dismiss()
     }
@@ -325,7 +325,7 @@ struct BudgetFormView: View {
     private func deleteBudget() {
         guard let b = existingBudget else { return }
         context.delete(b)
-        try? context.save()
+        context.safeSave()
         Haptics.warning()
         dismiss()
     }

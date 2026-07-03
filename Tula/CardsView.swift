@@ -474,7 +474,7 @@ struct CardsView: View {
     private func delete(_ expense: Expense) {
         withAnimation {
             context.delete(expense)
-            try? context.save()
+            context.safeSave()
         }
         WidgetRefresh.refresh(using: context)
         NotificationManager.refreshDailyReminder(using: context)
@@ -491,7 +491,7 @@ struct CardsView: View {
     private func archive(_ account: Account) {
         let wasActive = activeCardID == account.id
         account.isArchived = true
-        try? context.save()
+        context.safeSave()
         Haptics.success()
 
         // Shift focus if we just archived the visible card. Picks the

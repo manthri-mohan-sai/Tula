@@ -267,7 +267,7 @@ struct RecurringRulesView: View {
                         rule.lastPaidDate = .now
                     }
                 }
-                try? context.save()
+                context.safeSave()
             }
         } else {
             guard let nextDue = RecurringEngine.nextDueDate(for: rule) else { return }
@@ -276,7 +276,7 @@ struct RecurringRulesView: View {
             withAnimation(AppAnimation.snappy) {
                 rule.isPaused = true
                 rule.pausedUntil = resumeDate
-                try? context.save()
+                context.safeSave()
             }
         }
         NotificationManager.cancelConfirmations(for: rule.id)
@@ -289,7 +289,7 @@ struct RecurringRulesView: View {
         withAnimation(AppAnimation.snappy) {
             rule.isPaused = true
             rule.pausedUntil = resumeDate
-            try? context.save()
+            context.safeSave()
         }
         NotificationManager.cancelConfirmations(for: rule.id)
         Haptics.success()
@@ -300,7 +300,7 @@ struct RecurringRulesView: View {
         withAnimation(AppAnimation.snappy) {
             rule.isPaused = false
             rule.pausedUntil = nil
-            try? context.save()
+            context.safeSave()
         }
         RecurringEngine.generateMissing(in: context)
         Haptics.success()
@@ -310,7 +310,7 @@ struct RecurringRulesView: View {
         NotificationManager.cancelConfirmations(for: rule.id)
         withAnimation(AppAnimation.snappy) {
             context.delete(rule)
-            try? context.save()
+            context.safeSave()
             WidgetRefresh.refresh(using: context)
         }
         Haptics.success()
@@ -354,7 +354,7 @@ struct RecurringRulesView: View {
             if rule.isBill {
                 rule.lastPaidDate = .now
             }
-            try? context.save()
+            context.safeSave()
             WidgetRefresh.refresh(using: context)
         }
         NotificationManager.cancelConfirmation(ruleID: rule.id, dueDate: date)
@@ -446,6 +446,12 @@ private struct RuleRow: View {
             }
             return "Paused"
         }
+        if hasOrphanedRelationship {
+            switch rule.kind {
+            case .expense:     return "Missing category or account"
+            case .transfer, .cardPayment: return "Missing linked account"
+            }
+        }
         if rule.isBill {
             let countdown = BillReminderEngine.countdownLabel(for: rule)
             return "\(countdown) · \(rule.cadenceLabel)"
@@ -455,6 +461,20 @@ private struct RuleRow: View {
             return "Next: \(nextStr) · \(rule.cadenceLabel)"
         }
         return rule.cadenceLabel.capitalized
+    }
+
+    /// True when a relationship this rule depends on has been deleted.
+    /// Expense rules need a category; transfer rules need from/to accounts.
+    /// Only warns for rules that have actually generated transactions
+    /// (lastGeneratedDate != nil), so brand-new rules aren't flagged.
+    private var hasOrphanedRelationship: Bool {
+        guard rule.lastGeneratedDate != nil else { return false }
+        switch rule.kind {
+        case .expense:
+            return rule.category == nil || rule.account == nil
+        case .transfer, .cardPayment:
+            return rule.fromAccount == nil || rule.toAccount == nil
+        }
     }
 
     /// Urgency color for bill countdown — green (>3d), amber (1-3d), red (overdue).
@@ -476,6 +496,14 @@ private struct RuleRow: View {
                 Image(systemName: icon)
                     .font(.subheadline.weight(.medium))
                     .foregroundStyle(color)
+            }
+            .overlay(alignment: .topTrailing) {
+                if hasOrphanedRelationship {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.orange)
+                        .offset(x: 4, y: -4)
+                }
             }
 
             VStack(alignment: .leading, spacing: 2) {
@@ -1166,7 +1194,7 @@ struct RecurringRuleFormView: View {
             applyChanges(to: rule)
             context.insert(rule)
         }
-        try? context.save(); WidgetRefresh.refresh(using: context)
+        context.safeSave(); WidgetRefresh.refresh(using: context)
         // Re-run the engine so any new confirmation rule starts firing
         // notifications immediately (and any edited rule picks up its
         // new time/amount), instead of waiting for the next app launch.
@@ -1249,7 +1277,7 @@ struct RecurringRuleFormView: View {
         // deleted rule — clear them before removal.
         NotificationManager.cancelConfirmations(for: rule.id)
         context.delete(rule)
-        try? context.save(); WidgetRefresh.refresh(using: context)
+        context.safeSave(); WidgetRefresh.refresh(using: context)
         Haptics.success()
         dismiss()
     }

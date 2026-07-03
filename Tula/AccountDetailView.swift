@@ -463,7 +463,7 @@ struct AccountDetailView: View {
             ) {
                 Button("Delete", role: .destructive) {
                     context.delete(adjustment)
-                    try? context.save(); WidgetRefresh.refresh(using: context)
+                    context.safeSave(); WidgetRefresh.refresh(using: context)
                     Haptics.warning()
                     deletingAdjustment = nil
                 }
@@ -532,17 +532,17 @@ enum TimelineItem: Identifiable {
         let q = query.lowercased()
         switch self {
         case .expense(let e):
-            if e.merchant?.lowercased().contains(q) == true { return true }
-            if e.note?.lowercased().contains(q) == true { return true }
-            if e.category?.name.lowercased().contains(q) == true { return true }
+            if let m = e.merchant?.lowercased(), FuzzyMatcher.searchContains(m, query: q) { return true }
+            if let n = e.note?.lowercased(), FuzzyMatcher.searchContains(n, query: q) { return true }
+            if let c = e.category?.name.lowercased(), FuzzyMatcher.searchContains(c, query: q) { return true }
             return false
         case .transferIn(let t), .transferOut(let t):
-            if t.note?.lowercased().contains(q) == true { return true }
-            if t.fromAccount?.name.lowercased().contains(q) == true { return true }
-            if t.toAccount?.name.lowercased().contains(q) == true { return true }
+            if let n = t.note?.lowercased(), FuzzyMatcher.searchContains(n, query: q) { return true }
+            if let f = t.fromAccount?.name.lowercased(), FuzzyMatcher.searchContains(f, query: q) { return true }
+            if let to = t.toAccount?.name.lowercased(), FuzzyMatcher.searchContains(to, query: q) { return true }
             return false
         case .adjustment(let a):
-            if a.note?.lowercased().contains(q) == true { return true }
+            if let n = a.note?.lowercased(), FuzzyMatcher.searchContains(n, query: q) { return true }
             return false
         }
     }

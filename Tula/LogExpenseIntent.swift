@@ -102,7 +102,7 @@ struct LogExpenseIntent: AppIntent {
             if let descriptor = d.category?.name ?? d.merchant { descriptors.append(descriptor) }
         }
 
-        try? context.save(); WidgetRefresh.refresh(using: context)
+        context.safeSave(); WidgetRefresh.refresh(using: context)
         postDarwinNotification(SharedNotifications.didSaveExpense)
 
         // Remember the last used account so subsequent Quick Log defaults work.

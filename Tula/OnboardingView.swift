@@ -638,7 +638,7 @@ struct OnboardingView: View {
         if monthlyBudgetAmount > 0 {
             let budget = Budget(amount: monthlyBudgetAmount, category: nil, period: .monthly)
             context.insert(budget)
-            try? context.save()
+            context.safeSave()
         }
         Haptics.success()
         // Setting onboardingComplete flips the sheet binding's getter to

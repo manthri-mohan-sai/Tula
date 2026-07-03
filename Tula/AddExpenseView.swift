@@ -2074,7 +2074,7 @@ struct AddExpenseView: View {
                 )
             }
 
-            try? context.save()
+            context.safeSave()
             WidgetRefresh.refresh(using: context)
             NotificationManager.refreshDailyReminder(using: context)
             if let first = splitRows.first?.account {
@@ -2147,7 +2147,7 @@ struct AddExpenseView: View {
         // doesn't see anything happen, but the app gets smarter with use.
         learnMerchantCategory()
         learnMerchantCorrection()
-        try? context.save(); WidgetRefresh.refresh(using: context)
+        context.safeSave(); WidgetRefresh.refresh(using: context)
         NotificationManager.refreshDailyReminder(using: context)
         lastUsedAccountID = account.id.uuidString
         Haptics.success()
@@ -2255,7 +2255,7 @@ struct AddExpenseView: View {
         guard let existingExpense else { return }
         withAnimation {
             context.delete(existingExpense)
-            try? context.save()
+            context.safeSave()
         }
         WidgetRefresh.refresh(using: context)
         NotificationManager.refreshDailyReminder(using: context)
