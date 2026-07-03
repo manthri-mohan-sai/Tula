@@ -298,7 +298,7 @@ struct ExpenseInterpreter {
 
         return joined
             .components(separatedBy: CharacterSet(charactersIn: ","))
-            .flatMap { $0.components(separatedBy: " and ") }
+            .flatMap { (s: String) -> [String] in s.components(separatedBy: " and ") }
             .map { part in
                 part.split(separator: " ")
                     .map(String.init)

@@ -439,7 +439,7 @@ enum NotificationManager {
     /// Category identifier on every confirmation notification. Tying
     /// them all to this category lets us register the Log/Skip actions
     /// once at app launch and have iOS show them on every fire.
-    static let confirmCategoryID = "tula.recurring.confirm"
+    nonisolated static let confirmCategoryID = "tula.recurring.confirm"
     /// Category for bill reminder notifications with "Pay Now" action.
     static let billCategoryID = "tula.bill.reminder"
     static let billPayActionID = "tula.bill.pay"
@@ -449,7 +449,7 @@ enum NotificationManager {
     /// Stable identifier prefix for confirmation notification requests.
     /// Format: `{prefix}{ruleUUID}-{dueDateEpoch}` — both pieces are
     /// recoverable from the request ID alone if userInfo is ever lost.
-    private static let confirmRequestPrefix = "tula.confirm."
+    nonisolated private static let confirmRequestPrefix = "tula.confirm."
 
     /// Registers the iOS notification category that gives confirmation
     /// notifications their two action buttons. Call once at app launch.
@@ -491,7 +491,7 @@ enum NotificationManager {
     /// Schedules a single confirmation notification for the given rule at
     /// the given due date. Existing request with the same identifier is
     /// replaced — safe to call repeatedly across app launches.
-    static func scheduleConfirmation(ruleID: UUID, ruleName: String,
+    nonisolated static func scheduleConfirmation(ruleID: UUID, ruleName: String,
                                        amount: Double, currencyCode: String,
                                        dueDate: Date, isBill: Bool = false) {
         let content = UNMutableNotificationContent()
@@ -647,7 +647,7 @@ enum NotificationManager {
     /// Builds the stable per-occurrence identifier. The dueDate is
     /// floored to whole seconds so identical dates always produce
     /// identical IDs (iOS will dedupe re-adds).
-    private static func identifier(for ruleID: UUID, dueDate: Date) -> String {
+    nonisolated private static func identifier(for ruleID: UUID, dueDate: Date) -> String {
         "\(confirmRequestPrefix)\(ruleID.uuidString)-\(Int(dueDate.timeIntervalSince1970))"
     }
 

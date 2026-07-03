@@ -275,7 +275,7 @@ struct TulaApp: App {
 /// Builds the next 3 recurring expenses due for embedding in the widget snapshot.
 /// Kept separate from WidgetRefresh (which lives in a shared file) because it
 /// depends on RecurringEngine, which is not compiled into the share extension.
-func buildUpcomingRecurrings(in context: ModelContext) -> [WidgetSnapshot.UpcomingRecurring] {
+nonisolated func buildUpcomingRecurrings(in context: ModelContext) -> [WidgetSnapshot.UpcomingRecurring] {
     let rulesFetch = FetchDescriptor<RecurringRule>(
         predicate: #Predicate { $0.isPaused == false }
     )

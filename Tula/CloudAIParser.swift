@@ -1235,7 +1235,8 @@ enum CloudAIParser {
             }
         }
         aiLog.error("[\(label)] All \(modelsToTry.count) models rate-limited")
-        await MainActor.run { lastParseError = lastErrorMessage }
+        let finalMessage = lastErrorMessage
+        await MainActor.run { lastParseError = finalMessage }
         return nil
     }
 
@@ -1443,7 +1444,7 @@ enum CloudAIParser {
     ///   0.80, converted to grayscale (DeviceGray CGContext, no CIContext GPU
     ///   cost). Saves ~50% payload; thermal receipts carry no colour signal.
     /// - Other camera photos: 1280px, JPEG 0.80, colour retained.
-    static func prepareImageForGemini(_ image: UIImage) -> Data? {
+    nonisolated static func prepareImageForGemini(_ image: UIImage) -> Data? {
         let size        = image.size
         let longEdge    = max(size.width, size.height)
         let shortEdge   = min(size.width, size.height)
@@ -1478,7 +1479,7 @@ enum CloudAIParser {
         return prepared.jpegData(compressionQuality: quality)
     }
 
-    private static func resizeForGemini(_ image: UIImage, maxDimension: CGFloat) -> UIImage {
+    nonisolated private static func resizeForGemini(_ image: UIImage, maxDimension: CGFloat) -> UIImage {
         let size    = image.size
         let longest = max(size.width, size.height)
         guard longest > maxDimension else { return image }
@@ -1495,7 +1496,7 @@ enum CloudAIParser {
 
     /// Grayscale via CGContext DeviceGray — avoids CIContext GPU allocation,
     /// keeping memory pressure low inside the share extension.
-    private static func grayscaleForGemini(_ image: UIImage) -> UIImage? {
+    nonisolated private static func grayscaleForGemini(_ image: UIImage) -> UIImage? {
         guard let cgImage = image.cgImage else { return nil }
         let ctx = CGContext(
             data: nil,

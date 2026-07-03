@@ -132,7 +132,7 @@ enum AppAnimation {
     /// Cached per process — the value doesn't change while the app is running.
     /// `nonisolated(unsafe)` because the value is set once at process start
     /// and never mutated — safe to read from any isolation context.
-    nonisolated(unsafe) static let reduceMotion: Bool = UIAccessibility.isReduceMotionEnabled
+    nonisolated static let reduceMotion: Bool = UIAccessibility.isReduceMotionEnabled
 
     /// Returns a minimal crossfade when Reduce Motion is on, otherwise the
     /// full spring. Every `withAnimation(AppAnimation.adaptive(.bouncy))`

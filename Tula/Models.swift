@@ -587,7 +587,7 @@ enum CustomIntervalUnit: String, Codable, CaseIterable, Identifiable {
         }
     }
 
-    var calendarComponent: Calendar.Component {
+    nonisolated var calendarComponent: Calendar.Component {
         switch self {
         case .day:   return .day
         case .week:  return .weekOfYear

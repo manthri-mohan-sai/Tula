@@ -112,7 +112,7 @@ struct OnboardingFeatureDemo: View {
             phase = .typing
 
             // Type each character
-            for (i, char) in fullText.enumerated() {
+            for (i, _) in fullText.enumerated() {
                 try? await Task.sleep(for: .milliseconds(60))
                 typedText = String(fullText.prefix(i + 1))
                 if i == 2 || i == 9 { Haptics.tap() }

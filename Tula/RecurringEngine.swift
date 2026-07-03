@@ -12,7 +12,7 @@ import SwiftData
 /// creates a transaction for each missed occurrence up to today.
 enum RecurringEngine {
 
-    static func generateMissing(in context: ModelContext) {
+    nonisolated static func generateMissing(in context: ModelContext) {
         let descriptor = FetchDescriptor<RecurringRule>()
         guard let rules = try? context.fetch(descriptor) else { return }
 
@@ -94,7 +94,7 @@ enum RecurringEngine {
     /// The per-rule cap is dynamic: 60 (leaving headroom from iOS's 64
     /// limit) divided among all active confirmation rules, with a floor
     /// of 7 (one week of daily notifications minimum).
-    private static func scheduleUpcomingConfirmations(
+    nonisolated private static func scheduleUpcomingConfirmations(
         for rule: RecurringRule,
         calendar: Calendar,
         totalConfirmRules: Int
@@ -178,7 +178,7 @@ enum RecurringEngine {
     }
 
     /// Replaces the hour and minute of a date, preserving year/month/day.
-    private static func overrideTime(of date: Date, hour: Int, minute: Int, calendar: Calendar) -> Date {
+    nonisolated private static func overrideTime(of date: Date, hour: Int, minute: Int, calendar: Calendar) -> Date {
         var comps = calendar.dateComponents([.year, .month, .day], from: date)
         comps.hour = hour
         comps.minute = minute
@@ -188,7 +188,7 @@ enum RecurringEngine {
 
     /// Returns the next date strictly after `date` that the rule should fire.
     /// Dispatches to the per-frequency helpers below.
-    private static func nextOccurrence(
+    nonisolated private static func nextOccurrence(
         strictlyAfter date: Date,
         rule: RecurringRule,
         calendar: Calendar
@@ -226,7 +226,7 @@ enum RecurringEngine {
     /// Weekly: anchored to startDate's time of day. Fires on every weekday
     /// whose bit is set in `weekdaysMask`. If `weekdaysMask == 0`, falls
     /// back to firing on startDate's weekday only (legacy single-day mode).
-    private static func nextWeekly(
+    nonisolated private static func nextWeekly(
         strictlyAfter date: Date,
         anchoredTo anchor: Date,
         weekdaysMask: Int,
@@ -286,7 +286,7 @@ enum RecurringEngine {
     /// regardless of the rule's specified time — meaning a "1st of the
     /// month at 6pm rent reminder" would fire at 9am, ignoring user
     /// intent. Now respects the anchor's hour/minute.
-    private static func nextMonthly(
+    nonisolated private static func nextMonthly(
         strictlyAfter date: Date,
         dayOfMonth: Int,
         anchoredTo anchor: Date,
@@ -326,7 +326,7 @@ enum RecurringEngine {
 
     /// Yearly: fires on the same month + day as the anchor (start date),
     /// every year. Falls back to clamped end-of-month for Feb 29 anchors.
-    private static func nextYearly(
+    nonisolated private static func nextYearly(
         strictlyAfter date: Date,
         anchoredTo anchor: Date,
         calendar: Calendar
@@ -362,7 +362,7 @@ enum RecurringEngine {
     /// so DST/calendar-month boundaries are handled correctly (months
     /// have varying lengths; date arithmetic on raw intervals would
     /// drift over the year).
-    private static func nextCustom(
+    nonisolated private static func nextCustom(
         strictlyAfter date: Date,
         anchoredTo anchor: Date,
         interval: Int,
@@ -393,7 +393,7 @@ enum RecurringEngine {
     /// into the given context. Marked `internal` (no access level) so the
     /// notification-response handler can call it when the user taps
     /// "Log it" on a confirmation notification.
-    static func createTransaction(rule: RecurringRule, date: Date, in context: ModelContext, fallbackName: String? = nil, customAmount: Double? = nil) {
+    nonisolated static func createTransaction(rule: RecurringRule, date: Date, in context: ModelContext, fallbackName: String? = nil, customAmount: Double? = nil) {
         let effectiveAmount = customAmount ?? rule.amount
         switch rule.kind {
         case .expense:
@@ -467,7 +467,7 @@ enum RecurringEngine {
     /// forward through occurrences until we find one that hasn't fired
     /// yet. Capped at 366 iterations (one year of daily slots) as a safety
     /// guard — a misconfigured rule shouldn't be able to spin forever.
-    static func nextDueDate(for rule: RecurringRule) -> Date? {
+    nonisolated static func nextDueDate(for rule: RecurringRule) -> Date? {
         if rule.isPaused { return nil }
         if let endDate = rule.endDate, endDate < .now { return nil }
         let calendar = Calendar.current

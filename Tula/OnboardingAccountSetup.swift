@@ -99,7 +99,7 @@ struct OnboardingAccountSetup: View {
         try? context.save()
 
         Haptics.success()
-        withAnimation(AppAnimation.bouncy) {
+        _ = withAnimation(AppAnimation.bouncy) {
             createdKinds.insert(option.kind)
         }
     }

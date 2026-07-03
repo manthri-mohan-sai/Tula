@@ -30,7 +30,7 @@ enum SeedData {
     /// Idempotent installer that adds any default rules missing from the DB.
     /// Run on every app launch — cheap (one fetch + a set diff). Lets us ship
     /// new default categorizations to existing users without database migrations.
-    static func installMissingDefaultMerchantRules(into context: ModelContext) {
+    nonisolated static func installMissingDefaultMerchantRules(into context: ModelContext) {
         // Need category map by name to attach rules.
         guard let allCategories = try? context.fetch(FetchDescriptor<Category>()),
               !allCategories.isEmpty else { return }
@@ -115,7 +115,7 @@ enum SeedData {
     //
     // Order doesn't affect matching (first found wins per launch), but
     // categorization helps maintenance.
-    static let defaultMerchantRules: [(pattern: String, categoryName: String)] = [
+    nonisolated static let defaultMerchantRules: [(pattern: String, categoryName: String)] = [
 
         // ── FOOD: Delivery apps ──────────────────────────────────────
         ("swiggy", "Food"), ("zomato", "Food"), ("dunzo", "Food"),

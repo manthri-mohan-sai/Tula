@@ -696,7 +696,7 @@ struct AddExpenseView: View {
                             .onAppear {
                                 let rowID = splitRows[index].id
                                 guard !splitRowsAppeared.contains(rowID) else { return }
-                                withAnimation(AppAnimation.gentle.delay(Double(index) * 0.1)) {
+                                _ = withAnimation(AppAnimation.gentle.delay(Double(index) * 0.1)) {
                                     splitRowsAppeared.insert(rowID)
                                 }
                             }
@@ -1526,9 +1526,10 @@ struct AddExpenseView: View {
                 regexResult = await ReceiptStorage.parse(image)
             }
 
+            let smartIsAvailable = await MainActor.run { SmartExpenseParser.isAvailable }
             let smartResult: ReceiptSmartParseResult? = await withTaskGroup(of: ReceiptSmartParseResult?.self) { group in
                 group.addTask {
-                    guard SmartExpenseParser.isAvailable else { return nil }
+                    guard smartIsAvailable else { return nil }
 
                     if isDirectImageMode {
                         if let gateResult, !gateResult.shouldCallAI {

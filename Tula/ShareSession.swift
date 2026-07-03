@@ -167,7 +167,7 @@ final class ShareSession: ObservableObject {
 
         provider.loadItem(forTypeIdentifier: typeID, options: nil) { [weak self] item, error in
             if let error {
-                Task { @MainActor in
+                Task { @MainActor [weak self] in
                     self?.phase = .failed("Failed to load image: \(error.localizedDescription)")
                 }
                 return
@@ -232,10 +232,12 @@ final class ShareSession: ObservableObject {
         // close cousins on iOS — a URL gets sent as both `public.url`
         // and `public.text`, and loadItem honors whichever we ask for.
         provider.loadItem(forTypeIdentifier: UTType.text.identifier, options: nil) { [weak self] item, _ in
-            var text: String? = nil
-            if let s = item as? String { text = s }
-            if text == nil, let url = item as? URL { text = url.absoluteString }
-            if text == nil, let data = item as? Data { text = String(data: data, encoding: .utf8) }
+            let text: String? = {
+                if let s = item as? String { return s }
+                if let url = item as? URL { return url.absoluteString }
+                if let data = item as? Data { return String(data: data, encoding: .utf8) }
+                return nil
+            }()
 
             Task { @MainActor [weak self] in
                 guard let self else { return }
@@ -272,7 +274,7 @@ final class ShareSession: ObservableObject {
                     forceCloudAI: forceCloudAI
                 )
             } catch {
-                await MainActor.run {
+                await MainActor.run { [weak self] in
                     self?.phase = .failed("Parsing failed")
                 }
             }
@@ -309,9 +311,10 @@ final class ShareSession: ObservableObject {
             await MainActor.run { [weak self] in self?.parsingStatus = "Extracting details…" }
         }
 
+        let smartIsAvailable = await MainActor.run { SmartExpenseParser.isAvailable }
         let smartResult: ReceiptSmartParseResult? = await withTaskGroup(of: ReceiptSmartParseResult?.self) { group in
             group.addTask {
-                guard SmartExpenseParser.isAvailable else { return nil }
+                guard smartIsAvailable else { return nil }
 
                 if isDirectImageMode {
                     if let gateResult, !gateResult.shouldCallAI {
@@ -482,7 +485,8 @@ final class ShareSession: ObservableObject {
             var fmCategory: String? = nil
             var smartSucceeded = false
 
-            if #available(iOS 26.0, *), SmartExpenseParser.isAvailable {
+            let smartIsAvailable = await MainActor.run { SmartExpenseParser.isAvailable }
+            if #available(iOS 26.0, *), smartIsAvailable {
                 let smart = await SmartExpenseParser.parseVoice(
                     text,
                     categories: categoryEntries,
@@ -506,13 +510,16 @@ final class ShareSession: ObservableObject {
 
             let (categoryNames, accountEntries, _) = await Self.loadPickerData(paymentMode: nil, cardLast4: nil)
 
+            let finalAmount = parsedAmount
+            let finalMerchant = parsedMerchant
+            let finalSmartSucceeded = smartSucceeded
             await MainActor.run { [weak self] in
                 guard let self else { return }
-                self.amount = parsedAmount
-                self.merchant = parsedMerchant
-                self.note = parsedAmount > 0 ? "" : text
+                self.amount = finalAmount
+                self.merchant = finalMerchant
+                self.note = finalAmount > 0 ? "" : text
                 self.categoryName = resolvedCategoryName
-                self.usedSmartParser = smartSucceeded
+                self.usedSmartParser = finalSmartSucceeded
                 self.availableCategories = categoryNames
                 self.availableAccounts = accountEntries
                 self.phase = .preview

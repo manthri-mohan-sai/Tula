@@ -57,7 +57,7 @@ enum CategoryHint {
             return "pharmacies, medicines, doctors, hospitals, clinics, lab tests, medical, checkup, health, prescription, medicine, doctor, hospital, pharmacy, dawai, tablet, capsule, syrup, ointment, bandage, sanitizer, thermometer, inhaler, drops, vitamins, supplements, protein, crocin, dolo, paracetamol, aspirin, antacid, digene, eno, vicks, ibuprofen, betadine"
         // Shopping (clothes, electronics, lifestyle)
         case "tshirt.fill", "tv.fill", "laptopcomputer", "iphone",
-             "gift.fill", "tag.fill":
+             "tag.fill":
             return "clothing, electronics, gadgets, lifestyle, online shopping, accessories, clothes, shoes, shirt, jeans, phone, laptop, headphones, earbuds, airpods, charger, cable, case, cover, watch, sunglasses, perfume, deodorant, bag, backpack, wallet, belt, kurta, saree, lehenga, kurti, chudi, dress, trousers, shorts, sneakers, sandals, slippers, chappal"
         // Entertainment / leisure
         case "film.fill", "ticket.fill", "music.note", "gamecontroller.fill",
@@ -90,7 +90,7 @@ enum CategoryHint {
         case "figure.child", "teddybear.fill":
             return "toys, school supplies, kids clothing, daycare, diapers, baby"
         // Gifts
-        case "gift.fill" as String:
+        case "gift.fill":
             return "gifts, donations, charity"
         default:
             return nil

@@ -78,15 +78,15 @@ enum UserLearningEngine {
         guard !merchant.isEmpty, !category.isEmpty else { return }
         var all = UserDefaults.standard.dictionary(
             forKey: categoryAffinityKey) as? [String: [String: Int]] ?? [:]
-        var counts = all[merchant.lowercased()] as? [String: Int] ?? [:]
+        var counts = all[merchant.lowercased()] ?? [:]
         counts[category, default: 0] += 1
         all[merchant.lowercased()] = counts
         // Cap at 300 merchants to prevent unbounded growth.
         if all.count > 300 {
             // Remove merchants with lowest total counts.
             let sorted = all.sorted { lhs, rhs in
-                let lhsTotal = (lhs.value as? [String: Int])?.values.reduce(0, +) ?? 0
-                let rhsTotal = (rhs.value as? [String: Int])?.values.reduce(0, +) ?? 0
+                let lhsTotal = lhs.value.values.reduce(0, +)
+                let rhsTotal = rhs.value.values.reduce(0, +)
                 return lhsTotal < rhsTotal
             }
             for entry in sorted.prefix(50) {
@@ -115,7 +115,7 @@ enum UserLearningEngine {
         var all = UserDefaults.standard.dictionary(
             forKey: hourCategoryKey) as? [String: [String: Int]] ?? [:]
         let bucket = String(hour)
-        var counts = all[bucket] as? [String: Int] ?? [:]
+        var counts = all[bucket] ?? [:]
         counts[category, default: 0] += 1
         all[bucket] = counts
         UserDefaults.standard.set(all, forKey: hourCategoryKey)

@@ -20,7 +20,7 @@ enum Currency {
         "\(symbol(for: code)) \(longName(for: code)) (\(code))"
     }
 
-    static func symbol(for code: String) -> String {
+    nonisolated static func symbol(for code: String) -> String {
         switch code {
         case "INR": return "₹"
         case "USD": return "$"
@@ -55,7 +55,7 @@ enum Currency {
     /// - Others → en_US (Western grouping: 125,000)
     /// Using English variants keeps the rest of the UI in English while only
     /// the number grouping/symbol adapts.
-    static func locale(for code: String) -> Locale {
+    nonisolated static func locale(for code: String) -> Locale {
         switch code {
         case "INR": return Locale(identifier: "en_IN")
         case "JPY": return Locale(identifier: "ja_JP")
@@ -75,7 +75,7 @@ enum Currency {
     /// for fields where alignment matters (e.g. ledger columns). Passing
     /// `false` is no longer common — kept for backward-compat with
     /// callers that explicitly want integer display regardless.
-    static func format(_ amount: Double, code: String, showDecimals: Bool = false) -> String {
+    nonisolated static func format(_ amount: Double, code: String, showDecimals: Bool = false) -> String {
         let f = NumberFormatter()
         f.numberStyle = .currency
         f.currencyCode = code

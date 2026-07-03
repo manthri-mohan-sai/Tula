@@ -137,7 +137,7 @@ enum FMContextBuilder {
     /// Map a 24-hour hour value to a named period-of-day. Calibrated to
     /// Indian routines: late dinners are common (9-10 PM), late-night
     /// snacks happen until midnight.
-    private static func periodOfDay(hour: Int) -> String {
+    nonisolated private static func periodOfDay(hour: Int) -> String {
         switch hour {
         case 5..<7:   return "Early Morning"
         case 7..<10:  return "Morning"
@@ -337,7 +337,7 @@ enum FMContextBuilder {
     /// No DB access — reads from UserDefaults directly. Safe to call
     /// from any actor.
     /// Key shared with UserLearningEngine — both read/write the same store.
-    private static let merchantMapKey = "merchantCorrectionMap"
+    nonisolated private static let merchantMapKey = "merchantCorrectionMap"
 
     nonisolated private static func correctionHints() -> String? {
         guard let dict = UserDefaults.standard.dictionary(
@@ -383,7 +383,7 @@ enum FMContextBuilder {
                                           now: Date,
                                           calendar: Calendar) -> String? {
         let thirtyDaysAgo = calendar.date(byAdding: .day, value: -30, to: now) ?? now
-        var descriptor = FetchDescriptor<Expense>(
+        let descriptor = FetchDescriptor<Expense>(
             predicate: #Predicate { $0.date >= thirtyDaysAgo }
         )
         guard let recent = try? context.fetch(descriptor),
