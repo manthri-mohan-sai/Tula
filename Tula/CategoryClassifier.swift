@@ -22,6 +22,18 @@ enum CategoryClassifier {
         let canonical: String
         let synonyms: [String]
         let tokens: Set<String>
+        /// Decisive tokens that outrank a plain match in another bucket. Used so
+        /// a prepared dish ("burger") beats a shared ingredient word ("egg",
+        /// "cheese") that also reads as Groceries.
+        let priorityTokens: Set<String>
+
+        init(canonical: String, synonyms: [String], tokens: Set<String>,
+             priorityTokens: Set<String> = []) {
+            self.canonical = canonical
+            self.synonyms = synonyms
+            self.tokens = tokens
+            self.priorityTokens = priorityTokens
+        }
     }
 
     private static let lexicons: [Lexicon] = [
@@ -71,6 +83,21 @@ enum CategoryClassifier {
                 // Drinks
                 "juice", "sugarcane", "cane", "shake", "soda", "buttermilk", "chaas",
                 "lemonade", "sherbet", "mojito", "cola", "beer", "wine"
+            ],
+            // Prepared dishes — decisive Food signals even when an ingredient
+            // word in the same item (egg, cheese, milk, bread) also reads as
+            // Groceries. Raw ingredients / ambiguous drinks stay out.
+            priorityTokens: [
+                "biryani", "biriyani", "dosa", "idli", "vada", "samosa", "pizza",
+                "burger", "sandwich", "roll", "wrap", "momo", "chowmein",
+                "manchurian", "pulao", "thali", "paratha", "roti", "naan",
+                "kulcha", "puri", "poori", "kebab", "tikka", "tandoori",
+                "shawarma", "frankie", "dabeli", "pavbhaji", "vadapav", "misal",
+                "upma", "pongal", "uttapam", "cutlet", "sushi", "ramen", "taco",
+                "maggi", "noodle", "pasta", "omelette", "fries", "pakora",
+                "pakoda", "bhajji", "chaat", "chat", "papdi", "papadi", "bhel",
+                "panipuri", "golgappa", "dhokla", "waffle", "pancake", "cake",
+                "pastry", "donut", "brownie", "cookie"
             ]
         ),
         Lexicon(
@@ -177,23 +204,39 @@ enum CategoryClassifier {
         let tokens = self.tokens(in: text)
         guard !tokens.isEmpty else { return nil }
 
-        var scores: [Int: Int] = [:]   // lexicon index → matched-token count
+        // Per lexicon: (decisive priority-token matches, total matches).
+        var scores: [Int: (priority: Int, total: Int)] = [:]
         for (index, lexicon) in lexicons.enumerated() {
-            let score = tokens.reduce(0) { partial, token in
-                candidateForms(token).contains(where: lexicon.tokens.contains)
-                    ? partial + 1 : partial
+            var priority = 0
+            var total = 0
+            for token in tokens {
+                let forms = candidateForms(token)
+                guard forms.contains(where: lexicon.tokens.contains) else { continue }
+                total += 1
+                if forms.contains(where: lexicon.priorityTokens.contains) { priority += 1 }
             }
-            if score > 0 { scores[index] = score }
+            if total > 0 { scores[index] = (priority, total) }
         }
         guard !scores.isEmpty else { return nil }
 
-        let ranked = scores.sorted { $0.value > $1.value }
-        let (topIndex, topScore) = (ranked[0].key, ranked[0].value)
+        // Rank by decisive matches first, then total. So "egg burger" resolves
+        // to Food (burger is decisive) over Groceries (egg is a plain match).
+        let ranked = scores.sorted {
+            $0.value.priority != $1.value.priority
+                ? $0.value.priority > $1.value.priority
+                : $0.value.total > $1.value.total
+        }
+        let top = ranked[0]
 
-        // A tie at the top means the input straddles two buckets — defer.
-        if ranked.count > 1, ranked[1].value == topScore { return nil }
+        // A genuine tie — same decisive AND total count — means the input
+        // straddles two buckets, so defer.
+        if ranked.count > 1,
+           ranked[1].value.priority == top.value.priority,
+           ranked[1].value.total == top.value.total {
+            return nil
+        }
 
-        return resolve(canonical: lexicons[topIndex], in: categories)
+        return resolve(canonical: lexicons[top.key], in: categories)
     }
 
     // MARK: - Helpers

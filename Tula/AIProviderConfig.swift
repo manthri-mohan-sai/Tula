@@ -67,6 +67,7 @@ enum AIProvider: String, CaseIterable, Identifiable {
     var isReady: Bool {
         switch self {
         case .appleFM:
+            guard FMFeature.enabled else { return false }
             #if canImport(FoundationModels)
             guard #available(iOS 26.0, *) else { return false }
             if case .available = SystemLanguageModel.default.availability {
@@ -138,8 +139,15 @@ struct CloudAIConfig: Codable {
     static func loadGemini() -> CloudAIConfig {
         guard let defaults = UserDefaults(suiteName: "group.com.app.Tula"),
               let data = defaults.data(forKey: geminiStorageKey),
-              let config = try? JSONDecoder().decode(CloudAIConfig.self, from: data) else {
+              var config = try? JSONDecoder().decode(CloudAIConfig.self, from: data) else {
             return .geminiDefault
+        }
+        // Self-heal: earlier builds could persist a non-model string (e.g. the
+        // provider label "Google Gemini Key") in `model`, which forced a
+        // per-request fallback and log noise. Reset to a valid default.
+        let m = config.model.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if !(m.hasPrefix("gemini") || m.hasPrefix("gemma")) {
+            config.model = CloudAIConfig.geminiDefault.model
         }
         return config
     }
@@ -232,5 +240,20 @@ enum AIProviderStorage {
             guard let defaults = UserDefaults(suiteName: "group.com.app.Tula") else { return }
             defaults.set(newValue.rawValue, forKey: key)
         }
+    }
+}
+
+// MARK: - Apple Intelligence (Pro / opt-in) gate
+
+/// Apple's on-device Foundation Model is currently too weak for our parsing to
+/// meet the bar, so it is NEVER used by default — it ships as an explicit,
+/// off-by-default "Pro" option. All FM code paths check this flag; when off,
+/// the app uses the deterministic parser (+ cloud when a key is configured).
+enum FMFeature {
+    private static let key = "appleFMEnabled"
+
+    static var enabled: Bool {
+        get { UserDefaults(suiteName: "group.com.app.Tula")?.bool(forKey: key) ?? false }
+        set { UserDefaults(suiteName: "group.com.app.Tula")?.set(newValue, forKey: key) }
     }
 }

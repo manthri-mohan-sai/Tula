@@ -28,6 +28,8 @@ struct SettingsView: View {
     @AppStorage("themePresetID") private var themePresetID: String = "saffron"
     @AppStorage("launchAnimationEnabled") private var launchAnimationEnabled: Bool = true
     @AppStorage("smartParsingEnabled") private var smartParsingEnabled: Bool = true
+    @AppStorage("appleFMEnabled", store: UserDefaults(suiteName: "group.com.app.Tula"))
+    private var appleFMEnabled: Bool = false
     @AppStorage("selectedAIProvider", store: UserDefaults(suiteName: "group.com.app.Tula"))
     private var selectedProviderRaw: String = AIProvider.gemini.rawValue
 
@@ -368,7 +370,28 @@ struct SettingsView: View {
 
     private var providerPickerSection: some View {
         Group {
-            let visibleProviders: [AIProvider] = [.gemini]
+            // Apple Intelligence is an opt-in "Pro" option — its on-device model
+            // isn't accurate enough to be a default. Off by default; when on it
+            // becomes selectable below.
+            Toggle(isOn: $appleFMEnabled) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Apple Intelligence (Beta)")
+                        .font(.subheadline.weight(.medium))
+                    Text("On-device & private, but less accurate. Off by default.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+            }
+            .tint(Color.tulaBrandFallback)
+            .onChange(of: appleFMEnabled) { _, isOn in
+                // When turning it off, make sure we're not left selected on FM.
+                if !isOn, selectedProvider == .appleFM {
+                    selectedProviderRaw = AIProvider.gemini.rawValue
+                }
+            }
+
+            let visibleProviders: [AIProvider] = appleFMEnabled ? [.appleFM, .gemini] : [.gemini]
             ForEach(visibleProviders) { provider in
                 Button {
                     withAnimation(.snappy(duration: 0.25)) {
@@ -781,15 +804,18 @@ struct SettingsView: View {
             }
             Picker(selection: $receiptAutoDeleteDays) {
                 Text("Never").tag(0)
-                Text("After 30 Days").tag(30)
-                Text("After 90 Days").tag(90)
-                Text("After 6 Months").tag(180)
-                Text("After 1 Year").tag(365)
+                Text("30 days").tag(30)
+                Text("90 days").tag(90)
+                Text("6 months").tag(180)
+                Text("1 year").tag(365)
             } label: {
                 settingsLabel("Auto-Delete Receipts",
                               icon: "clock.badge.xmark",
                               color: .orange)
             }
+            // Menu style keeps the selected value compact on the trailing edge
+            // so a long label + value don't wrap to a second line.
+            .pickerStyle(.menu)
             settingsLinkRow(title: "Transfer", icon: "arrow.left.arrow.right", color: .blue) {
                 showingTransfer = true
             }

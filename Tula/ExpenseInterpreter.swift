@@ -116,13 +116,23 @@ struct ExpenseInterpreter {
     /// And "flipkart axis card" → "Flipkart Axis" (2 matched) over a plain "Axis".
     /// Falls back to the substring/phonetic matcher when no name word matches.
     private func matchAccountName(in text: String) -> Account? {
-        let words = Set(Self.tokens(text))
+        let tokens = Self.tokens(text)
+        let words = Set(tokens)
+        // Phonetic keys of the longer spoken tokens, so a mis-heard account word
+        // ("access" for "Axis", "hitachi" for "HDFC"-adjacent) still counts as a
+        // match against this closed, user-owned set. Length ≥ 4 avoids short
+        // abbreviations colliding by phonetic key.
+        let spokenKeys = Set(tokens.filter { $0.count >= 4 }.map(FuzzyMatcher.phoneticKey))
         var best: (account: Account, matched: Int, total: Int)?
         for account in activeAccounts {
             let nameWords = account.name.lowercased()
                 .split(separator: " ").map(String.init).filter { $0.count >= 2 }
             guard !nameWords.isEmpty else { continue }
-            let matched = nameWords.filter { words.contains($0) }.count
+            let matched = nameWords.filter { nameWord in
+                words.contains(nameWord)
+                    || (nameWord.count >= 4
+                        && spokenKeys.contains(FuzzyMatcher.phoneticKey(nameWord)))
+            }.count
             guard matched > 0 else { continue }
             let better = best == nil
                 || matched > best!.matched

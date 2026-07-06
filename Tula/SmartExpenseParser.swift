@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 #if canImport(FoundationModels)
 import FoundationModels
 #endif
@@ -48,15 +49,7 @@ enum SmartExpenseParser {
     /// - The user has a cloud AI provider configured with a valid API key
     static var isAvailable: Bool {
         if hasCloudVision { return true }
-        #if canImport(FoundationModels)
-        guard #available(iOS 26.0, *) else { return false }
-        if case .available = SystemLanguageModel.default.availability {
-            return true
-        }
-        return false
-        #else
-        return false
-        #endif
+        return isFMAvailable
     }
 
     /// Best provider — honors explicit user choice, then prefers on-device
@@ -79,8 +72,11 @@ enum SmartExpenseParser {
         || !CloudAIConfig.load().apiKey.isEmpty
     }
 
-    /// Whether Foundation Models specifically is available on-device.
+    /// Whether Foundation Models is usable — requires the Pro opt-in (FM is off
+    /// by default; its quality doesn't meet the bar as a default provider) AND
+    /// the on-device model being available.
     static var isFMAvailable: Bool {
+        guard FMFeature.enabled else { return false }
         #if canImport(FoundationModels)
         guard #available(iOS 26.0, *) else { return false }
         if case .available = SystemLanguageModel.default.availability {
@@ -235,11 +231,17 @@ enum SmartExpenseParser {
         case .gemini:
             let trimmed = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty, !categories.isEmpty else { return nil }
-            return await CloudAIParser.parseReceipt(trimmed, categories: categories, documentType: documentType, contextBlock: contextBlock, config: .loadGemini())
+            if let result = await CloudAIParser.parseReceipt(trimmed, categories: categories, documentType: documentType, contextBlock: contextBlock, config: .loadGemini()) {
+                return result
+            }
+            // Cloud failed (no internet / timeout) — fall through to FM
         case .openAI:
             let trimmed = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty, !categories.isEmpty else { return nil }
-            return await CloudAIParser.parseReceipt(trimmed, categories: categories, documentType: documentType, contextBlock: contextBlock)
+            if let result = await CloudAIParser.parseReceipt(trimmed, categories: categories, documentType: documentType, contextBlock: contextBlock) {
+                return result
+            }
+            // Cloud failed — fall through to FM
         case .appleFM:
             break
         }
@@ -497,14 +499,31 @@ enum SmartExpenseParser {
                                    skipResize: Bool = false) async -> ReceiptSmartParseResult? {
         guard !categories.isEmpty, !imageData.isEmpty else { return nil }
 
-        switch bestProvider {
-        case .gemini:
-            return await CloudAIParser.parseReceiptImage(imageData, categories: categories, contextBlock: contextBlock, config: .loadGemini(), skipResize: skipResize)
-        case .openAI:
-            return await CloudAIParser.parseReceiptImage(imageData, categories: categories, contextBlock: contextBlock, skipResize: skipResize)
-        case .appleFM:
-            return nil
+        // Try cloud providers first — they can read images directly.
+        // Prefer Gemini, then OpenAI, regardless of the selected voice provider.
+        if !CloudAIConfig.loadGemini().apiKey.isEmpty {
+            if let result = await CloudAIParser.parseReceiptImage(imageData, categories: categories, contextBlock: contextBlock, config: .loadGemini(), skipResize: skipResize) {
+                return result
+            }
         }
+        if !CloudAIConfig.load().apiKey.isEmpty {
+            if let result = await CloudAIParser.parseReceiptImage(imageData, categories: categories, contextBlock: contextBlock, skipResize: skipResize) {
+                return result
+            }
+        }
+
+        // Cloud unavailable or failed (no internet / timeout / error).
+        // Fallback: run on-device OCR on the image, then parse the
+        // extracted text with Apple FM. FM is text-only so it can't read
+        // the image directly, but OCR→FM is a solid on-device path.
+        guard isFMAvailable else { return nil }
+        guard let uiImage = UIImage(data: imageData) else { return nil }
+        let ocrResult = await ReceiptStorage.parse(uiImage)
+        guard !ocrResult.rawText.isEmpty else { return nil }
+        return await parseReceipt(ocrResult.rawText,
+                                  categories: categories,
+                                  documentType: ocrResult.documentType,
+                                  contextBlock: contextBlock)
     }
 
     /// **Lightweight transcript-cleanup pass** for parallel correction
@@ -521,11 +540,29 @@ enum SmartExpenseParser {
     /// model is asked to return it unchanged — the caller checks for an
     /// exact match before applying any update (which suppresses no-op
     /// updates and avoids visual flicker).
-    static func correctTranscript(_ raw: String) async -> String? {
+    static func correctTranscript(_ raw: String, context: [String] = []) async -> String? {
         #if canImport(FoundationModels)
-        guard #available(iOS 26.0, *), isAvailable else { return nil }
+        guard #available(iOS 26.0, *), isFMAvailable else { return nil }
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else  { return nil }
+
+        // Context-aware correction: the user's own accounts, merchants and
+        // categories. If the transcript contains a word/phrase that clearly
+        // resembles one of these (a speech-recognition mishear), snap it to the
+        // EXACT known name. This is the highest-value correction — it fixes the
+        // domain entities that make a log wrong.
+        let knownNames = Array(Set(context.filter { $0.count >= 3 })).prefix(60)
+        let contextSection = knownNames.isEmpty ? "" : """
+
+
+        The user's known accounts, merchants and categories are:
+        \(knownNames.joined(separator: ", ")).
+        If a word or phrase in the transcript clearly resembles one of these \
+        (a mishearing — e.g. "indus in rupee" → "IndusInd Rupay", "sugar rata" \
+        → "Sagar Ratna", "swig he" → "Swiggy"), replace it with the EXACT name \
+        from this list. Only do this when the resemblance is strong; never \
+        invent a match for an unrelated word.
+        """
 
         let instructions = """
         You correct speech-recognition errors in voice transcripts from \
@@ -589,7 +626,7 @@ enum SmartExpenseParser {
         """
 
         do {
-            let session = LanguageModelSession(instructions: instructions)
+            let session = LanguageModelSession(instructions: instructions + contextSection)
             let response = try await session.respond(
                 to: trimmed,
                 generating: CorrectedTranscript.self

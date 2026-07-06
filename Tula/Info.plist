@@ -2,6 +2,10 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>BGTaskSchedulerPermittedIdentifiers</key>
+	<array>
+		<string>com.app.Tula.widgetRefresh</string>
+	</array>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>
@@ -15,15 +19,17 @@
 			</array>
 		</dict>
 	</array>
+	<key>NSExtensionPointIdentifier</key>
+	<string>com.apple.widgetkit-extension</string>
 	<key>UIApplicationShortcutItems</key>
 	<array>
 		<dict>
-			<key>UIApplicationShortcutItemType</key>
-			<string>com.app.Tula.add</string>
-			<key>UIApplicationShortcutItemTitle</key>
-			<string>Add Expense</string>
 			<key>UIApplicationShortcutItemIconSymbolName</key>
 			<string>plus.circle.fill</string>
+			<key>UIApplicationShortcutItemTitle</key>
+			<string>Add Expense</string>
+			<key>UIApplicationShortcutItemType</key>
+			<string>com.app.Tula.add</string>
 			<key>UIApplicationShortcutItemUserInfo</key>
 			<dict>
 				<key>url</key>
@@ -31,12 +37,12 @@
 			</dict>
 		</dict>
 		<dict>
-			<key>UIApplicationShortcutItemType</key>
-			<string>com.app.Tula.scan</string>
-			<key>UIApplicationShortcutItemTitle</key>
-			<string>Scan Receipt</string>
 			<key>UIApplicationShortcutItemIconSymbolName</key>
 			<string>doc.text.viewfinder</string>
+			<key>UIApplicationShortcutItemTitle</key>
+			<string>Scan Receipt</string>
+			<key>UIApplicationShortcutItemType</key>
+			<string>com.app.Tula.scan</string>
 			<key>UIApplicationShortcutItemUserInfo</key>
 			<dict>
 				<key>url</key>
@@ -44,12 +50,12 @@
 			</dict>
 		</dict>
 		<dict>
-			<key>UIApplicationShortcutItemType</key>
-			<string>com.app.Tula.voice</string>
-			<key>UIApplicationShortcutItemTitle</key>
-			<string>Voice Log</string>
 			<key>UIApplicationShortcutItemIconSymbolName</key>
 			<string>mic.fill</string>
+			<key>UIApplicationShortcutItemTitle</key>
+			<string>Voice Log</string>
+			<key>UIApplicationShortcutItemType</key>
+			<string>com.app.Tula.voice</string>
 			<key>UIApplicationShortcutItemUserInfo</key>
 			<dict>
 				<key>url</key>
@@ -57,17 +63,9 @@
 			</dict>
 		</dict>
 	</array>
-	<key>NSExtensionPointIdentifier</key>
-	<string>com.apple.widgetkit-extension</string>
-	<key>NSFaceIDUsageDescription</key>
-	<string>Tula uses Face ID to protect your expense data when App Lock is enabled.</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>fetch</string>
-	</array>
-	<key>BGTaskSchedulerPermittedIdentifiers</key>
-	<array>
-		<string>com.app.Tula.widgetRefresh</string>
 	</array>
 </dict>
 </plist>

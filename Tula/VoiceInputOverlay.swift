@@ -69,6 +69,9 @@ struct VoiceInputOverlay: View {
     @State private var processingStep: ProcessingStep = .analyzing
     @State private var processingSubPhase: ProcessingSubPhase = .analyzing
     @State private var frozenTranscript: String = ""
+    /// Merchant the parser produced per segment (keyed by the stable rawInput),
+    /// captured before the user edits — so a correction can be learned on save.
+    @State private var parsedMerchants: [String: String] = [:]
 
     // Word gathering animation
     @State private var wordGatheringActive = false
@@ -778,6 +781,7 @@ struct VoiceInputOverlay: View {
     /// draft otherwise — then dismiss.
     private func commitResult() {
         if !drafts.isEmpty {
+            drafts.filter { $0.isValid }.forEach(learnMerchantCorrection)
             let expenses = createExpenses()
             if !expenses.isEmpty {
                 Haptics.success()
@@ -785,11 +789,25 @@ struct VoiceInputOverlay: View {
                 onSaveMany(expenses)
             }
         } else if let expense = createExpense() {
+            if let d = draft { learnMerchantCorrection(from: d) }
             Haptics.success()
             SoundEffects.voiceEnd()
             onSave(expense)
         }
         dismiss()
+    }
+
+    /// If the user edited the merchant away from what the parser produced for
+    /// this segment, remember the mapping so the same mishearing resolves
+    /// correctly next time (feeds `contextualStrings` + parsing). Affinity/hour
+    /// learning already happens in the host's onSave/onSaveMany handlers.
+    private func learnMerchantCorrection(from draft: ExpenseDraft) {
+        guard let corrected = draft.merchant?.trimmingCharacters(in: .whitespaces),
+              !corrected.isEmpty,
+              let raw = parsedMerchants[draft.rawInput]?.trimmingCharacters(in: .whitespaces),
+              !raw.isEmpty,
+              raw.lowercased() != corrected.lowercased() else { return }
+        UserLearningEngine.learnMerchantCorrection(raw: raw, corrected: corrected)
     }
 
     /// Non-optional binding into the optional `draft`. The result card is only
@@ -873,28 +891,38 @@ struct VoiceInputOverlay: View {
         Task {
             let ok = await speech.requestAuthorization()
             if ok {
-                var phrases: [String] = []
+                // Priority-ordered: the small closed sets (accounts, account
+                // words, categories, intent phrases) come first so they're never
+                // dropped by the cap; merchants fill the remaining budget.
+                // Dedupe preserves this order (a plain Set would drop randomly).
                 let activeAccounts = accounts.filter { !$0.isArchived }
-                phrases.append(contentsOf: activeAccounts.map(\.name))
-                // Add individual words from account names so the speech
-                // recognizer biases toward abbreviations ("SBI", "HDFC",
-                // "ICICI") as standalone words rather than spelling them
-                // out as individual letters ("S B I").
+                var priority: [String] = activeAccounts.map(\.name)
+                // Individual account-name words so the recognizer biases toward
+                // abbreviations ("SBI", "HDFC") rather than spelling them out.
                 for account in activeAccounts {
                     for word in account.name.components(separatedBy: .whitespaces)
                         where word.count >= 2 {
-                        phrases.append(word)
+                        priority.append(word)
                     }
                 }
-                phrases.append(contentsOf: categories.filter { !$0.isArchived }.map(\.name))
-                phrases.append(contentsOf: topMerchants)
-                phrases.append(
-                    contentsOf: UserLearningEngine.allMerchantCorrections.values
-                )
-                phrases.append(contentsOf: [
+                priority.append(contentsOf: categories.filter { !$0.isArchived }.map(\.name))
+                priority.append(contentsOf: [
                     "scratch that", "never mind", "start over", "clear that"
                 ])
-                speech.contextualPhrases = Array(Set(phrases)).prefix(100).map { $0 }
+
+                var merchants: [String] = topMerchants
+                merchants.append(
+                    contentsOf: UserLearningEngine.allMerchantCorrections.values
+                )
+
+                var seen = Set<String>()
+                var ordered: [String] = []
+                for phrase in priority + merchants {
+                    let key = phrase.lowercased()
+                    guard !phrase.isEmpty, seen.insert(key).inserted else { continue }
+                    ordered.append(phrase)
+                }
+                speech.contextualPhrases = Array(ordered.prefix(200))
 
                 Haptics.impact()
                 speech.start()
@@ -960,7 +988,7 @@ struct VoiceInputOverlay: View {
         guard totalWords > 0 else { return }
 
         for i in 1...totalWords {
-            DispatchQueue.main.asyncAfter(deadline: .now() + Double(i) * 0.1) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + Double(i) * 0.06) {
                 withAnimation(AppAnimation.snappy) {
                     revealedWordCount = i
                 }
@@ -971,10 +999,12 @@ struct VoiceInputOverlay: View {
     @MainActor
     private func runInterpretation(rawText: String) async {
         let startedAt = Date()
-        let minAnimTime: TimeInterval = 1.6
+        // The parse is instant/deterministic; keep just enough of a beat for the
+        // reveal to read as intentional, not a stall. Snappy > padded.
+        let minAnimTime: TimeInterval = 0.9
 
         // Advance to "Understanding context" after word reveal completes
-        let wordRevealDuration = Double(classifiedWords.count) * 0.1 + 0.3
+        let wordRevealDuration = Double(classifiedWords.count) * 0.06 + 0.25
         DispatchQueue.main.asyncAfter(deadline: .now() + wordRevealDuration) {
             withAnimation(AppAnimation.snappy) {
                 processingStep = .understanding
@@ -984,13 +1014,19 @@ struct VoiceInputOverlay: View {
         // Transparency only — parsing itself is fully on-device / deterministic.
         withAnimation(.easeIn(duration: 0.3)) { usedProviderLabel = "On-device" }
 
+        // Recognition is already biased toward the user's vocabulary
+        // (contextualStrings) and the transcript has had the FM homophone pass;
+        // the interpreter then snaps mis-heard entities to real accounts/
+        // merchants phonetically. No generic re-transcription step.
+        let text = rawText
+
         // Deterministic interpretation — the single source of truth. Same
         // pipeline for every user, no AI required.
         let interpreter = ExpenseInterpreter(
             accounts: accounts, categories: categories,
             merchantRules: merchantRules, defaultAccount: defaultAccount
         )
-        var produced = interpreter.interpret(rawText)
+        var produced = interpreter.interpret(text)
 
         // P4 — optional grounded LLM assist. Only fires for a single expense
         // that's missing a merchant AND an engine is configured (user's AI, or
@@ -1010,6 +1046,13 @@ struct VoiceInputOverlay: View {
         } else {
             draft = produced.first
         }
+
+        // Snapshot the parsed merchant per segment (before any edits) so a
+        // user correction on save can be learned for next time.
+        parsedMerchants = Dictionary(
+            produced.map { ($0.rawInput, $0.merchant ?? "") },
+            uniquingKeysWith: { first, _ in first }
+        )
 
         // === Word gathering animation ===
 

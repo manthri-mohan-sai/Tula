@@ -7,14 +7,14 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		470E84D32FCD960C004FDC91 /* TulaShare.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 47BC843A2FCAAF79000FB10E /* TulaShare.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		476D39352FF8F51E00CDCF15 /* TulaShare.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 47BC843A2FCAAF79000FB10E /* TulaShare.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		47FE5BAD2FC7308C00E58C93 /* WidgetKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 47FE5BAC2FC7308C00E58C93 /* WidgetKit.framework */; };
 		47FE5BAF2FC7308C00E58C93 /* SwiftUI.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 47FE5BAE2FC7308C00E58C93 /* SwiftUI.framework */; };
 		47FE5BBE2FC7308D00E58C93 /* Tula WidgetExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 47FE5BAA2FC7308C00E58C93 /* Tula WidgetExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
-		470E84D42FCD960C004FDC91 /* PBXContainerItemProxy */ = {
+		476D39362FF8F51E00CDCF15 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = 47FE5AB02FC5D3B200E58C93 /* Project object */;
 			proxyType = 1;
@@ -37,7 +37,7 @@
 			dstPath = "";
 			dstSubfolderSpec = 13;
 			files = (
-				470E84D32FCD960C004FDC91 /* TulaShare.appex in Embed Foundation Extensions */,
+				476D39352FF8F51E00CDCF15 /* TulaShare.appex in Embed Foundation Extensions */,
 				47FE5BBE2FC7308D00E58C93 /* Tula WidgetExtension.appex in Embed Foundation Extensions */,
 			);
 			name = "Embed Foundation Extensions";
@@ -234,7 +234,7 @@
 			);
 			dependencies = (
 				47FE5BBD2FC7308D00E58C93 /* PBXTargetDependency */,
-				470E84D52FCD960C004FDC91 /* PBXTargetDependency */,
+				476D39372FF8F51E00CDCF15 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				47FE5ABA2FC5D3B200E58C93 /* Tula */,
@@ -298,6 +298,9 @@
 			);
 			mainGroup = 47FE5AAF2FC5D3B200E58C93;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				476D39262FF8D00000CDCF15 /* XCRemoteSwiftPackageReference "WhisperKit" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 47FE5AB92FC5D3B200E58C93 /* Products */;
 			projectDirPath = "";
@@ -359,10 +362,10 @@
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
-		470E84D52FCD960C004FDC91 /* PBXTargetDependency */ = {
+		476D39372FF8F51E00CDCF15 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = 47BC84392FCAAF79000FB10E /* TulaShare */;
-			targetProxy = 470E84D42FCD960C004FDC91 /* PBXContainerItemProxy */;
+			targetProxy = 476D39362FF8F51E00CDCF15 /* PBXContainerItemProxy */;
 		};
 		47FE5BBD2FC7308D00E58C93 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
@@ -566,6 +569,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Tula/Info.plist;
 				INFOPLIST_KEY_NSCameraUsageDescription = "Take a photo of your receipt to attach it to an expense and auto-fill the amount and merchant.";
+				INFOPLIST_KEY_NSFaceIDUsageDescription = "Tula uses Face ID to protect your expense data when App Lock is enabled.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "We use the microphone to capture voice input for quick expense logging.";
 				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Choose a photo of your receipt to attach it to an expense and auto-fill the amount and merchant.";
 				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "We use speech recognition to convert your voice into expense details.";
@@ -605,6 +609,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Tula/Info.plist;
 				INFOPLIST_KEY_NSCameraUsageDescription = "Take a photo of your receipt to attach it to an expense and auto-fill the amount and merchant.";
+				INFOPLIST_KEY_NSFaceIDUsageDescription = "Tula uses Face ID to protect your expense data when App Lock is enabled.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "We use the microphone to capture voice input for quick expense logging.";
 				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Choose a photo of your receipt to attach it to an expense and auto-fill the amount and merchant.";
 				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "We use speech recognition to convert your voice into expense details.";
@@ -733,6 +738,17 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		476D39262FF8D00000CDCF15 /* XCRemoteSwiftPackageReference "WhisperKit" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/argmaxinc/WhisperKit";
+			requirement = {
+				branch = main;
+				kind = branch;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
 	};
 	rootObject = 47FE5AB02FC5D3B200E58C93 /* Project object */;
 }

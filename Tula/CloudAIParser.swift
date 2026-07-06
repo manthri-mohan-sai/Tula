@@ -1147,7 +1147,10 @@ enum CloudAIParser {
             "generationConfig": [
                 "temperature": 0.1,
                 "responseMimeType": "application/json",
-                "responseSchema": schema
+                "responseSchema": schema,
+                // Structured extraction — no reasoning needed. Disable thinking
+                // (2.5 models think by default) to cut several seconds.
+                "thinkingConfig": ["thinkingBudget": 0]
             ]
         ]
 
@@ -1173,7 +1176,10 @@ enum CloudAIParser {
             "generationConfig": [
                 "temperature": 0.0,
                 "responseMimeType": "application/json",
-                "responseSchema": schema
+                "responseSchema": schema,
+                // Gemini 2.5 models "think" by default, adding several seconds.
+                // Receipt extraction is structured, not reasoning — turn it off.
+                "thinkingConfig": ["thinkingBudget": 0]
             ]
         ]
 
@@ -1214,6 +1220,23 @@ enum CloudAIParser {
 
         var lastErrorMessage = "Couldn't read the receipt. Try a clearer photo or enter details manually."
         aiLog.info("[\(label)] model order: \(modelsToTry.joined(separator: ", "))")
+
+        // Speed-first (image) chain: hedge instead of waiting sequentially. A
+        // slow/overloaded primary (e.g. flash-lite 503 after ~9s) otherwise adds
+        // its full latency BEFORE the fallback even starts. Hedging fires the
+        // next model after a short window and takes the first success, turning
+        // "primary + fallback" (~16s) into roughly "the winner" (~7s).
+        if speedFirst, modelsToTry.count > 1 {
+            if let json = await hedgedRequest(
+                models: modelsToTry, apiKey: config.apiKey, body: body, label: label) {
+                return json
+            }
+            await MainActor.run {
+                lastParseError = "AI service is busy. Please try again in a moment."
+            }
+            return nil
+        }
+
         for (index, model) in modelsToTry.enumerated() {
             let urlString = "https://generativelanguage.googleapis.com/v1beta/models/\(model):generateContent?key=\(config.apiKey)"
             guard let url = URL(string: urlString) else { continue }
@@ -1238,6 +1261,45 @@ enum CloudAIParser {
         let finalMessage = lastErrorMessage
         await MainActor.run { lastParseError = finalMessage }
         return nil
+    }
+
+    /// Hedged request: start the primary model immediately; each subsequent
+    /// model starts staggered by `hedgeDelay`. Returns the first HTTP 200 and
+    /// cancels the rest. When the primary is healthy it wins before the hedge
+    /// fires, so no extra call is made — the cost only doubles when the primary
+    /// is actually slow.
+    private static func hedgedRequest(
+        models: [String], apiKey: String, body: [String: Any], label: String
+    ) async -> [String: Any]? {
+        let hedgeDelay: UInt64 = 2_500_000_000   // 2.5s
+        func url(_ model: String) -> URL? {
+            URL(string: "https://generativelanguage.googleapis.com/v1beta/models/\(model):generateContent?key=\(apiKey)")
+        }
+        return await withTaskGroup(of: [String: Any]?.self) { group in
+            for (index, model) in models.enumerated() {
+                guard let modelURL = url(model) else { continue }
+                let tag = "\(label)/\(model)"
+                let delay = UInt64(index) * hedgeDelay
+                group.addTask {
+                    if delay > 0 {
+                        try? await Task.sleep(nanoseconds: delay)
+                        if Task.isCancelled { return nil }
+                    }
+                    if case .success(let json) = await executeGeminiRequest(
+                        url: modelURL, body: body, label: tag) {
+                        return json
+                    }
+                    return nil
+                }
+            }
+            for await result in group {
+                if let json = result {
+                    group.cancelAll()
+                    return json
+                }
+            }
+            return nil
+        }
     }
 
     private static func executeGeminiRequest(

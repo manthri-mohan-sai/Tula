@@ -64,7 +64,8 @@ final class SpeechRecognizer: ObservableObject {
     /// merchant names, account names, category names, learned corrections.
     /// Set by the caller before `start()`. Injected into every request via
     /// `contextualStrings` so the recognizer prefers "Sagar Ratna" over
-    /// "sugar rata" when audio is ambiguous. Capped at Apple's limit of 100.
+    /// "sugar rata" when audio is ambiguous. The caller priority-orders and caps
+    /// the list (accounts/categories first, merchants fill the rest).
     var contextualPhrases: [String] = []
 
     private let speechRecognizer: SFSpeechRecognizer?
@@ -274,9 +275,10 @@ final class SpeechRecognizer: ObservableObject {
             request.requiresOnDeviceRecognition = false
         }
 
-        // Bias recognition toward the user's vocabulary.
+        // Bias recognition toward the user's vocabulary. The caller has already
+        // priority-ordered and capped the list; pass it through as-is.
         if !contextualPhrases.isEmpty {
-            request.contextualStrings = Array(contextualPhrases.prefix(100))
+            request.contextualStrings = contextualPhrases
         }
 
         recognitionRequest = request
@@ -470,9 +472,10 @@ final class SpeechRecognizer: ObservableObject {
 
         guard #available(iOS 26.0, *) else { return }
         let gen = generation
+        let context = contextualPhrases
         isCorrecting = true
         Task { @MainActor in
-            let corrected = await SmartExpenseParser.correctTranscript(original)
+            let corrected = await SmartExpenseParser.correctTranscript(original, context: context)
             // A new session may have started while we awaited; only apply if
             // we're still idle on the same generation and nothing new was said.
             guard self.generation == gen, !self.isRecording else {
