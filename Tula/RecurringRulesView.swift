@@ -21,6 +21,7 @@ struct RecurringRulesView: View {
     @State private var showingLogConfirm = false
     @State private var showingVariableAmountSheet = false
     @State private var variableAmount: Double = 0
+    @State private var sheetLogDate: Date = .now
 
     let showOnlyOverdue: Bool
 
@@ -208,8 +209,9 @@ struct RecurringRulesView: View {
         .listStyle(.insetGrouped)
     }
 
-    /// Variable amount input sheet — shown when logging a variable-amount
-    /// rule so the user can enter the actual bill amount.
+    /// Amount + date/time input sheet — shown when logging a variable-amount
+    /// rule, or any rule whose stored amount is 0, so the user can enter
+    /// the actual amount and confirm (or adjust) when it was paid.
     private var variableAmountSheet: some View {
         NavigationStack {
             Form {
@@ -225,11 +227,20 @@ struct RecurringRulesView: View {
                         )
                     }
                 } header: {
-                    Text("How much was this bill?")
+                    Text("How much was this?")
                 } footer: {
                     if let rule = ruleToLog, rule.amount > 0 {
                         Text("Last recorded: \(Currency.format(rule.amount, code: currencyCode))")
                     }
+                }
+
+                Section {
+                    DatePicker("Date", selection: $sheetLogDate, displayedComponents: .date)
+                    DatePicker("Time", selection: $sheetLogDate, displayedComponents: .hourAndMinute)
+                } header: {
+                    Text("When")
+                } footer: {
+                    Text("Defaults to the scheduled date. Change if you're logging late or backdating.")
                 }
             }
             .navigationTitle("Log Payment")
@@ -240,8 +251,11 @@ struct RecurringRulesView: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Log") {
-                        guard let rule = ruleToLog, let date = logDate else { return }
-                        logRule(rule, date: date, customAmount: variableAmount)
+                        guard let rule = ruleToLog else { return }
+                        // Pass logDate as originalDueDate so the notification
+                        // keyed on the scheduled date is cancelled even when
+                        // the user picks a different date in the sheet.
+                        logRule(rule, date: sheetLogDate, customAmount: variableAmount, originalDueDate: logDate)
                         showingVariableAmountSheet = false
                     }
                     .fontWeight(.semibold)
@@ -249,7 +263,7 @@ struct RecurringRulesView: View {
                 }
             }
         }
-        .presentationDetents([.medium])
+        .presentationDetents([.medium, .large])
     }
 
     /// Skips the next occurrence of a recurring rule. For overdue rules,
@@ -316,35 +330,51 @@ struct RecurringRulesView: View {
         Haptics.success()
     }
 
-    /// Route the "Mark Paid" action. Fixed-amount rules show a simple
-    /// confirmation dialog; variable-amount rules open the amount input
-    /// sheet so the user can type the actual bill amount.
+    /// Route the "Mark Paid" action. Fixed-amount rules (amount > 0) show a
+    /// simple confirmation dialog; variable-amount or zero-amount rules open
+    /// the amount + date sheet so the user can enter the actual bill amount.
     private func markPaid(_ rule: RecurringRule) {
         let overdueDates = RecurringEngine.overdueDates(for: rule)
         let date = overdueDates.first ?? RecurringEngine.nextDueDate(for: rule) ?? .now
         ruleToLog = rule
         logDate = date
 
-        if rule.isVariable {
+        if rule.isVariable || rule.amount == 0 {
             // Pre-fill with prediction (uses history) or fall back to rule amount.
             let prediction = SmartAmountPredictor.predict(for: rule, on: date)
             variableAmount = prediction.amount
+            sheetLogDate = defaultSheetDate(rule: rule, scheduledDate: date)
             showingVariableAmountSheet = true
         } else {
             showingLogConfirm = true
         }
     }
 
+    /// Returns a default date/time for the amount sheet.
+    /// - For rules with a specific time, use the scheduled date as-is.
+    /// - For all-day rules (hasSpecificTime == false), keep the scheduled
+    ///   calendar date but substitute the current wall-clock time so the
+    ///   picker doesn't show midnight as the default.
+    private func defaultSheetDate(rule: RecurringRule, scheduledDate: Date) -> Date {
+        guard !rule.hasSpecificTime else { return scheduledDate }
+        let cal = Calendar.current
+        let scheduledComponents = cal.dateComponents([.year, .month, .day], from: scheduledDate)
+        let nowComponents = cal.dateComponents([.hour, .minute], from: Date())
+        var merged = scheduledComponents
+        merged.hour = nowComponents.hour
+        merged.minute = nowComponents.minute
+        return cal.date(from: merged) ?? scheduledDate
+    }
+
     /// Log a recurring rule occurrence as an expense. When `customAmount`
     /// is provided (variable-amount bills), the expense is created with
-    /// that amount and the rule's stored amount is updated for next time.
-    private func logRule(_ rule: RecurringRule, date: Date, customAmount: Double? = nil) {
+    /// that amount. `originalDueDate` is the scheduled date used to key
+    /// the pending notification — needed when the user picks a different
+    /// date in the sheet so we still cancel the right notification.
+    private func logRule(_ rule: RecurringRule, date: Date, customAmount: Double? = nil, originalDueDate: Date? = nil) {
         Haptics.success()
         withAnimation(AppAnimation.snappy) {
-            // Never overwrite rule.amount from a log action. The user's
-            // configured amount is their baseline; SmartAmountPredictor
-            // handles pre-fill from history.
-            RecurringEngine.createTransaction(rule: rule, date: date, in: context)
+            RecurringEngine.createTransaction(rule: rule, date: date, in: context, customAmount: customAmount)
             if rule.lastGeneratedDate == nil || rule.lastGeneratedDate! < date {
                 rule.lastGeneratedDate = date
             }
@@ -357,7 +387,13 @@ struct RecurringRulesView: View {
             context.safeSave()
             WidgetRefresh.refresh(using: context)
         }
+        // Cancel notification keyed on the original scheduled due date.
+        // If the user changed the date in the sheet, also cancel by that
+        // date so we don't leave a stale notification behind.
         NotificationManager.cancelConfirmation(ruleID: rule.id, dueDate: date)
+        if let original = originalDueDate, !Calendar.current.isDate(original, inSameDayAs: date) {
+            NotificationManager.cancelConfirmation(ruleID: rule.id, dueDate: original)
+        }
     }
 
     private func monthlyTotal(for rules: [RecurringRule]) -> Double {
