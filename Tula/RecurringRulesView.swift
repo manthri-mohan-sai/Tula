@@ -168,38 +168,6 @@ struct RecurringRulesView: View {
                                 Label("Delete", systemImage: "trash")
                             }
                         }
-                        .confirmationDialog(
-                            "Delete \(rule.name)?",
-                            isPresented: Binding(
-                                get: { ruleToDelete?.id == rule.id && showingDeleteConfirm },
-                                set: { if !$0 { ruleToDelete = nil; showingDeleteConfirm = false } }
-                            ),
-                            titleVisibility: .visible
-                        ) {
-                            Button("Delete", role: .destructive) {
-                                deleteRule(rule)
-                            }
-                            Button("Cancel", role: .cancel) { }
-                        } message: {
-                            Text("This recurring rule will be permanently removed.")
-                        }
-                        .confirmationDialog(
-                            "Log \(rule.name)?",
-                            isPresented: Binding(
-                                get: { ruleToLog?.id == rule.id && showingLogConfirm },
-                                set: { if !$0 { ruleToLog = nil; showingLogConfirm = false } }
-                            ),
-                            titleVisibility: .visible
-                        ) {
-                            Button("Log") {
-                                if let date = logDate {
-                                    logRule(rule, date: date)
-                                }
-                            }
-                            Button("Cancel", role: .cancel) { }
-                        } message: {
-                            Text("This will record \(Currency.format(rule.amount, code: currencyCode)) as an expense.")
-                        }
                     }
                 } header: {
                     Text(section.title)
@@ -207,6 +175,38 @@ struct RecurringRulesView: View {
             }
         }
         .listStyle(.insetGrouped)
+        // Container-level ALERTS (not per-row confirmationDialogs). Per-row
+        // attachment auto-dismissed on list re-renders; a container-level
+        // confirmationDialog anchored as a popover on iPad. An alert is centered
+        // (no anchoring), idiomatic for a destructive confirm, and stable here.
+        .alert(
+            "Delete this rule?",
+            isPresented: Binding(
+                get: { showingDeleteConfirm && ruleToDelete != nil },
+                set: { if !$0 { showingDeleteConfirm = false; ruleToDelete = nil } }
+            ),
+            presenting: ruleToDelete
+        ) { rule in
+            Button("Delete", role: .destructive) { deleteRule(rule) }
+            Button("Cancel", role: .cancel) { }
+        } message: { rule in
+            Text("“\(rule.name)” will be permanently removed.")
+        }
+        .alert(
+            "Log this rule?",
+            isPresented: Binding(
+                get: { showingLogConfirm && ruleToLog != nil },
+                set: { if !$0 { showingLogConfirm = false; ruleToLog = nil } }
+            ),
+            presenting: ruleToLog
+        ) { rule in
+            Button("Log") {
+                if let date = logDate { logRule(rule, date: date) }
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: { rule in
+            Text("This will record \(Currency.format(rule.amount, code: currencyCode)) as an expense.")
+        }
     }
 
     /// Amount + date/time input sheet — shown when logging a variable-amount
@@ -487,6 +487,11 @@ private struct RuleRow: View {
             case .expense:     return "Missing category or account"
             case .transfer, .cardPayment: return "Missing linked account"
             }
+        }
+        if rule.isEMI {
+            let left = Currency.format(rule.outstandingAmount, code: currencyCode)
+            let progress = "EMI \(rule.installmentsPaid)/\(rule.installmentTotal) paid"
+            return rule.outstandingAmount > 0 ? "\(progress) · \(left) left" : "\(progress) · done"
         }
         if rule.isBill {
             let countdown = BillReminderEngine.countdownLabel(for: rule)

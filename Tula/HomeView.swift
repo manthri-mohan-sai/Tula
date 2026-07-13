@@ -79,6 +79,7 @@ struct HomeView: View {
     @State private var editingExpense: Expense?
     @State private var showingVoiceOverlay = false
     @State private var expenseToDelete: Expense?
+    @State private var emiConvertExpense: Expense?
     @State private var showingSettings = false
     @State private var showingRecurring = false
     @State private var showingOverdueOnly = false
@@ -106,6 +107,7 @@ struct HomeView: View {
     @State private var showingAPIKeyPrompt = false
     @State private var showingTransfer = false
     @State private var showingReceiptGallery = false
+    @State private var showingEMISheet = false
     /// Explicit state-driven accent color for the glow. Updated via
     /// withAnimation so SwiftUI interpolates the RGB values smoothly.
     @State private var glowColor: Color = .tulaBrandFallback
@@ -654,6 +656,32 @@ struct HomeView: View {
                     ReceiptGalleryView()
                 }
             }
+            .sheet(isPresented: $showingEMISheet) {
+                EMISetupSheet(
+                    accounts: allAccounts.filter { !$0.isArchived },
+                    categories: allCategories.filter { !$0.isArchived },
+                    currencyCode: currencyCode
+                ) {
+                    // Materialize the first installment immediately so it shows
+                    // now; the engine handles the rest on their due dates.
+                    RecurringEngine.generateMissing(in: context)
+                }
+            }
+            .sheet(item: $emiConvertExpense) { expense in
+                EMISetupSheet(
+                    accounts: allAccounts.filter { !$0.isArchived },
+                    categories: allCategories.filter { !$0.isArchived },
+                    initialAmount: expense.amount,
+                    initialDescription: expense.merchant ?? expense.note ?? "",
+                    initialCategory: expense.category,
+                    initialAccount: expense.account,
+                    currencyCode: currencyCode
+                ) {
+                    // Replace the one-off expense with the installment plan.
+                    context.delete(expense)
+                    RecurringEngine.generateMissing(in: context)
+                }
+            }
             .sheet(isPresented: $showingShareSheet) {
                 if let image = shareableImage {
                     ShareSheet(items: [image])
@@ -968,6 +996,12 @@ struct HomeView: View {
                 showingReceiptGallery = true
             } label: {
                 Label("Receipts", systemImage: "doc.text.viewfinder")
+            }
+            Button {
+                Haptics.tap()
+                showingEMISheet = true
+            } label: {
+                Label("EMI / Installment", systemImage: "calendar.badge.clock")
             }
         } label: {
             Image(systemName: "ellipsis.circle")
@@ -2838,6 +2872,14 @@ struct HomeView: View {
             shareExpenseCard(expense)
         } label: {
             Label("Share", systemImage: "square.and.arrow.up")
+        }
+        if expense.recurringRule == nil {
+            Button {
+                Haptics.tap()
+                emiConvertExpense = expense
+            } label: {
+                Label("Convert to EMI", systemImage: "calendar.badge.clock")
+            }
         }
         Divider()
         Button(role: .destructive) {

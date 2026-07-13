@@ -141,7 +141,17 @@ struct ExpenseRow: View {
                     Text(primaryLabel)
                         .font(.subheadline.weight(.semibold))
                         .lineLimit(1)
-                    if expense.recurringRule != nil {
+                    if let emi = expense.emiLabel {
+                        Text(emi)
+                            .font(.caption2.weight(.semibold))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 1)
+                            .background(Color.tulaBrandFallback.opacity(0.15))
+                            .foregroundStyle(Color.tulaBrandFallback)
+                            .clipShape(Capsule())
+                            .fixedSize()
+                            .accessibilityLabel(emi)
+                    } else if expense.recurringRule != nil {
                         Image(systemName: "arrow.triangle.2.circlepath")
                             .font(.caption2.weight(.semibold))
                             .foregroundStyle(.secondary)

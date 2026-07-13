@@ -41,6 +41,7 @@ struct AddExpenseView: View {
     @State private var showingDeleteConfirm = false
     @State private var categoriesExpanded = false
     @State private var savingInProgress: Bool = false
+    @State private var showingEMISheet = false
 
     /// Drives the items-breakdown sheet that opens when the user taps
     /// the "View items" chip below the Item field. Sheet is read-only —
@@ -216,6 +217,13 @@ struct AddExpenseView: View {
                     receiptSection
                         .padding(.horizontal, Spacing.xl)
 
+                    // Progressive disclosure: only after an amount is entered,
+                    // and only for new expenses. Keeps the common path clean.
+                    if !isEditing, amount > 0 {
+                        emiButton
+                            .padding(.horizontal, Spacing.xl)
+                    }
+
                     if isEditing {
                         deleteButton
                             .padding(.horizontal, Spacing.xl)
@@ -224,6 +232,17 @@ struct AddExpenseView: View {
                 .padding(.bottom, Spacing.xxl)
             }
             .scrollDismissesKeyboard(.immediately)
+            .sheet(isPresented: $showingEMISheet) {
+                EMISetupSheet(
+                    accounts: allAccounts.filter { !$0.isArchived },
+                    categories: activeCategories,
+                    initialAmount: amount,
+                    currencyCode: currencyCode
+                ) {
+                    RecurringEngine.generateMissing(in: context)
+                    dismiss()
+                }
+            }
             .background(Color.tulaBackground)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -662,6 +681,30 @@ struct AddExpenseView: View {
             .foregroundStyle(Color.tulaBrandFallback)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.leading, Spacing.xs)
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// Progressive-disclosure entry to the EMI flow. Prefills the sheet with the
+    /// amount already entered here. Kept unobtrusive so the common one-tap
+    /// expense path stays fast.
+    private var emiButton: some View {
+        Button {
+            Haptics.tap()
+            showingEMISheet = true
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "calendar.badge.clock")
+                    .font(.caption.weight(.semibold))
+                Text("Paying in EMI / installments?")
+                    .font(.subheadline.weight(.medium))
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .foregroundStyle(Color.tulaBrandFallback)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .buttonStyle(.plain)
     }
