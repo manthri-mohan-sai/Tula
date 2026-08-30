@@ -159,6 +159,18 @@ enum BillReminderEngine {
         }
     }
 
+    /// Cancel pending bill notifications for a specific rule.
+    /// Called when a bill is skipped or paused so its reminders stop firing.
+    static func cancelBillNotifications(for ruleID: UUID) {
+        let prefix = "\(billPrefix)\(ruleID.uuidString)"
+        UNUserNotificationCenter.current().getPendingNotificationRequests { requests in
+            let ids = requests.filter { $0.identifier.hasPrefix(prefix) }.map(\.identifier)
+            if !ids.isEmpty {
+                UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ids)
+            }
+        }
+    }
+
     /// Mark a bill as paid: create an expense and update lastPaidDate.
     @MainActor
     static func markAsPaid(rule: RecurringRule, in context: ModelContext) {

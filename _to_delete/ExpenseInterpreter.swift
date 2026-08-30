@@ -25,15 +25,6 @@ struct ExpenseInterpreter {
     let merchantRules: [MerchantRule]
     let defaultAccount: Account?
 
-    /// Anchor for relative date tokens ("yesterday", "last Tuesday").
-    ///
-    /// Defaults to `.now`, which is what every live-entry surface wants. The
-    /// catch-up backfill sets it to the day the user selected so that text
-    /// typed against a past day resolves against that day rather than today.
-    /// Defaulted so the memberwise initialiser stays source-compatible with
-    /// existing call sites.
-    var referenceDate: Date = .now
-
     private var activeAccounts: [Account] { accounts.filter { !$0.isArchived } }
 
     // MARK: - Public entry
@@ -69,9 +60,7 @@ struct ExpenseInterpreter {
         let merchant = resolveMerchant(in: segment)
         let segItems = Self.extractItems(segment)
         let items = segItems.isEmpty ? sharedItems : segItems
-        let date = ExpenseParser.extractRelativeDate(
-            from: segment, relativeTo: referenceDate
-        ).date
+        let date = ExpenseParser.extractRelativeDate(from: segment).date
 
         let confidence = ParseConfidence(
             amount: .high,                                   // regex over digits — exact

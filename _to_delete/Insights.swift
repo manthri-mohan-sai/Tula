@@ -84,8 +84,7 @@ enum InsightEngine {
         accounts: [Account],
         currencyCode: String,
         recurringRules: [RecurringRule] = [],
-        dailyBudget: Double? = nil,
-        noSpendDays: Set<String> = []
+        dailyBudget: Double? = nil
     ) -> [Insight] {
         var insights: [Insight] = []
 
@@ -140,10 +139,7 @@ enum InsightEngine {
 
         // MARK: Under-budget streak
 
-        let streak = computeUnderBudgetStreak(
-            expenses: expenses, dailyBudget: dailyBudget,
-            noSpendDays: noSpendDays, calendar: calendar, now: now
-        )
+        let streak = computeUnderBudgetStreak(expenses: expenses, dailyBudget: dailyBudget, calendar: calendar, now: now)
         if streak >= 3 {
             insights.append(Insight(
                 id: "streak",
@@ -447,31 +443,16 @@ enum InsightEngine {
 
     /// Under-budget streak for the hero chip. Returns 0 when no daily
     /// budget is available (no streak shown if no budget is set).
-    static func underBudgetStreak(
-        expenses: [Expense],
-        dailyBudget: Double?,
-        noSpendDays: Set<String> = []
-    ) -> Int {
+    static func underBudgetStreak(expenses: [Expense], dailyBudget: Double?) -> Int {
         guard let dailyBudget, dailyBudget > 0 else { return 0 }
-        return computeUnderBudgetStreak(
-            expenses: expenses, dailyBudget: dailyBudget,
-            noSpendDays: noSpendDays, calendar: .current, now: .now
-        )
+        return computeUnderBudgetStreak(expenses: expenses, dailyBudget: dailyBudget, calendar: .current, now: .now)
     }
 
     /// Count consecutive days (including today) where daily spending stayed
-    /// at or below the daily budget pace.
-    ///
-    /// **A day the user did not log does not count.** The spend map has no
-    /// entry for an unlogged day, so `?? 0` used to make it indistinguishable
-    /// from a genuine zero-spend day — and `0 <= dailyBudget` always holds.
-    /// The streak therefore grew for every day the user was away, which meant
-    /// the one number surfaced to the user rewarded *not logging*. A day now
-    /// counts only when we actually know what happened on it: it has
-    /// expenses, or the user explicitly closed it as no-spend.
+    /// at or below the daily budget pace. Zero-spend days always count —
+    /// spending nothing is the ultimate win for a mindful spending app.
     private static func computeUnderBudgetStreak(
         expenses: [Expense], dailyBudget: Double?,
-        noSpendDays: Set<String>,
         calendar: Calendar, now: Date
     ) -> Int {
         guard let dailyBudget, dailyBudget > 0 else { return 0 }
@@ -486,18 +467,10 @@ enum InsightEngine {
         var streak = 0
         var cursor = calendar.startOfDay(for: now)
 
-        // Today is still in progress, so it is never a *break* — only a
-        // possible contribution. Two cases move the cursor back a day without
-        // ending the walk: today is already over budget, or today has no data
-        // yet (no expenses and no no-spend marker). The second case matters
-        // most: opening the app before the day's first spend must not read
-        // "0-day streak" after a fortnight of daily logging.
-        let todayIsKnown = knownDaySpend(
-            cursor, spendByDay: spendByDay,
-            noSpendDays: noSpendDays, calendar: calendar
-        ) != nil
+        // Today might not be over yet — if no spending so far, it still counts
         let todaySpend = spendByDay[cursor] ?? 0
-        if !todayIsKnown || todaySpend > dailyBudget {
+        if todaySpend > dailyBudget {
+            // Today already over budget — check from yesterday
             cursor = calendar.date(byAdding: .day, value: -1, to: cursor) ?? cursor
         }
 
@@ -507,10 +480,7 @@ enum InsightEngine {
         let earliest = expenses.map(\.date).min().map { calendar.startOfDay(for: $0) }
             ?? cursor // no expenses → streak is at most 1 (today)
         while cursor >= earliest {
-            guard let daySpend = knownDaySpend(
-                cursor, spendByDay: spendByDay,
-                noSpendDays: noSpendDays, calendar: calendar
-            ) else { break }
+            let daySpend = spendByDay[cursor] ?? 0
             guard daySpend <= dailyBudget else { break }
             streak += 1
             guard let prev = calendar.date(byAdding: .day, value: -1, to: cursor) else { break }
@@ -518,20 +488,6 @@ enum InsightEngine {
         }
 
         return streak
-    }
-
-    /// Spend on a day we have real information about: logged expenses, or an
-    /// explicit no-spend marker. Returns nil for a day the user simply never
-    /// logged, which breaks the streak rather than silently extending it.
-    private static func knownDaySpend(
-        _ day: Date,
-        spendByDay: [Date: Double],
-        noSpendDays: Set<String>,
-        calendar: Calendar
-    ) -> Double? {
-        if let spend = spendByDay[day] { return spend }
-        if noSpendDays.contains(DayKey.string(from: day, calendar: calendar)) { return 0 }
-        return nil
     }
 
     private static func underBudgetMessage(for streak: Int) -> String {

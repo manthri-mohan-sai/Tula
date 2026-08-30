@@ -294,6 +294,9 @@ struct RecurringRulesView: View {
             }
         }
         NotificationManager.cancelConfirmations(for: rule.id)
+        if rule.isBill {
+            BillReminderEngine.cancelBillNotifications(for: rule.id)
+        }
         Haptics.success()
     }
 

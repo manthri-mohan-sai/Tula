@@ -898,23 +898,8 @@ enum ExpenseParser {
     static func extractRelativeDate(
         from text: String
     ) -> (date: Date, remaining: String) {
-        extractRelativeDate(from: text, relativeTo: .now)
-    }
-
-    /// Reference-anchored variant.
-    ///
-    /// Backfill flows resolve relative tokens against the day the user
-    /// selected rather than against today: typing "chai 30" while catching up
-    /// on Monday must land on Monday, and "yesterday" typed in that context
-    /// means Sunday. The no-reference overload above delegates here with
-    /// `.now`, so every existing call site keeps its previous behaviour
-    /// exactly.
-    static func extractRelativeDate(
-        from text: String,
-        relativeTo reference: Date
-    ) -> (date: Date, remaining: String) {
         let calendar = Calendar.current
-        let now = reference
+        let now = Date.now
         var cleaned = text
 
         // "day before yesterday" / "parso" — must check before "yesterday"

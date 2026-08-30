@@ -251,6 +251,7 @@ enum ExpenseSource: String, Codable {
     case widget       // Quick-add from widget
     case recurring    // Auto-created by a RecurringRule
     case imported     // Imported from a CSV file
+    case automation   // Parsed from a bank/card alert via Shortcuts
 }
 
 // MARK: - Transfer

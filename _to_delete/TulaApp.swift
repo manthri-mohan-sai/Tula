@@ -451,9 +451,4 @@ extension Notification.Name {
     static let tulaStartReceiptScan = Notification.Name("tula.startReceiptScan")
     static let tulaQuickAction = Notification.Name("tula.quickAction")
     static let tulaExpenseSaved = Notification.Name("tula.expenseSaved")
-
-    /// Posted when the user taps a gap-aware log reminder. HomeView observes
-    /// this and opens the catch-up sheet, so the notification lands the user
-    /// on the flow instead of on Home to go find it.
-    static let tulaOpenCatchUp = Notification.Name("tula.openCatchUp")
 }

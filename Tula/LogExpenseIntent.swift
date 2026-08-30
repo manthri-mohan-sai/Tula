@@ -48,6 +48,16 @@ struct LogExpenseIntent: AppIntent {
 
     @MainActor
     func perform() async throws -> some IntentResult & ProvidesDialog {
+        // A bank or card alert routed here by mistake produces silent garbage:
+        // the interpreter segments multi-amount text, so one alert becomes an
+        // expense per number it finds — including the available balance and
+        // the dispute helpline — each labelled with a residue token. Detect
+        // machine-shaped input and hand it to the transaction parser rather
+        // than depending on the right Shortcuts action being chosen.
+        if let outcome = TransactionLogger.logIfBankAlert(message: expenseDescription) {
+            return .result(dialog: IntentDialog(stringLiteral: outcome.spoken))
+        }
+
         let context = try sharedModelContext()
 
         let accounts = (try? context.fetch(FetchDescriptor<Account>())) ?? []

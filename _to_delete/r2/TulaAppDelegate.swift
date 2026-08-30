@@ -84,10 +84,6 @@ final class TulaAppDelegate: NSObject, UIApplicationDelegate, UNUserNotification
                 using: context,
                 upcomingRecurrings: buildUpcomingRecurrings(in: context)
             )
-            // Top up the reminder queue while we have a context and a free
-            // wake. Without this the queue drains after a week for a user who
-            // never opens the app.
-            NotificationManager.refreshDailyReminder(using: context)
             task.setTaskCompleted(success: true)
         }
     }
@@ -129,23 +125,6 @@ final class TulaAppDelegate: NSObject, UIApplicationDelegate, UNUserNotification
                                   didReceive response: UNNotificationResponse) async {
         let info = response.notification.request.content.userInfo
         let categoryID = response.notification.request.content.categoryIdentifier
-
-        // Lock Screen actions on the nightly log reminder. Handled before the
-        // route check so the text field and "Nothing spent" work regardless of
-        // which copy variant the reminder was scheduled with.
-        if categoryID == NotificationManager.logCategoryID {
-            switch response.actionIdentifier {
-            case NotificationManager.logTextActionID:
-                let typed = (response as? UNTextInputNotificationResponse)?.userText ?? ""
-                await QuickLogNotificationHandler.log(text: typed)
-                return
-            case NotificationManager.logNoSpendActionID:
-                await MainActor.run { QuickLogNotificationHandler.markNoSpendToday() }
-                return
-            default:
-                break   // a plain tap falls through to the route check below
-            }
-        }
 
         // Gap-aware log reminder tapped — take the user straight to catch-up.
         if info["route"] as? String == NotificationManager.catchUpRoute,

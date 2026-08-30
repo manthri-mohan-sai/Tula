@@ -34,128 +34,21 @@ enum NotificationManager {
 
     // MARK: - Log Reminder
 
-    /// Route marker carried in `userInfo` so a tap can open the catch-up
-    /// flow directly rather than dropping the user on Home to find it.
-    static let catchUpRoute = "catchUp"
+    static func scheduleLogReminder(at hour: Int, minute: Int) {
+        cancelDailyReminder()
 
-    /// Identifier prefix for queued log reminders. Format:
-    /// `{prefix}{yyyy-MM-dd}` — one request per night, so a single night can
-    /// be cancelled by name the moment its day is closed.
-    private static let logReminderPrefix = "tula.daily.reminder."
+        let content = UNMutableNotificationContent()
+        content.sound = .default
+        content.title = "Time to log your day"
+        content.body = "Tap to capture today's expenses in Tula."
 
-    /// Nights queued ahead.
-    ///
-    /// A single repeating trigger cannot be conditional — it fires whether or
-    /// not you logged, which is what taught the brain to filter it. A single
-    /// re-armed trigger *is* conditional but fails silently: if the app is
-    /// never opened and the background task never runs, reminders stop
-    /// forever. Queuing a week of individually-addressable requests gets both
-    /// properties, and mirrors how `scheduleUpcomingConfirmations` already
-    /// pre-queues its notifications.
-    private static let logReminderQueueDepth = 7
+        var dateComponents = DateComponents()
+        dateComponents.hour = hour
+        dateComponents.minute = minute
 
-    /// Queues the next week of nightly log reminders, skipping any night whose
-    /// day is already closed.
-    ///
-    /// Requests use deterministic per-day identifiers, so re-running this
-    /// *replaces* rather than duplicates — no cancel-then-add race with the
-    /// asynchronous pending-request sweep in `cancelDailyReminder`.
-    static func scheduleLogReminder(
-        at hour: Int,
-        minute: Int,
-        context: ModelContext? = nil
-    ) {
-        let center = UNUserNotificationCenter.current()
-        // Retire the pre-R2 single repeating request if it is still pending.
-        center.removePendingNotificationRequests(withIdentifiers: [reminderID])
-
-        let calendar = Calendar.current
-        let now = Date.now
-        let today = calendar.startOfDay(for: now)
-
-        let gap = context.flatMap { unloggedGap(using: $0) }
-        let todayClosed = context.map { isDayClosed(today, using: $0, calendar: calendar) } ?? false
-
-        for offset in 0..<logReminderQueueDepth {
-            guard let day = calendar.date(byAdding: .day, value: offset, to: today),
-                  let fireDate = calendar.date(
-                      bySettingHour: hour, minute: minute, second: 0, of: day
-                  ),
-                  fireDate > now
-            else { continue }
-
-            let identifier = logReminderPrefix + DayKey.string(from: day, calendar: calendar)
-
-            // Tonight is already handled — remove any request left from an
-            // earlier pass today rather than letting it fire.
-            if offset == 0, todayClosed {
-                center.removePendingNotificationRequests(withIdentifiers: [identifier])
-                continue
-            }
-
-            let content = UNMutableNotificationContent()
-            content.sound = .default
-            content.categoryIdentifier = logCategoryID
-
-            // Only tonight gets data-driven copy. Later nights are scheduled
-            // against data that will be stale by the time they fire, and the
-            // queue is re-topped on every foreground and background refresh —
-            // so tonight is always the accurate one.
-            if offset == 0, let gap, gap.count >= 2 {
-                // During an open gap, "Time to log your day" is the wrong
-                // message: the user is not behind on today, they are behind on
-                // last week. Neutral framing throughout — no "you broke your
-                // streak", because guilt drives avoidance, which is the churn
-                // this is meant to reverse.
-                content.title = "\(gap.count) days unlogged"
-                content.body = "\(gap.label) still empty. Catching up takes about 30 seconds."
-                content.userInfo["route"] = catchUpRoute
-            } else {
-                content.title = "Time to log your day"
-                content.body = "Type it right here, or tap to open Tula."
-            }
-
-            let components = calendar.dateComponents(
-                [.year, .month, .day, .hour, .minute], from: fireDate
-            )
-            let trigger = UNCalendarNotificationTrigger(
-                dateMatching: components, repeats: false
-            )
-            center.add(
-                UNNotificationRequest(
-                    identifier: identifier, content: content, trigger: trigger
-                )
-            ) { _ in }
-        }
-    }
-
-    /// Removes tonight's reminder. Called the moment today is closed — by a
-    /// save, or by the "Nothing spent" action.
-    static func suppressTodaysLogReminder(calendar: Calendar = .current) {
-        let identifier = logReminderPrefix + DayKey.string(from: .now, calendar: calendar)
-        UNUserNotificationCenter.current()
-            .removePendingNotificationRequests(withIdentifiers: [identifier])
-    }
-
-    /// Whether `day` needs no further attention: it has an expense, or the
-    /// user explicitly closed it as no-spend.
-    private static func isDayClosed(
-        _ day: Date,
-        using context: ModelContext,
-        calendar: Calendar
-    ) -> Bool {
-        if NoSpendDayStore(
-            raw: UserDefaults.standard.string(forKey: "noSpendDaysRaw") ?? ""
-        ).contains(day, calendar: calendar) {
-            return true
-        }
-        let dayStart = calendar.startOfDay(for: day)
-        guard let dayEnd = calendar.date(byAdding: .day, value: 1, to: dayStart)
-        else { return false }
-        let descriptor = FetchDescriptor<Expense>(
-            predicate: #Predicate { $0.date >= dayStart && $0.date < dayEnd }
-        )
-        return ((try? context.fetchCount(descriptor)) ?? 0) > 0
+        let trigger = UNCalendarNotificationTrigger(dateMatching: dateComponents, repeats: true)
+        let request = UNNotificationRequest(identifier: reminderID, content: content, trigger: trigger)
+        UNUserNotificationCenter.current().add(request) { _ in }
     }
 
     // MARK: - Daily Summary
@@ -196,7 +89,7 @@ enum NotificationManager {
             let hour = defaults.integer(forKey: "reminderHour")
             let minute = defaults.integer(forKey: "reminderMinute")
             let effectiveHour = (hour == 0 && minute == 0 && !defaults.bool(forKey: "reminderHourExplicitlySet")) ? 21 : hour
-            scheduleLogReminder(at: effectiveHour, minute: minute, context: context)
+            scheduleLogReminder(at: effectiveHour, minute: minute)
         }
         if defaults.bool(forKey: "summaryEnabled") {
             let hour = defaults.integer(forKey: "summaryHour")
@@ -324,82 +217,29 @@ enum NotificationManager {
         return total / 7.0
     }
 
-    /// Unlogged days in the recent window, for reminder copy.
-    ///
-    /// Mirrors `CatchUpDetector`'s window and no-spend handling but works off
-    /// a `ModelContext` fetch, because this runs from notification scheduling
-    /// where no `@Query` is available. Returns nil when there is no gap.
-    private static func unloggedGap(
-        using context: ModelContext,
-        now: Date = .now,
-        calendar: Calendar = .current
-    ) -> (count: Int, label: String)? {
-        let today = calendar.startOfDay(for: now)
-        guard let windowStart = calendar.date(
-            byAdding: .day, value: -CatchUpDetector.maxLookbackDays, to: today
-        ) else { return nil }
-
-        let descriptor = FetchDescriptor<Expense>(
-            predicate: #Predicate { $0.date >= windowStart }
-        )
-        let recent = (try? context.fetch(descriptor)) ?? []
-
-        var loggedKeys: Set<String> = []
-        for expense in recent {
-            loggedKeys.insert(DayKey.string(from: expense.date, calendar: calendar))
-        }
-        let noSpend = NoSpendDayStore(
-            raw: UserDefaults.standard.string(forKey: "noSpendDaysRaw") ?? ""
-        ).keys
-
-        // Never nag about days before the user's first expense — otherwise a
-        // day-two user is told they missed a week.
-        var firstDescriptor = FetchDescriptor<Expense>(
-            sortBy: [SortDescriptor(\Expense.date)]
-        )
-        firstDescriptor.fetchLimit = 1
-        let firstEver = (try? context.fetch(firstDescriptor))?.first?.date
-
-        var missed: [Date] = []
-        var cursor = windowStart
-        while cursor < today {
-            let key = DayKey.string(from: cursor, calendar: calendar)
-            let afterFirst = firstEver.map { cursor >= calendar.startOfDay(for: $0) } ?? false
-            if afterFirst, !loggedKeys.contains(key), !noSpend.contains(key) {
-                missed.append(cursor)
+    private static func loggingStreak(calendar: Calendar, context: ModelContext) -> Int {
+        var streak = 0
+        var checkDate = calendar.date(byAdding: .day, value: -1, to: .now) ?? .now
+        for _ in 0..<30 {
+            let dayStart = calendar.startOfDay(for: checkDate)
+            guard let dayEnd = calendar.date(byAdding: .day, value: 1, to: dayStart) else { break }
+            let descriptor = FetchDescriptor<Expense>(
+                predicate: #Predicate { $0.date >= dayStart && $0.date < dayEnd }
+            )
+            let count = (try? context.fetchCount(descriptor)) ?? 0
+            if count > 0 {
+                streak += 1
+                checkDate = calendar.date(byAdding: .day, value: -1, to: checkDate) ?? checkDate
+            } else {
+                break
             }
-            guard let next = calendar.date(byAdding: .day, value: 1, to: cursor) else { break }
-            cursor = next
         }
-
-        guard !missed.isEmpty else { return nil }
-
-        let names = missed.suffix(3).map { date -> String in
-            calendar.shortWeekdaySymbols[calendar.component(.weekday, from: date) - 1]
-        }
-        let label: String
-        switch names.count {
-        case 1: label = "\(names[0]) is"
-        case 2: label = "\(names[0]) and \(names[1]) are"
-        default: label = names.dropLast().joined(separator: ", ") + " and \(names[names.count - 1]) are"
-        }
-        return (missed.count, label)
+        return streak
     }
 
-    /// Cancels every pending log reminder.
-    ///
-    /// The prefix sweep is asynchronous, which is safe here because nothing is
-    /// being scheduled concurrently — `scheduleLogReminder` deliberately does
-    /// not call this, relying on deterministic identifiers to replace instead.
     static func cancelDailyReminder() {
-        let center = UNUserNotificationCenter.current()
-        center.removePendingNotificationRequests(withIdentifiers: [reminderID])
-        center.getPendingNotificationRequests { requests in
-            let queued = requests.map(\.identifier)
-                .filter { $0.hasPrefix(logReminderPrefix) }
-            guard !queued.isEmpty else { return }
-            center.removePendingNotificationRequests(withIdentifiers: queued)
-        }
+        UNUserNotificationCenter.current()
+            .removePendingNotificationRequests(withIdentifiers: [reminderID])
     }
 
     static func cancelDailySummary() {
@@ -606,12 +446,6 @@ enum NotificationManager {
     /// Action identifiers carried in `UNNotificationResponse.actionIdentifier`.
     static let confirmLogActionID = "tula.confirm.log"
     static let confirmSkipActionID = "tula.confirm.skip"
-
-    /// Category carried by the nightly log reminder, giving it a text field
-    /// and a one-tap "nothing spent" escape.
-    static let logCategoryID = "tula.log"
-    static let logTextActionID = "tula.log.text"
-    static let logNoSpendActionID = "tula.log.nospend"
     /// Stable identifier prefix for confirmation notification requests.
     /// Format: `{prefix}{ruleUUID}-{dueDateEpoch}` — both pieces are
     /// recoverable from the request ID alone if userInfo is ever lost.
@@ -651,34 +485,7 @@ enum NotificationManager {
             options: []
         )
 
-        // Log reminder: type the expense straight into the notification.
-        // Background options (no `.foreground`) are the whole point — the
-        // expense saves without the app ever coming to front, which is the
-        // difference between logging in twenty seconds and not logging at all.
-        let quickLogAction = UNTextInputNotificationAction(
-            identifier: logTextActionID,
-            title: "Log",
-            options: [],
-            textInputButtonTitle: "Save",
-            textInputPlaceholder: "e.g. coffee 120"
-        )
-        // Without an honest way to close an empty day, the only way to silence
-        // the nag is to ignore it — which is how users learn to ignore all of
-        // them. This also protects the logging streak.
-        let noSpendAction = UNNotificationAction(
-            identifier: logNoSpendActionID,
-            title: "Nothing spent",
-            options: []
-        )
-        let logCategory = UNNotificationCategory(
-            identifier: logCategoryID,
-            actions: [quickLogAction, noSpendAction],
-            intentIdentifiers: [],
-            options: []
-        )
-
-        UNUserNotificationCenter.current()
-            .setNotificationCategories([confirmCategory, billCategory, logCategory])
+        UNUserNotificationCenter.current().setNotificationCategories([confirmCategory, billCategory])
     }
 
     /// Schedules a single confirmation notification for the given rule at

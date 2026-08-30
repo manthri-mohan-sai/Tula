@@ -22,7 +22,7 @@ enum RecurringEngine {
 
         // Count active confirmation-required rules to compute a per-rule
         // notification cap that stays within iOS's 64-notification limit.
-        let confirmRuleCount = rules.filter { !$0.isPaused && $0.confirmationRequired }.count
+        let confirmRuleCount = rules.filter { !$0.isPaused && $0.confirmationRequired && $0.amount > 0 }.count
 
         for rule in rules {
             // Auto-resume: if rule is paused but its `pausedUntil` has
@@ -55,6 +55,14 @@ enum RecurringEngine {
             // upcoming occurrences so iOS can fire them even when
             // the app is closed.
             if rule.confirmationRequired {
+                // Zero-amount rules have nothing meaningful to confirm —
+                // the alert would read "₹0 · Did you have this?". Skip
+                // scheduling and clear any alerts queued before the
+                // amount was zeroed out.
+                if rule.amount <= 0 {
+                    NotificationManager.cancelConfirmations(for: rule.id)
+                    continue
+                }
                 scheduleUpcomingConfirmations(for: rule, calendar: calendar, totalConfirmRules: confirmRuleCount)
                 continue
             }

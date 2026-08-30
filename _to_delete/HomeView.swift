@@ -127,23 +127,6 @@ struct HomeView: View {
     @State private var cachedOverdueDates: [UUID: [Date]] = [:]
     @State private var cachedPredictions:
         [UUID: SmartAmountPredictor.Prediction] = [:]
-
-    /// What the user missed while away. Recomputed from stored data on every
-    /// foreground rather than accumulated, so it can never drift.
-    @State private var catchUpState: CatchUpState = .clear
-    @State private var showingCatchUp = false
-    /// Days the user explicitly closed as "nothing spent". Comma-joined
-    /// `yyyy-MM-dd`, same shape as `dismissedInsightIDs`.
-    @AppStorage("noSpendDaysRaw") private var noSpendDaysRaw: String = ""
-    /// Timestamp of the newest unlogged day the user dismissed. Stored as a
-    /// watermark rather than a flag so a *new* gap re-surfaces the card
-    /// automatically — and unlike `dismissedUpcomingKeys`, it survives
-    /// relaunch.
-    @AppStorage("catchUpDismissedThrough") private var catchUpDismissedThrough:
-        Double = 0
-    /// Floor set by dismissing the "older days" row.
-    @AppStorage("catchUpHorizon") private var catchUpHorizon: Double = 0
-
     private var networkMonitor = NetworkMonitor.shared
 
     @AppStorage("lastUsedAccountID") private var lastUsedAccountID: String = ""
@@ -451,8 +434,7 @@ struct HomeView: View {
             accounts: allAccounts,
             currencyCode: currencyCode,
             recurringRules: allRecurringRules,
-            dailyBudget: dailyBudget,
-            noSpendDays: noSpendDays
+            dailyBudget: dailyBudget
         )
 
         // Merge budget pacing insights
@@ -581,16 +563,6 @@ struct HomeView: View {
             ) { _ in
                 showToast("Expense saved")
             }
-            .onReceive(
-                NotificationCenter.default.publisher(for: .tulaOpenCatchUp)
-            ) { _ in
-                // Recompute first: the notification was composed when it was
-                // scheduled, so the gap may already have been filled since.
-                refreshCatchUpState()
-                if catchUpState.unloggedCount > 0 {
-                    showingCatchUp = true
-                }
-            }
             .sensoryFeedback(
                 .impact(flexibility: .solid, intensity: 0.6),
                 trigger: editingExpense
@@ -607,17 +579,26 @@ struct HomeView: View {
                     currencyCode: currencyCode,
                     topMerchants: frequentMerchantNames,
                     onSave: { expense in
-                        ExpenseWriter.commit(
-                            built: [expense],
-                            in: context,
-                            budgets: Array(activeBudgets)
+                        context.insert(expense)
+                        UserLearningEngine.learn(
+                            merchant: expense.merchant,
+                            category: expense.category?.name,
+                            amount: expense.amount,
+                            hour: Calendar.current.component(
+                                .hour,
+                                from: expense.date
+                            )
                         )
+                        context.safeSave()
+                        WidgetRefresh.refresh(using: context)
+                        NotificationManager.refreshDailyReminder(using: context)
                         if let acct = expense.account {
                             lastUsedAccountID = acct.id.uuidString
                         }
                         Haptics.success()
                         triggerSavePulse()
                         showToast("Expense saved · Voice")
+                        evaluateBudgetAlerts()
                     },
                     onEdit: { expense in
                         context.insert(expense)
@@ -631,17 +612,28 @@ struct HomeView: View {
                     },
                     onSaveMany: { expenses in
                         guard !expenses.isEmpty else { return }
-                        ExpenseWriter.commit(
-                            built: expenses,
-                            in: context,
-                            budgets: Array(activeBudgets)
-                        )
+                        for expense in expenses {
+                            context.insert(expense)
+                            UserLearningEngine.learn(
+                                merchant: expense.merchant,
+                                category: expense.category?.name,
+                                amount: expense.amount,
+                                hour: Calendar.current.component(
+                                    .hour,
+                                    from: expense.date
+                                )
+                            )
+                        }
+                        context.safeSave()
+                        WidgetRefresh.refresh(using: context)
+                        NotificationManager.refreshDailyReminder(using: context)
                         if let last = expenses.last?.account {
                             lastUsedAccountID = last.id.uuidString
                         }
                         Haptics.success()
                         triggerSavePulse()
                         showToast("\(expenses.count) expenses saved · Voice")
+                        evaluateBudgetAlerts()
                     },
                     onDismiss: {}
                 )
@@ -660,20 +652,6 @@ struct HomeView: View {
             }
             .sheet(isPresented: $showingTransfer) {
                 TransferFormView()
-            }
-            .sheet(isPresented: $showingCatchUp) {
-                CatchUpSheet(
-                    state: catchUpState,
-                    accounts: allAccounts,
-                    categories: allCategories,
-                    merchantRules: allMerchantRules,
-                    defaultAccount: defaultAccount,
-                    currencyCode: currencyCode,
-                    onCommitDrafts: commitCatchUp,
-                    onSetNoSpend: setNoSpend,
-                    onConfirmRecurring: confirmCatchUpRecurring,
-                    onDismissOlder: dismissOlderCatchUpDays
-                )
             }
             .sheet(isPresented: $showingReceiptGallery) {
                 NavigationStack {
@@ -837,21 +815,6 @@ struct HomeView: View {
             if !networkMonitor.isConnected {
                 offlineBanner
                     .transition(.move(edge: .top).combined(with: .opacity))
-            }
-            if catchUpState.unloggedCount > 0, !catchUpDismissed {
-                CatchUpCard(
-                    state: catchUpState,
-                    streak: loggingStreakDays,
-                    action: {
-                        Haptics.tap()
-                        showingCatchUp = true
-                    },
-                    onDismiss: dismissCatchUp
-                )
-                .offset(y: appeared ? 0 : 16)
-                .opacity(appeared ? 1 : 0)
-                .animation(AppAnimation.gentle.delay(0.04), value: appeared)
-                .transition(.move(edge: .top).combined(with: .opacity))
             }
             quickLogSection
                 .offset(y: appeared ? 0 : 16)
@@ -1104,10 +1067,6 @@ struct HomeView: View {
                         todayInline
                     }
 
-                    if loggingStreakDays >= 2 {
-                        loggingStreakChip
-                    }
-
                     if let top = topCategoryInsight {
                         topCategoryLine(top)
                             .padding(.top, 1)
@@ -1145,26 +1104,6 @@ struct HomeView: View {
             .accessibilityHint("Double tap to view stats")
         }
         .buttonStyle(.plain)
-    }
-
-    /// Logging streak chip.
-    ///
-    /// Shows days in a row the user closed the books, which is the habit the
-    /// app depends on — deliberately not the under-budget streak, which
-    /// measures spending level and so resets on a legitimately expensive day.
-    /// Hidden below two days: a "1-day streak" is noise, not encouragement.
-    private var loggingStreakChip: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "flame.fill")
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(.orange)
-                .frame(width: 14)
-            Text("\(loggingStreakDays)-day logging streak")
-                .font(.caption.weight(.medium))
-                .foregroundStyle(.secondary)
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(loggingStreakDays) day logging streak")
     }
 
     /// Explicit "top category" line for the hero: category icon + name + its
@@ -1314,11 +1253,21 @@ struct HomeView: View {
             currencyCode: currencyCode,
             onSaveDrafts: { expenses in
                 guard !expenses.isEmpty else { return }
-                ExpenseWriter.commit(
-                    built: expenses,
-                    in: context,
-                    budgets: Array(activeBudgets)
-                )
+                for expense in expenses {
+                    context.insert(expense)
+                    UserLearningEngine.learn(
+                        merchant: expense.merchant,
+                        category: expense.category?.name,
+                        amount: expense.amount,
+                        hour: Calendar.current.component(
+                            .hour,
+                            from: expense.date
+                        )
+                    )
+                }
+                context.safeSave()
+                WidgetRefresh.refresh(using: context)
+                NotificationManager.refreshDailyReminder(using: context)
                 if let last = expenses.last?.account {
                     lastUsedAccountID = last.id.uuidString
                 }
@@ -1328,6 +1277,7 @@ struct HomeView: View {
                     expenses.count > 1
                         ? "\(expenses.count) expenses saved" : "Expense saved"
                 )
+                evaluateBudgetAlerts()
             },
             isSmartParsing: smartParseInFlight > 0,
             onMicTap: { showingVoiceOverlay = true }
@@ -1355,14 +1305,18 @@ struct HomeView: View {
                 account: account
             )
             expense.rawInput = parsed.rawInput
+            context.insert(expense)
+            UserLearningEngine.learn(
+                merchant: expense.merchant,
+                category: expense.category?.name,
+                amount: expense.amount,
+                hour: Calendar.current.component(.hour, from: expense.date)
+            )
             lastAccount = account
             savedExpenses.append(expense)
         }
-        ExpenseWriter.commit(
-            built: savedExpenses,
-            in: context,
-            budgets: Array(activeBudgets)
-        )
+        context.safeSave()
+        WidgetRefresh.refresh(using: context)
         if let last = lastAccount { lastUsedAccountID = last.id.uuidString }
         Haptics.success()
         triggerSavePulse()
@@ -1370,9 +1324,14 @@ struct HomeView: View {
         showToast(
             valid.count == 1 ? "Expense saved" : "\(valid.count) expenses saved"
         ) {
-            ExpenseWriter.revert(undoTargets, in: context)
+            for expense in undoTargets {
+                context.delete(expense)
+            }
+            context.safeSave()
+            WidgetRefresh.refresh(using: context)
             Haptics.warning()
         }
+        evaluateBudgetAlerts()
 
         // ─── Smart enrichment ───────────────────────────────────────
         // For any expense that rules couldn't categorize, fire Apple
@@ -2329,160 +2288,6 @@ struct HomeView: View {
         cachedNextDueDates = nextDates
         cachedOverdueDates = overdueDates
         cachedPredictions = predictions
-        // Pass the dictionary directly rather than reading `cachedOverdueDates`
-        // back: catch-up detection depends on it, and relying on a @State
-        // write being visible to a read in the same call is a bug waiting to
-        // happen.
-        refreshCatchUpState(overdueDates: overdueDates)
-    }
-
-    // MARK: - Catch-up
-
-    private var noSpendDays: Set<String> {
-        NoSpendDayStore(raw: noSpendDaysRaw).keys
-    }
-
-    /// Consecutive days the user closed the books. Distinct from the
-    /// under-budget insight, which measures spending level rather than habit.
-    private var loggingStreakDays: Int {
-        LoggingStreak.current(expenses: allExpenses, noSpendDays: noSpendDays)
-    }
-
-    private var catchUpDismissed: Bool {
-        guard let newest = catchUpState.newestUnloggedDate else { return false }
-        return catchUpDismissedThrough >= newest.timeIntervalSince1970
-    }
-
-    /// Recomputes catch-up state from stored data.
-    ///
-    /// `extra` carries expenses just written in this run loop: `@Query`
-    /// results do not refresh until the next view update, so a commit would
-    /// otherwise still see the gap it just filled. Day-keyed aggregation makes
-    /// any overlap harmless.
-    private func refreshCatchUpState(
-        overdueDates: [UUID: [Date]]? = nil,
-        extra: [Expense] = []
-    ) {
-        let horizon = catchUpHorizon > 0
-            ? Date(timeIntervalSince1970: catchUpHorizon) : nil
-        catchUpState = CatchUpDetector.state(
-            expenses: extra.isEmpty ? allExpenses : allExpenses + extra,
-            noSpendDays: noSpendDays,
-            recurringRules: allRecurringRules,
-            overdueDates: overdueDates ?? cachedOverdueDates,
-            expectedAmount: { rule, date in
-                SmartAmountPredictor.predict(for: rule, on: date).amount
-            },
-            notBefore: horizon
-        )
-    }
-
-    private func dismissCatchUp() {
-        guard let newest = catchUpState.newestUnloggedDate else { return }
-        withAnimation(AppAnimation.snappy) {
-            catchUpDismissedThrough = newest.timeIntervalSince1970
-        }
-    }
-
-    /// Moves the detection floor past the truncated days instead of writing
-    /// no-spend markers for them — the user is saying "stop counting these",
-    /// not "I spent nothing on them".
-    private func dismissOlderCatchUpDays() {
-        guard let oldestShown = catchUpState.days.first?.date else { return }
-        catchUpHorizon = oldestShown.timeIntervalSince1970
-        refreshCatchUpState()
-    }
-
-    private func setNoSpend(_ date: Date, _ marked: Bool) {
-        var store = NoSpendDayStore(raw: noSpendDaysRaw)
-        store.set(marked, for: date)
-        store.prune()
-        noSpendDaysRaw = store.rawValue
-        refreshCatchUpState()
-    }
-
-    /// Persists a backfill batch and reports the outcome in terms of the
-    /// streak it restored — the reason the flow is worth finishing.
-    private func commitCatchUp(_ drafts: [ExpenseDraft]) {
-        let streakBefore = loggingStreakDays
-        let created = ExpenseWriter.commit(
-            drafts,
-            source: .manual,
-            in: context,
-            options: .backfill,
-            budgets: Array(activeBudgets)
-        )
-        guard !created.isEmpty else { return }
-
-        if let account = created.last?.account {
-            lastUsedAccountID = account.id.uuidString
-        }
-        Haptics.success()
-        triggerSavePulse()
-        refreshCatchUpState(extra: created)
-
-        // Budget alerts were suppressed for the batch so a closed period
-        // cannot fire a retroactive "over budget" push. Re-evaluate once, in
-        // case a backfilled date landed inside the current window.
-        evaluateBudgetAlerts()
-
-        let streakAfter = LoggingStreak.current(
-            expenses: allExpenses + created,
-            noSpendDays: noSpendDays
-        )
-        let undoTargets = created
-        let message = (streakAfter > streakBefore && streakAfter >= 3)
-            ? "\(streakAfter)-day streak restored"
-            : (created.count == 1 ? "1 expense added" : "\(created.count) expenses added")
-        showToast(message) {
-            ExpenseWriter.revert(undoTargets, in: context)
-            refreshCatchUpState()
-            Haptics.warning()
-        }
-    }
-
-    /// Materialises overdue recurring occurrences in one batch.
-    private func confirmCatchUpRecurring(_ occurrences: [PendingOccurrence]) {
-        guard !occurrences.isEmpty else { return }
-        let rulesByID = Dictionary(
-            allRecurringRules.map { ($0.id, $0) },
-            uniquingKeysWith: { first, _ in first }
-        )
-
-        var logged = 0
-        for occurrence in occurrences {
-            guard let rule = rulesByID[occurrence.ruleID] else { continue }
-            RecurringEngine.createTransaction(
-                rule: rule,
-                date: occurrence.dueDate,
-                in: context
-            )
-            // `lastGeneratedDate` means "last handled". Not advancing it here
-            // would let `generateMissing` recreate this occurrence on the next
-            // launch, silently duplicating the expense.
-            if rule.lastGeneratedDate == nil
-                || rule.lastGeneratedDate! < occurrence.dueDate
-            {
-                rule.lastGeneratedDate = occurrence.dueDate
-            }
-            if rule.isBill {
-                rule.lastPaidDate = occurrence.dueDate
-            }
-            NotificationManager.cancelConfirmation(
-                ruleID: rule.id,
-                dueDate: occurrence.dueDate
-            )
-            logged += 1
-        }
-        guard logged > 0 else { return }
-
-        // createTransaction inserts without saving and fires no side effects —
-        // one save and one widget refresh for the whole batch.
-        context.safeSave()
-        WidgetRefresh.refresh(using: context)
-        Haptics.success()
-        refreshRecurringCaches()
-        showToast(logged == 1 ? "1 payment logged" : "\(logged) payments logged")
     }
 
     // Sheet extracted to LogAmountSheetView (standalone struct below)

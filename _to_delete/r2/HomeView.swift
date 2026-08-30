@@ -607,17 +607,26 @@ struct HomeView: View {
                     currencyCode: currencyCode,
                     topMerchants: frequentMerchantNames,
                     onSave: { expense in
-                        ExpenseWriter.commit(
-                            built: [expense],
-                            in: context,
-                            budgets: Array(activeBudgets)
+                        context.insert(expense)
+                        UserLearningEngine.learn(
+                            merchant: expense.merchant,
+                            category: expense.category?.name,
+                            amount: expense.amount,
+                            hour: Calendar.current.component(
+                                .hour,
+                                from: expense.date
+                            )
                         )
+                        context.safeSave()
+                        WidgetRefresh.refresh(using: context)
+                        NotificationManager.refreshDailyReminder(using: context)
                         if let acct = expense.account {
                             lastUsedAccountID = acct.id.uuidString
                         }
                         Haptics.success()
                         triggerSavePulse()
                         showToast("Expense saved · Voice")
+                        evaluateBudgetAlerts()
                     },
                     onEdit: { expense in
                         context.insert(expense)
@@ -631,17 +640,28 @@ struct HomeView: View {
                     },
                     onSaveMany: { expenses in
                         guard !expenses.isEmpty else { return }
-                        ExpenseWriter.commit(
-                            built: expenses,
-                            in: context,
-                            budgets: Array(activeBudgets)
-                        )
+                        for expense in expenses {
+                            context.insert(expense)
+                            UserLearningEngine.learn(
+                                merchant: expense.merchant,
+                                category: expense.category?.name,
+                                amount: expense.amount,
+                                hour: Calendar.current.component(
+                                    .hour,
+                                    from: expense.date
+                                )
+                            )
+                        }
+                        context.safeSave()
+                        WidgetRefresh.refresh(using: context)
+                        NotificationManager.refreshDailyReminder(using: context)
                         if let last = expenses.last?.account {
                             lastUsedAccountID = last.id.uuidString
                         }
                         Haptics.success()
                         triggerSavePulse()
                         showToast("\(expenses.count) expenses saved · Voice")
+                        evaluateBudgetAlerts()
                     },
                     onDismiss: {}
                 )
@@ -1314,11 +1334,21 @@ struct HomeView: View {
             currencyCode: currencyCode,
             onSaveDrafts: { expenses in
                 guard !expenses.isEmpty else { return }
-                ExpenseWriter.commit(
-                    built: expenses,
-                    in: context,
-                    budgets: Array(activeBudgets)
-                )
+                for expense in expenses {
+                    context.insert(expense)
+                    UserLearningEngine.learn(
+                        merchant: expense.merchant,
+                        category: expense.category?.name,
+                        amount: expense.amount,
+                        hour: Calendar.current.component(
+                            .hour,
+                            from: expense.date
+                        )
+                    )
+                }
+                context.safeSave()
+                WidgetRefresh.refresh(using: context)
+                NotificationManager.refreshDailyReminder(using: context)
                 if let last = expenses.last?.account {
                     lastUsedAccountID = last.id.uuidString
                 }
@@ -1328,6 +1358,7 @@ struct HomeView: View {
                     expenses.count > 1
                         ? "\(expenses.count) expenses saved" : "Expense saved"
                 )
+                evaluateBudgetAlerts()
             },
             isSmartParsing: smartParseInFlight > 0,
             onMicTap: { showingVoiceOverlay = true }
@@ -1355,14 +1386,18 @@ struct HomeView: View {
                 account: account
             )
             expense.rawInput = parsed.rawInput
+            context.insert(expense)
+            UserLearningEngine.learn(
+                merchant: expense.merchant,
+                category: expense.category?.name,
+                amount: expense.amount,
+                hour: Calendar.current.component(.hour, from: expense.date)
+            )
             lastAccount = account
             savedExpenses.append(expense)
         }
-        ExpenseWriter.commit(
-            built: savedExpenses,
-            in: context,
-            budgets: Array(activeBudgets)
-        )
+        context.safeSave()
+        WidgetRefresh.refresh(using: context)
         if let last = lastAccount { lastUsedAccountID = last.id.uuidString }
         Haptics.success()
         triggerSavePulse()
@@ -1370,9 +1405,14 @@ struct HomeView: View {
         showToast(
             valid.count == 1 ? "Expense saved" : "\(valid.count) expenses saved"
         ) {
-            ExpenseWriter.revert(undoTargets, in: context)
+            for expense in undoTargets {
+                context.delete(expense)
+            }
+            context.safeSave()
+            WidgetRefresh.refresh(using: context)
             Haptics.warning()
         }
+        evaluateBudgetAlerts()
 
         // ─── Smart enrichment ───────────────────────────────────────
         // For any expense that rules couldn't categorize, fire Apple
@@ -2329,6 +2369,7 @@ struct HomeView: View {
         cachedNextDueDates = nextDates
         cachedOverdueDates = overdueDates
         cachedPredictions = predictions
+        LiveActivityManager.refresh(using: context)
         // Pass the dictionary directly rather than reading `cachedOverdueDates`
         // back: catch-up detection depends on it, and relying on a @State
         // write being visible to a read in the same call is a bug waiting to

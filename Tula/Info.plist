@@ -19,8 +19,6 @@
 			</array>
 		</dict>
 	</array>
-	<key>NSExtensionPointIdentifier</key>
-	<string>com.apple.widgetkit-extension</string>
 	<key>UIApplicationShortcutItems</key>
 	<array>
 		<dict>
